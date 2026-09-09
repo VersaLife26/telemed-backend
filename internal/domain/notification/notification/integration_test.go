@@ -20,6 +20,8 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"telemed/internal/domain/notification/notification"
+	"telemed/internal/platform/database"
+	"telemed/internal/platform/repopath"
 )
 
 // setupDB starts a throwaway Postgres container, applies every migration in
@@ -50,7 +52,18 @@ func setupDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connection string: %v", err)
 	}
 
-	m, err := migrate.New("file://../../migrations", connStr)
+	// Migrate into svc_notification, not public: that is the shape production
+	// runs, and the domain's migrations grant on the schema they run into.
+	connStr, err = database.EnsureSchema(ctx, connStr, "notification")
+	if err != nil {
+		t.Fatalf("provision schema: %v", err)
+	}
+
+	// repopath, not "../../migrations": the depth from a package to the
+	// repository root is no longer uniform in one module, and a wrong relative
+	// path fails at run time as "open .: no such file or directory" rather
+	// than at compile time.
+	m, err := migrate.New("file://"+repopath.Migrations(t, "notification"), connStr)
 	if err != nil {
 		t.Fatalf("build migrator: %v", err)
 	}
