@@ -34,7 +34,31 @@ type Config struct {
 	MinConns    int32
 	MaxConnLife time.Duration
 	AppName     string
+
+	// SearchPath pins the session's schema resolution order, e.g.
+	// "svc_user, public".
+	//
+	// Consolidation put all eight domains in ONE database, separated by schema
+	// rather than by database (93 tables, and six names collide across
+	// domains with genuinely incompatible definitions -- svc_doctor.specialties
+	// is keyed by code, svc_admin.specialties by uuid). Every query in the
+	// platform is written unqualified, so this setting is what decides which
+	// domain's tables an unqualified name resolves to. Getting it wrong does
+	// not error: it silently reads another domain's data, or reports
+	// "relation does not exist" for a table that plainly exists.
+	//
+	// public stays on the path so pgcrypto and other shared extensions
+	// resolve. Empty leaves the server default, which is what the api-gateway
+	// (no database at all) and ad-hoc tooling want.
+	SearchPath string
 }
+
+// Schema returns the schema name a domain's tables live in.
+//
+// One function rather than a string literal per call site: production, the
+// migration runner and the integration-test helpers must all agree, and a
+// typo in any one of them produces an empty schema rather than an error.
+func Schema(domain string) string { return "svc_" + domain }
 
 // Pool is the subset of *pgxpool.Pool the application depends on. Depending on
 // the interface rather than the concrete type keeps repositories testable and
@@ -76,6 +100,9 @@ func Connect(ctx context.Context, cfg Config, log zerolog.Logger) (*pgxpool.Pool
 	}
 	if cfg.AppName != "" {
 		poolCfg.ConnConfig.RuntimeParams["application_name"] = cfg.AppName
+	}
+	if cfg.SearchPath != "" {
+		poolCfg.ConnConfig.RuntimeParams["search_path"] = cfg.SearchPath
 	}
 	// Every service reads and writes wall-clock instants in UTC and converts to
 	// Asia/Colombo only at the presentation boundary.

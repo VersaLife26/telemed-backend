@@ -78,11 +78,11 @@ func TestMain(m *testing.M) {
 
 func setupDatabase() (func(), error) {
 	if dsn := os.Getenv("TEST_DATABASE_URL"); dsn != "" {
-		pool, err := connectAndMigrate(dsn)
+		pool, pinnedDSN, err := connectAndMigrate(dsn)
 		if err != nil {
 			return nil, err
 		}
-		testPool, testDSN = pool, dsn
+		testPool, testDSN = pool, pinnedDSN
 		return func() { pool.Close() }, nil
 	}
 
@@ -177,12 +177,12 @@ func setupDatabase() (func(), error) {
 	}
 
 	dsn := fmt.Sprintf("user=telemed host=%s dbname=telemed_scheduling sslmode=disable pool_max_conns=60", dir)
-	pool, err := connectAndMigrate(dsn)
+	pool, pinnedDSN, err := connectAndMigrate(dsn)
 	if err != nil {
 		stop()
 		return nil, err
 	}
-	testPool, testDSN = pool, dsn
+	testPool, testDSN = pool, pinnedDSN
 	return func() { pool.Close(); stop() }, nil
 }
 
@@ -210,7 +210,16 @@ func waitForPostgres(dsn string, limit time.Duration) (*pgxpool.Pool, error) {
 // connectAndMigrate applies every *.up.sql in order. The tests run the same SQL
 // the migrate CLI runs in production -- not a hand-maintained schema fixture
 // that drifts from it.
-func connectAndMigrate(dsn string) (*pgxpool.Pool, error) {
+func connectAndMigrate(dsn string) (*pgxpool.Pool, string, error) {
+	// Migrate into svc_scheduling, not public: the slots partition manager
+	// qualifies both sides of its CREATE, so a suite running in public would
+	// never exercise it. The pinned DSN is returned because callers keep it in
+	// testDSN and open further connections from it.
+	dsn, err := database.EnsureSchema(context.Background(), dsn, "scheduling")
+	if err != nil {
+		return nil, "", err
+	}
+
 	// database.Connect, not a bare pgxpool.New: it pins the session timezone to
 	// UTC exactly as production does. A test pool that inherited the machine's
 	// Asia/Colombo session would silently mask the timezone bugs these tests
@@ -222,22 +231,22 @@ func connectAndMigrate(dsn string) (*pgxpool.Pool, error) {
 		AppName:  "telemed-scheduling-test",
 	}, zerolog.Nop())
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	migDir, err := repopath.FindMigrations("scheduling")
 	if err != nil {
 		pool.Close()
-		return nil, err
+		return nil, "", err
 	}
 	files, err := filepath.Glob(filepath.Join(migDir, "*.up.sql"))
 	if err != nil {
 		pool.Close()
-		return nil, err
+		return nil, "", err
 	}
 	if len(files) == 0 {
 		pool.Close()
-		return nil, fmt.Errorf("no migrations found")
+		return nil, "", fmt.Errorf("no migrations found")
 	}
 	sort.Strings(files)
 
@@ -246,17 +255,17 @@ func connectAndMigrate(dsn string) (*pgxpool.Pool, error) {
 		sql, err := os.ReadFile(f) //nolint:gosec // path comes from a glob of our own repo
 		if err != nil {
 			pool.Close()
-			return nil, err
+			return nil, "", err
 		}
 		// pgx uses the simple protocol when a query has no arguments, which is
 		// what lets a whole multi-statement migration file go through in one
 		// Exec.
 		if _, err := pool.Exec(ctx, string(sql)); err != nil {
 			pool.Close()
-			return nil, fmt.Errorf("migration %s: %w", filepath.Base(f), err)
+			return nil, "", fmt.Errorf("migration %s: %w", filepath.Base(f), err)
 		}
 	}
-	return pool, nil
+	return pool, dsn, nil
 }
 
 func truncate(s string) string {

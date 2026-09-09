@@ -31,6 +31,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/repopath"
 )
@@ -84,6 +85,12 @@ func setupTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("container port: %v", err)
 	}
 	dsn := fmt.Sprintf("postgres://telemed:telemed@%s:%s/telemed_user_test?sslmode=disable", host, mappedPort.Port())
+
+	// Migrate into svc_user, not public: that is the shape production runs.
+	dsn, err = database.EnsureSchema(ctx, dsn, "user")
+	if err != nil {
+		t.Fatalf("provision schema: %v", err)
+	}
 
 	applyAllMigrations(t, ctx, dsn)
 

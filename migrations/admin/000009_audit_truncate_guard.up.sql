@@ -82,13 +82,15 @@ COMMENT ON COLUMN audit_chain_state.last_id IS
 -- SECURITY DEFINER means it executes as this function's owner -- the migration
 -- role -- so the connecting app role needs no privilege on audit_chain_state at
 -- all. search_path is pinned, which is mandatory for a SECURITY DEFINER
--- function: without it a caller could put a schema of their own ahead of public
--- and have `audit_chain_state` resolve to a table they control.
+-- function: without it a caller could put a schema of their own ahead of the
+-- domain schema and have `audit_chain_state` resolve to a table they control.
+-- Pinned to svc_admin since consolidation, which is where audit_logs and
+-- audit_chain_state now live.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION audit_logs_chain_trigger() RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, svc_admin
 AS $$
 DECLARE
     v_prev_hash TEXT;

@@ -100,6 +100,10 @@ func run() error {
 		MinConns:    cfg.DatabaseMinConns,
 		MaxConnLife: cfg.DatabaseMaxConnLife,
 		AppName:     cfg.ServiceName,
+		// One database, one schema per domain (migrations/bootstrap). This is
+		// what makes an unqualified table name resolve to notification's tables and
+		// not another domain's -- six table names collide across domains.
+		SearchPath: database.Schema("notification") + ", public",
 	}, log)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)

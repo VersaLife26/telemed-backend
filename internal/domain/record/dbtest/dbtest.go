@@ -10,7 +10,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"telemed/internal/platform/database"
 	"telemed/internal/platform/repopath"
 )
 
@@ -45,6 +45,11 @@ func NewPostgres(t *testing.T) *pgxpool.Pool {
 	connStr, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("dbtest: connection string: %v", err)
+	}
+
+	connStr, err = database.EnsureSchema(ctx, connStr, "record")
+	if err != nil {
+		t.Fatalf("dbtest: provision schema: %v", err)
 	}
 
 	pool, err := pgxpool.New(ctx, connStr)

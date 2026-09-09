@@ -94,12 +94,17 @@ BEGIN
     v_end   := v_start + INTERVAL '1 month';
     v_name  := format('slots_%s', to_char(v_start, 'YYYY_MM'));
 
-    IF to_regclass(format('public.%I', v_name)) IS NOT NULL THEN
+    IF to_regclass(format('svc_scheduling.%I', v_name)) IS NOT NULL THEN
         RETURN v_name;
     END IF;
 
+    -- Schema-qualified on both sides. An unqualified CREATE lands in whatever
+    -- schema happens to be first on the caller's search_path, so a session
+    -- that set `public, svc_scheduling` would quietly build the partition in
+    -- the wrong schema and the to_regclass check above would never find it --
+    -- producing a fresh partition attempt every single call.
     EXECUTE format(
-        'CREATE TABLE %I PARTITION OF slots FOR VALUES FROM (%L) TO (%L)',
+        'CREATE TABLE svc_scheduling.%I PARTITION OF svc_scheduling.slots FOR VALUES FROM (%L) TO (%L)',
         v_name,
         to_char(v_start, 'YYYY-MM-DD HH24:MI:SSOF'),
         to_char(v_end,   'YYYY-MM-DD HH24:MI:SSOF')

@@ -4,9 +4,6 @@ package consultation_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -50,6 +47,10 @@ func TestRepository_Integration(t *testing.T) {
 	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
 
 	dsn, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	// Migrate into svc_consultation, not public: that is the shape production runs.
+	dsn, err = database.EnsureSchema(ctx, dsn, "consultation")
 	require.NoError(t, err)
 
 	applyMigrations(t, dsn)
@@ -214,12 +215,5 @@ func applyMigrations(t *testing.T, dsn string) {
 
 func migrationsDir(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	dir := repopath.Migrations(t, "consultation")
-	abs, err := filepath.Abs(dir)
-	require.NoError(t, err)
-	_, err = os.Stat(abs)
-	require.NoError(t, err, "migrations directory must exist at %s", abs)
-	return abs
+	return repopath.Migrations(t, "consultation")
 }

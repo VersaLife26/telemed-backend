@@ -53,6 +53,12 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connection string: %v", err)
 	}
 
+	// Migrate into svc_doctor, not public: that is the shape production runs.
+	connStr, err = database.EnsureSchema(ctx, connStr, "doctor")
+	if err != nil {
+		t.Fatalf("provision schema: %v", err)
+	}
+
 	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		t.Fatalf("connect pool: %v", err)

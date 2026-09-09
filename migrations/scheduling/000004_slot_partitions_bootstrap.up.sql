@@ -17,7 +17,7 @@ SELECT create_slot_partitions(CURRENT_DATE, 12);
 -- the runbook alerts on it being non-empty.
 DO $$
 BEGIN
-    IF to_regclass('public.slots_default') IS NULL THEN
+    IF to_regclass('svc_scheduling.slots_default') IS NULL THEN
         EXECUTE 'CREATE TABLE slots_default PARTITION OF slots DEFAULT';
     END IF;
 END;

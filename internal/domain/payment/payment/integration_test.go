@@ -33,6 +33,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/repopath"
 )
@@ -73,6 +74,12 @@ func TestMain(m *testing.M) {
 		dsn, err := container.ConnectionString(ctx, "sslmode=disable")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "integration: connection string: %v\n", err)
+			return 1
+		}
+		// Migrate into svc_payment, not public: that is the shape production runs.
+		dsn, err = database.EnsureSchema(ctx, dsn, "payment")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "integration: provision schema: %v\n", err)
 			return 1
 		}
 		pool, err := pgxpool.New(ctx, dsn)

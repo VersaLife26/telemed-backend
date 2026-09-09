@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -22,6 +21,7 @@ import (
 	tc "github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"telemed/internal/platform/database"
 	"telemed/internal/platform/repopath"
 )
 
@@ -55,6 +55,11 @@ func StartPostgres(t *testing.T) *pgxpool.Pool {
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("testutil: connection string: %v", err)
+	}
+
+	dsn, err = database.EnsureSchema(ctx, dsn, "admin")
+	if err != nil {
+		t.Fatalf("testutil: provision schema: %v", err)
 	}
 
 	pool, err := pgxpool.New(ctx, dsn)

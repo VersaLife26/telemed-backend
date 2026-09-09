@@ -19,6 +19,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/repopath"
 )
@@ -55,6 +56,12 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 	connStr, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
+	}
+
+	// Migrate into svc_doctor, not public: that is the shape production runs.
+	connStr, err = database.EnsureSchema(ctx, connStr, "doctor")
+	if err != nil {
+		t.Fatalf("provision schema: %v", err)
 	}
 	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {

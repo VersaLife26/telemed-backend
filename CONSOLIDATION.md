@@ -80,14 +80,84 @@ environment. They remain the gate for Phase 2.
 
 ---
 
-## Phase 2 — one database, nine schemas (next)
+## Phase 2 — one database, eight schemas (code done; needs Docker to verify)
 
-Still nine binaries. `telemed` with schemas `svc_user … svc_admin`; the 51
-migration files move unchanged apart from a `search_path` header. The four
-tables whose names collide with **incompatible** schemas — `specialties`,
-`working_hours`, `doctor_schedule_settings`, `drugs` — stay separate by design.
-Unifying them is a data-model change, not a consolidation, and is filed as
-follow-up work.
+One database `telemed`, one schema per stateful domain: `svc_user`,
+`svc_doctor`, `svc_scheduling`, `svc_consultation`, `svc_payment`,
+`svc_notification`, `svc_record`, `svc_admin`. Still **nine binaries** and nine
+roles — only the storage layout changed.
+
+The `svc_` prefix is load-bearing: `user` is a reserved word in SQL, so a bare
+`CREATE SCHEMA user` is legal only quoted, and every later reference then has to
+stay quoted too.
+
+### The plan said "migrations move unchanged". That was wrong.
+
+Four migrations are schema-sensitive and had to be rewritten. Each would have
+failed silently or at run time, not at migration time:
+
+| File | What had to change | Why it would have broken |
+| --- | --- | --- |
+| `admin/000004_analytics.up.sql` | `SET search_path = pg_catalog, public` → `pg_catalog, svc_admin`; four `REFRESH MATERIALIZED VIEW CONCURRENTLY public.*` → `svc_admin.*` | A `SECURITY DEFINER` function pins its own `search_path` — that pin is the whole point, it stops a caller prepending a schema they control. Pinned to `public` it would resolve none of the four views after the move. |
+| `admin/000009_audit_truncate_guard.up.sql` | same pin → `pg_catalog, svc_admin` | The audit chain trigger resolves `audit_chain_state` unqualified. Pinned to `public`, every audit insert fails. |
+| `scheduling/000002_slots_partitioned.up.sql` | `to_regclass(format('public.%I', …))` → `svc_scheduling.%I`, and the partition `CREATE` is now qualified on both sides | The existence check and the create would have disagreed: the check looks in `public`, the create lands wherever `search_path` points. Result is a fresh `CREATE TABLE` attempt on every call, failing on the second. |
+| `scheduling/000004_slot_partitions_bootstrap.up.sql` | `to_regclass('public.slots_default')` → `svc_scheduling.slots_default` | Same class of bug. |
+
+`pgcrypto` is now created once in `public` by the bootstrap migration, so the
+`CREATE EXTENSION IF NOT EXISTS` calls in `user/000002` and `admin/000002`
+become no-ops. An extension is a database-global object; a second `CREATE` in
+another schema errors rather than duplicating.
+
+### New
+
+| Path | What |
+| --- | --- |
+| `migrations/bootstrap/` | Creates the eight schemas and `pgcrypto`. Runs once, as superuser, before any domain. |
+| `scripts/migrate.sh` | Bootstrap, then each domain into its own schema with `search_path` as a **connection parameter**. Each domain keeps its own `schema_migrations` table inside its own schema, so the eight histories stay independent and one domain can roll back without touching the others. |
+| `scripts/init-schema-roles.sh` | The per-schema role model, and a self-check that proves every `telemed_<d>_app` role has USAGE on its own schema and no other, and owns nothing. |
+| `database.Schema` / `SearchPathFor` / `WithSearchPath` / `EnsureSchema` | One source of truth for schema names, shared by production, the migration runner and every integration-test helper. `WithSearchPath` handles both DSN forms — the scheduling suite uses the keyword form against a unix socket, and `url.Parse` does not reject it, it silently drops the parameter. |
+
+### Least privilege is **not** lost in this phase
+
+The plan recorded L1 — losing the nine per-database least-privilege roles — as
+the migration's one unavoidable loss. It is not lost here. Nine processes still
+connect as nine roles; the boundary just moved from `CONNECT` on a database to
+`USAGE` on a schema, and `REVOKE ALL ON SCHEMA … FROM PUBLIC` is what makes that
+hold, because PUBLIC gets USAGE on a new schema by default.
+
+**L1 bites in Phase 3, and it is avoidable there too**: a single binary can hold
+one connection pool per domain, each connecting as that domain's own role,
+instead of one pool as one role with USAGE on all eight schemas. That keeps
+server-side enforcement instead of moving it into application code. The roles
+this phase creates are what make that option available — the decision belongs
+before Phase 3 lands, not after.
+
+### Deferred by design
+
+`specialties`, `working_hours`, `doctor_schedule_settings` and `drugs` stay
+duplicated across schemas. Unifying them is a data-model change that alters
+behaviour — `svc_doctor.doctor_schedule_settings.buffer_minutes` is NULLable on
+purpose, where NULL means "no preference" and 0 means "back-to-back", and
+`svc_scheduling`'s is `NOT NULL DEFAULT 5`, which collapses that distinction and
+would hand every doctor with no preference a five-minute buffer. Consolidation
+must not smuggle in a product change.
+
+### Verification
+
+```
+go build ./...                 PASS
+go vet ./...                   PASS
+go vet -tags=integration ./... PASS   (compiles the integration suites too)
+gofmt -l .                     clean
+go test ./...                  42 packages ok, 0 fail
+```
+
+**Not verified here:** anything that needs a live Postgres. The Docker daemon is
+not available in this environment, so `-tags=integration` compiles but does not
+run, `scripts/migrate.sh` has not been executed against a real database, and
+`scripts/init-schema-roles.sh` has not proved its own assertions. Those are the
+gate for accepting Phase 2 — the SQL rewrites above are exactly the kind of
+change that compiles fine and fails on contact with a server.
 
 ## Phase 3 — one binary
 

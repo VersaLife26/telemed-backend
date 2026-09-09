@@ -140,16 +140,22 @@ GRANT SELECT ON district_activity_daily TO telemed_admin_app;
 -- standard requirement for a SECURITY DEFINER function -- without it a caller
 -- could prepend a schema of their own and have the function resolve
 -- `revenue_daily` to an object they control.
+--
+-- Consolidation moved these views from `public` to `svc_admin`. Both the pin
+-- and the qualified names below had to move with them: a SECURITY DEFINER
+-- function pinned to `public` would resolve nothing after the move, and
+-- leaving the pin off to "let search_path sort it out" is precisely the
+-- privilege-escalation this pin exists to prevent.
 CREATE OR REPLACE FUNCTION refresh_analytics_views() RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, svc_admin
 AS $$
 BEGIN
-    REFRESH MATERIALIZED VIEW CONCURRENTLY public.revenue_daily;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY public.bookings_daily;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY public.doctor_utilization_daily;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY public.district_activity_daily;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY svc_admin.revenue_daily;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY svc_admin.bookings_daily;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY svc_admin.doctor_utilization_daily;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY svc_admin.district_activity_daily;
 END;
 $$;
 

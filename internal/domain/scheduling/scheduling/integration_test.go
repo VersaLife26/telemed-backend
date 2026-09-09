@@ -107,6 +107,14 @@ func startStack(t *testing.T) *stack {
 	dsn := fmt.Sprintf("postgres://telemed:telemed@%s:%s/telemed_scheduling?sslmode=disable",
 		pgHost, pgPort.Port())
 
+	// Migrate into svc_scheduling, not public: the slots partition manager
+	// qualifies both sides of its CREATE, so a suite running in public would
+	// not exercise it at all.
+	dsn, err = database.EnsureSchema(ctx, dsn, "scheduling")
+	if err != nil {
+		t.Fatalf("provision schema: %v", err)
+	}
+
 	pool, err := database.Connect(ctx, database.Config{
 		URL: dsn, MaxConns: 60, MinConns: 2, AppName: "telemed-scheduling-integration",
 	}, zerolog.Nop())
@@ -139,7 +147,11 @@ func startStack(t *testing.T) *stack {
 }
 
 func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	files, err := filepath.Glob(filepath.Join(repopath.Migrations(t, "scheduling"), "*.up.sql"))
+	migDir, err := repopath.FindMigrations("scheduling")
+	if err != nil {
+		return err
+	}
+	files, err := filepath.Glob(filepath.Join(migDir, "*.up.sql"))
 	if err != nil {
 		return err
 	}
