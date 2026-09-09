@@ -51,6 +51,12 @@ CREATE SCHEMA IF NOT EXISTS svc_admin;
 -- rather than duplicate.
 CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;
 
--- Nothing is granted here. Per-domain roles and their grants are the subject of
--- 000002_roles.up.sql, which is where the compensating control for the
--- per-database least-privilege roles that a single binary cannot keep lives.
+-- Nothing is granted here, and that is deliberate: roles and grants are
+-- provisioned by telemed-infra/infra/postgres/init/01-init-databases.sh, which
+-- runs as the superuser when the database is first created. Two sources of
+-- truth for a privilege model is how a REVOKE gets quietly undone.
+--
+-- That script also creates these schemas, and sets each one's owner to the
+-- domain's migrate role. This file is therefore normally a no-op -- it exists
+-- so the migration set is complete on its own, for a test container or a
+-- database that was provisioned some other way.

@@ -114,7 +114,7 @@ another schema errors rather than duplicating.
 | --- | --- |
 | `migrations/bootstrap/` | Creates the eight schemas and `pgcrypto`. Runs once, as superuser, before any domain. |
 | `scripts/migrate.sh` | Bootstrap, then each domain into its own schema with `search_path` as a **connection parameter**. Each domain keeps its own `schema_migrations` table inside its own schema, so the eight histories stay independent and one domain can roll back without touching the others. |
-| `scripts/init-schema-roles.sh` | The per-schema role model, and a self-check that proves every `telemed_<d>_app` role has USAGE on its own schema and no other, and owns nothing. |
+| roles & grants | Provisioned by `telemed-infra/infra/postgres/init/01-init-databases.sh`, rewritten for schemas, with `scripts/verify-db-privileges.sh` proving every `telemed_<domain>_app` role has USAGE on its own schema and no other, sees zero tables elsewhere, and owns nothing. Kept in infra rather than here so there is one source of truth for the privilege model. |
 | `database.Schema` / `SearchPathFor` / `WithSearchPath` / `EnsureSchema` | One source of truth for schema names, shared by production, the migration runner and every integration-test helper. `WithSearchPath` handles both DSN forms — the scheduling suite uses the keyword form against a unix socket, and `url.Parse` does not reject it, it silently drops the parameter. |
 
 ### Least privilege is **not** lost in this phase
