@@ -1,0 +1,20 @@
+# Generates Go message types + gRPC stubs into proto/gen/go. A consuming
+# service repo copies (or, later, vendors via a shared internal module)
+# gen/go/... into its own tree so `import "telemed/gen/go/scheduling/v1"`
+# resolves inside that service's `telemed` go module -- see each .proto's
+# go_package option.
+#
+# opt: paths=source_relative places output at gen/go/<domain>/v1/*.pb.go,
+# mirroring the source layout 1:1, rather than nesting by the go_package
+# import path (which would otherwise duplicate the "gen/go" segment).
+version: v2
+
+plugins:
+  - local: protoc-gen-go
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt:
+      - paths=source_relative

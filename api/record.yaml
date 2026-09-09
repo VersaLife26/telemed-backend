@@ -1,0 +1,676 @@
+openapi: 3.1.0
+info:
+  title: telemed-record-service
+  version: 0.2.0
+  description: >
+    Medical documents, e-prescriptions (QR-verifiable, tamper-evident),
+    clinical (SOAP) notes with an append-only amendment trail, the Sri Lankan
+    drug formulary, the WHO ICD-10 reference table, and the authorization
+    layer gating patient vault access. See README.md and docs/API.md for full narrative
+    documentation and curl examples; this file is a machine-readable summary,
+    hand-maintained (swaggo/swag codegen was not wired up in this pass).
+servers:
+  - url: http://localhost:8087/api/v1
+    description: local development
+security:
+  - bearerAuth: []
+
+paths:
+  /records/upload:
+    post:
+      summary: Upload a medical document
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, document_type]
+              properties:
+                file: { type: string, format: binary }
+                document_type: { $ref: '#/components/schemas/DocumentType' }
+                owner_user_id: { type: string, format: uuid, description: "defaults to the caller; requires authorization if set to someone else" }
+      responses:
+        '201': { description: uploaded, content: { application/json: { schema: { $ref: '#/components/schemas/DocumentEnvelope' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /records:
+    get:
+      summary: List documents (mine, or another vault if authorized)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: document_type, in: query, schema: { $ref: '#/components/schemas/DocumentType' } }
+        - { name: owner_user_id, in: query, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/DocumentListEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /records/shares:
+    get:
+      summary: List shares the caller has granted
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/RecordShare' } } } } } } }
+
+  /records/{id}:
+    get:
+      summary: Get one document's metadata
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/DocumentEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+    delete:
+      summary: Soft-delete a document (owner or admin only)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      responses:
+        '204': { description: deleted }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /records/{id}/download:
+    get:
+      summary: Get a 15-minute presigned download URL
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      download_url: { type: string }
+                      expires_in_seconds: { type: integer, example: 900 }
+                      filename: { type: string }
+                      content_type: { type: string }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /records/{doctor_id}/share:
+    post:
+      summary: Grant a doctor time-boxed access to the caller's vault
+      description: >
+        {doctor_id} is the doctor being granted access, not a document id --
+        record_shares is vault-scoped. See docs/API.md.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: doctor_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl_hours]
+              properties:
+                ttl_hours: { type: integer, minimum: 1, maximum: 2160 }
+      responses:
+        '201': { description: created, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/RecordShare' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /shares/{id}:
+    delete:
+      summary: Revoke a share (idempotent)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: revoked }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /prescriptions:
+    post:
+      summary: Issue a prescription (doctor only, must own the concluded appointment)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssuePrescriptionRequest' }
+      responses:
+        '201': { description: issued, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/Prescription' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /prescriptions/{id}:
+    get:
+      summary: Get one prescription's detail
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/PrescriptionId' }]
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/Prescription' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /prescriptions/{id}/pdf:
+    get:
+      summary: Get a 24-hour presigned PDF URL
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/PrescriptionId' }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      pdf_url: { type: string }
+                      expires_in_seconds: { type: integer, example: 86400 }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /verify/prescriptions/{id}:
+    get:
+      summary: Verify a prescription (public, unauthenticated, rate-limited)
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: h
+          in: query
+          required: true
+          description: hex-encoded HMAC-SHA256 from the QR code
+          schema: { type: string }
+      responses:
+        '200':
+          description: >
+            200 whether or not the prescription verifies, INCLUDING for an id
+            that does not exist -- validity is expressed in the body, never
+            patient identity or diagnosis. A missing prescription and a wrong
+            HMAC return byte-identical answers, so the endpoint is not an
+            existence oracle over the prescription table.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/VerifyResult' }
+        '429': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /drugs:
+    get:
+      summary: Search the Sri Lankan drug formulary
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 50 } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Drug' } } } } } } }
+
+  /clinical-notes:
+    get:
+      summary: The calling doctor's own clinical notes (metadata only)
+      description: >
+        Carries no SOAP text and no diagnosis codes -- which is what makes it
+        safe to serve without a per-row document_access_log entry. Doctors
+        only; a patient or an administrator gets 403.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [draft, finalised] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/ClinicalNoteSummary' } }
+                  meta:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      per_page: { type: integer }
+                      total: { type: integer }
+                      total_pages: { type: integer }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /clinical-notes/{appointment_id}:
+    put:
+      summary: Upsert the draft SOAP note (autosave)
+      description: >
+        Called on every debounced keystroke. Idempotent: an unchanged body does
+        not advance `version`. Guarded by (version, status='draft'), so a save
+        racing a finalisation on another device loses cleanly rather than
+        overwriting a signed record. Only the treating doctor may write.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClinicalNoteSaveRequest' }
+      responses:
+        '200': { description: saved, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/ClinicalNote' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409':
+          description: >
+            CONFLICT -- another device saved first; `fields.version` carries the
+            server's current version, so re-read, re-apply and retry.
+            NOTE_FINALISED -- the note is signed; retrying will never succeed,
+            use /amend.
+          content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } }
+        '422': { $ref: '#/components/responses/Error' }
+    get:
+      summary: Read one clinical note
+      description: >
+        Treating doctor, the patient, or a doctor holding an unexpired share.
+        Administrators are refused (403) -- including super_admin. A draft is
+        visible only to its author; everyone else gets 404. Every call, granted
+        or denied, writes a document_access_log row.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/ClinicalNote' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /clinical-notes/{appointment_id}/finalise:
+    post:
+      summary: Sign the note off (one-way)
+      description: >
+        Flips the note to finalised, writes revision 1 capturing the text
+        exactly as signed, and enqueues clinical_note.finalised -- all in one
+        transaction. Refused with 422 if every section is empty. There is no
+        un-finalise; changes after this go through /amend.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: integer, minimum: 1 }
+      responses:
+        '200': { description: finalised, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/ClinicalNote' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /clinical-notes/{appointment_id}/amend:
+    post:
+      summary: Amend a finalised note
+      description: >
+        The only way a signed note can change. Appends a revision carrying the
+        note's content as it now stands; every earlier revision is untouched
+        and cannot be updated or deleted by anything, including psql. Sections
+        are optional -- name only what changes. finalised_at is NOT updated: it
+        records when the note was signed, not when it was last touched.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClinicalNoteAmendRequest' }
+      responses:
+        '200': { description: amended, content: { application/json: { schema: { type: object, properties: { data: { $ref: '#/components/schemas/ClinicalNote' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { description: the note is still a draft, or the version is stale, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+        '422': { description: no reason given, or the amendment changes nothing, content: { application/json: { schema: { $ref: '#/components/schemas/APIError' } } } }
+
+  /clinical-notes/{appointment_id}/revisions:
+    get:
+      summary: The append-only amendment trail, oldest first
+      description: >
+        Revision 1 is the text as first signed. Same authorization as GET
+        /clinical-notes/{appointment_id}.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentId'
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/ClinicalNoteRevision' } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/AuditUnavailable' }
+
+  /icd10:
+    get:
+      summary: Search the WHO ICD-10 reference table
+      description: >
+        641 WHO ICD-10 rubrics (NOT ICD-10-CM), weighted toward Sri Lankan
+        primary care. Matches on code prefix and on full text over the rubric
+        plus a synonym list. A one-character q returns an empty list rather
+        than an error, because the client fires while the doctor is still
+        typing; an empty q is 400.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 50 } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/ICD10Code' } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+
+  parameters:
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PrescriptionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AppointmentId:
+      name: appointment_id
+      in: path
+      required: true
+      description: the appointment is the resource key -- one SOAP note per consultation
+      schema: { type: string, format: uuid }
+
+  responses:
+    Error:
+      description: standard telemed error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+    AuditUnavailable:
+      description: >
+        The append-only PHI access log could not be written, so the request
+        was refused rather than served unrecorded. Code SERVICE_UNAVAILABLE.
+        Retryable. This is deliberate: an access log that silently misses
+        entries is not an access log. See docs/RUNBOOK.md.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+
+  schemas:
+    APIError:
+      type: object
+      properties:
+        code: { type: string, example: FORBIDDEN }
+        message: { type: string }
+        fields: { type: object, additionalProperties: { type: string } }
+        request_id: { type: string }
+
+    DocumentType:
+      type: string
+      enum: [report, scan, prescription, credential, recording]
+
+    Document:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        uploaded_by: { type: string, format: uuid }
+        document_type: { $ref: '#/components/schemas/DocumentType' }
+        filename: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer }
+        checksum_sha256: { type: string }
+        scan_status: { type: string, enum: [pending, clean, infected, skipped] }
+        fhir_reference_id: { type: string }
+        created_at: { type: string, format: date-time }
+
+    DocumentEnvelope:
+      type: object
+      properties: { data: { $ref: '#/components/schemas/Document' } }
+
+    DocumentListEnvelope:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Document' } }
+        meta:
+          type: object
+          properties:
+            page: { type: integer }
+            per_page: { type: integer }
+            total: { type: integer }
+            total_pages: { type: integer }
+
+    RecordShare:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        granted_by: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    PrescriptionItem:
+      type: object
+      required: [drug_name, dosage, frequency, duration_days, quantity]
+      properties:
+        drug_name: { type: string }
+        strength: { type: string }
+        form: { type: string }
+        dosage: { type: string }
+        frequency: { type: string }
+        duration_days: { type: integer, minimum: 1, maximum: 365 }
+        quantity: { type: integer, minimum: 1 }
+        instructions: { type: string }
+        is_generic: { type: boolean }
+
+    IssuePrescriptionRequest:
+      type: object
+      required: [appointment_id, doctor_name, doctor_slmc, patient_name, items]
+      properties:
+        appointment_id: { type: string, format: uuid }
+        doctor_name: { type: string }
+        doctor_slmc: { type: string }
+        doctor_qualifications: { type: string }
+        clinic_name: { type: string }
+        patient_name: { type: string }
+        patient_age: { type: integer }
+        patient_nic: { type: string }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/PrescriptionItem' }
+
+    Prescription:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_name: { type: string }
+        doctor_slmc: { type: string }
+        issued_at: { type: string, format: date-time }
+        status: { type: string, enum: [issued, dispensed, cancelled] }
+        verification_hmac: { type: string }
+        fhir_medication_request_id: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/PrescriptionItem' } }
+
+    VerifyResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        doctor_name: { type: string }
+        doctor_slmc: { type: string }
+        issued_at: { type: string, format: date-time }
+        status: { type: string, enum: [issued, dispensed, cancelled] }
+        dispensed: { type: boolean }
+      description: never includes patient_id, patient name, or diagnosis
+
+    Drug:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        generic_name: { type: string }
+        strength: { type: string }
+        form: { type: string }
+        manufacturer: { type: string }
+        category: { type: string }
+        is_controlled: { type: boolean }
+        is_generic: { type: boolean }
+
+    ClinicalNoteDiagnosis:
+      type: object
+      properties:
+        code: { type: string, description: WHO ICD-10 code, e.g. "A90" }
+        description:
+          type: string
+          description: >
+            the ICD-10 rubric. On a REQUEST this field is accepted and ignored --
+            the stored term is always re-resolved from icd10_codes, so a client
+            cannot write free text into a coded field.
+        is_primary: { type: boolean, description: at most one per note }
+
+    ClinicalNote:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        subjective: { type: string, maxLength: 20000 }
+        objective: { type: string, maxLength: 20000 }
+        assessment: { type: string, maxLength: 20000 }
+        plan: { type: string, maxLength: 20000 }
+        diagnoses: { type: array, items: { $ref: '#/components/schemas/ClinicalNoteDiagnosis' } }
+        status: { type: string, enum: [draft, finalised] }
+        finalised_at: { type: string, format: date-time, description: when the note was SIGNED; unchanged by amendments }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version:
+          type: integer
+          description: >
+            optimistic-lock token. A client that autosaves must send back the
+            value it last received here, or its next save is a 409.
+
+    ClinicalNoteSummary:
+      type: object
+      description: >
+        the list shape. Deliberately carries no SOAP text and no diagnosis
+        codes -- a list endpoint returning clinical content would leak a whole
+        day's diagnoses in one response.
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        status: { type: string, enum: [draft, finalised] }
+        finalised_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    ClinicalNoteSaveRequest:
+      type: object
+      properties:
+        appointment_id:
+          type: string
+          format: uuid
+          description: >
+            optional; must match the path when present. Accepted because the
+            doctor app's SoapNote.toJson() sends it.
+        subjective: { type: string, maxLength: 20000 }
+        objective: { type: string, maxLength: 20000 }
+        assessment: { type: string, maxLength: 20000 }
+        plan: { type: string, maxLength: 20000 }
+        diagnoses:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/ClinicalNoteDiagnosis' }
+        version:
+          type: integer
+          minimum: 0
+          description: 0 (or omitted) means "I believe no note exists yet"
+        updated_at:
+          type: string
+          description: >
+            accepted and ignored. A phone's clock does not decide when a
+            medical record was written; the server's updated_at stands.
+
+    ClinicalNoteAmendRequest:
+      type: object
+      required: [amendment_reason, version]
+      properties:
+        subjective: { type: string, maxLength: 20000, description: omit to leave exactly as signed }
+        objective: { type: string, maxLength: 20000 }
+        assessment: { type: string, maxLength: 20000 }
+        plan: { type: string, maxLength: 20000 }
+        diagnoses:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/ClinicalNoteDiagnosis' }
+        amendment_reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+          description: >
+            required -- an unexplained change to a signed medical record is not
+            auditable
+        version: { type: integer, minimum: 1 }
+
+    ClinicalNoteRevision:
+      type: object
+      description: >
+        one immutable row of clinical_note_revisions. Holds the note's content
+        as it stood at the END of that change: revision 1 is the text at first
+        finalisation. Append-only at the database level.
+      properties:
+        revision: { type: integer, minimum: 1 }
+        change_type: { type: string, enum: [finalise, amend] }
+        amendment_reason: { type: string }
+        subjective: { type: string }
+        objective: { type: string }
+        assessment: { type: string }
+        plan: { type: string }
+        diagnoses: { type: array, items: { $ref: '#/components/schemas/ClinicalNoteDiagnosis' } }
+        changed_by: { type: string, format: uuid }
+        changed_by_role: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ICD10Code:
+      type: object
+      properties:
+        code: { type: string, example: "A27.9" }
+        description: { type: string, example: "Leptospirosis, unspecified" }
+        category: { type: string, example: "infectious" }

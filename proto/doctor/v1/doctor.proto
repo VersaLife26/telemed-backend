@@ -1,0 +1,62 @@
+// The internal gRPC surface doctor-service exposes to the rest of the
+// platform.
+//
+// Other services never join across the database boundary to read a doctor's
+// fee, specialty or verification state (see DECISIONS.md ADR-004); they call
+// GetDoctor/GetDoctorsBatch instead. Payment-service uses fee_lkr and
+// specialty to compute commission; scheduling-service uses verification_status
+// to decide whether a doctor is eligible for slot generation;
+// consultation-service uses display_name for room metadata. This file is the
+// contract for those calls, versioned so a breaking change ships as doctor.v2
+// alongside v1 rather than as a silent behaviour change.
+syntax = "proto3";
+
+package telemed.doctor.v1;
+
+option go_package = "telemed/internal/pb/doctor/v1;doctorv1";
+
+import "google/protobuf/timestamp.proto";
+
+service DoctorService {
+  // GetDoctor returns one doctor by id. Callers must treat NOT_FOUND as a
+  // valid outcome (e.g. a stale foreign reference in another service's
+  // table) and must not treat it as a system error.
+  rpc GetDoctor(GetDoctorRequest) returns (GetDoctorResponse);
+
+  // GetDoctorsBatch resolves many ids in one round trip, e.g. rendering a
+  // patient's appointment list with doctor names attached. Unknown ids are
+  // silently omitted from the response rather than failing the whole call.
+  rpc GetDoctorsBatch(GetDoctorsBatchRequest) returns (GetDoctorsBatchResponse);
+}
+
+message Doctor {
+  string id                    = 1;
+  string user_id                = 2;
+  string slmc_number             = 3;
+  string specialty                = 4;
+  string display_name              = 5;
+  int64  fee_lkr                    = 6; // cents
+  repeated string languages          = 7;
+  string verification_status          = 8;
+  double rating                        = 9;
+  int32  review_count                  = 10;
+  bool   accepts_new_patients           = 11;
+
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message GetDoctorRequest {
+  string doctor_id = 1;
+}
+
+message GetDoctorResponse {
+  Doctor doctor = 1;
+}
+
+message GetDoctorsBatchRequest {
+  repeated string doctor_ids = 1;
+}
+
+message GetDoctorsBatchResponse {
+  repeated Doctor doctors = 1;
+}

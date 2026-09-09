@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS consultation_webhook_receipts;
+DROP INDEX IF EXISTS idx_waiting_room_doctor_queue;
+DROP TABLE IF EXISTS waiting_room_entries;
+DROP INDEX IF EXISTS idx_events_quality_lookup;
+DROP INDEX IF EXISTS idx_events_consultation;
+DROP TABLE IF EXISTS consultation_events;
+DROP INDEX IF EXISTS idx_consents_lookup;
+DROP TABLE IF EXISTS consultation_consents;
+DROP INDEX IF EXISTS idx_participants_consultation;
+DROP TABLE IF EXISTS consultation_participants;
+DROP INDEX IF EXISTS idx_consultations_egress;
+DROP INDEX IF EXISTS idx_consultations_status;
+DROP INDEX IF EXISTS idx_consultations_patient;
+DROP INDEX IF EXISTS idx_consultations_doctor;
+DROP TABLE IF EXISTS consultations;

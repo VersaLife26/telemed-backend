@@ -1,0 +1,552 @@
+openapi: 3.1.0
+info:
+  title: telemed-doctor-service
+  version: 0.1.0
+  description: >
+    Doctor profiles, SLMC credentialing state, working-hours declarations,
+    reviews, and doctor search for the Sri Lankan telemedicine platform.
+    See docs/API.md for curl examples and docs/DESIGN.md for the search
+    architecture.
+servers:
+  - url: https://api.example.lk/api/v1
+  - url: http://localhost:8082/api/v1
+tags:
+  - name: doctors
+  - name: reviews
+  - name: internal
+
+security:
+  - bearerAuth: []
+
+paths:
+  /doctors/register:
+    post:
+      tags: [doctors]
+      summary: Register a new doctor profile (starts in pending verification)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /doctors:
+    get:
+      tags: [doctors]
+      summary: Search doctors
+      security: []
+      parameters:
+        - { name: specialty, in: query, schema: { type: string } }
+        - { name: language, in: query, schema: { type: string, enum: [en, si, ta] } }
+        - { name: min_fee, in: query, schema: { type: integer } }
+        - { name: max_fee, in: query, schema: { type: integer } }
+        - { name: min_rating, in: query, schema: { type: number } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: available, in: query, schema: { type: string, enum: [now] } }
+        - { name: available_after, in: query, schema: { type: string, format: date-time } }
+        - { name: sort, in: query, schema: { type: string, enum: [rating, fee, experience, next_available] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SearchResult' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /doctors/{id}:
+    get:
+      tags: [doctors]
+      summary: Get a doctor's public profile
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /doctors/me:
+    get:
+      tags: [doctors]
+      summary: Get my own doctor profile
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+    put:
+      tags: [doctors]
+      summary: Update my own doctor profile (optimistic locking via version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /doctors/me/availability:
+    get:
+      tags: [doctors]
+      summary: Get my declared weekly working hours
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkingHour' }
+    put:
+      tags: [doctors]
+      summary: Replace my weekly working hours and slot-shape settings
+      description: >
+        Replaces the whole weekly schedule and the slot shape in one
+        transaction. Unknown fields are rejected with 400 (DisallowUnknownFields),
+        so a misspelled setting fails loudly instead of being ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                working_hours:
+                  type: array
+                  items: { $ref: '#/components/schemas/WorkingHour' }
+                slot_duration_minutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 240
+                  description: Omitted means the platform default (30).
+                buffer_minutes:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  maximum: 120
+                  description: >
+                    NULL or omitted means no preference expressed and the
+                    scheduler keeps its own default. 0 means back-to-back with
+                    no gap, which is a different and deliberate answer. Do not
+                    send 0 to mean "unset".
+                max_per_day:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  description: 0 means no cap.
+                holidays:
+                  type: array
+                  maxItems: 0
+                  description: >
+                    Accepted so the payload parses; a non-empty list is refused
+                    with 422. Holidays are owned by scheduling-service, which
+                    holds the holidays table and whose slot generator is the
+                    only thing a holiday affects.
+                  items:
+                    type: object
+                    properties:
+                      date: { type: string, format: date }
+                      reason: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkingHour' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /doctors/me/schedule-settings:
+    get:
+      tags: [doctors]
+      summary: Read back my slot-shape settings
+      description: >
+        Separate from GET /doctors/me/availability, which responds with a bare
+        working-hours array: widening that response to an object would break
+        existing clients, and without this the settings saved by the PUT would
+        be write-only.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      slot_duration_minutes: { type: integer }
+                      buffer_minutes: { type: integer, nullable: true }
+                      max_per_day: { type: integer }
+                      timezone: { type: string, example: Asia/Colombo }
+
+  /doctors/me/documents:
+    post:
+      tags: [doctors]
+      summary: Record a credential document (the server derives the storage key)
+      description: >-
+        The storage key is DERIVED from the authenticated caller's own doctor
+        id and returned in the response; a client cannot name it. Supplying
+        object_key used to let one doctor submit another doctor's SLMC
+        certificate as their own and be approved to practise medicine on it, so
+        a non-empty object_key is now a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_type]
+              properties:
+                document_type:
+                  type: string
+                  enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other]
+                filename:
+                  type: string
+                  maxLength: 255
+                  description: >-
+                    Advisory. Only an allowlisted extension
+                    (.pdf .jpg .jpeg .png .webp .heic .tif .tiff) is taken from
+                    it, never a path component.
+                object_key:
+                  type: string
+                  deprecated: true
+                  description: >-
+                    Rejected with 400 when non-empty. The server derives the
+                    key.
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Document' }
+
+  /doctors/{id}/reviews:
+    get:
+      tags: [reviews]
+      summary: List a doctor's published reviews
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PublicReview' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [reviews]
+      summary: Review a doctor for a completed appointment
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id, rating]
+              properties:
+                appointment_id: { type: string, format: uuid }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string, maxLength: 2000 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/OwnReview' }
+        '403':
+          description: Caller did not complete an appointment with this doctor
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /internal/doctors/pending:
+    get:
+      tags: [internal]
+      summary: List doctors awaiting a verification decision (admin-service only)
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PendingDoctor' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /internal/doctors/{id}/verify:
+    post:
+      tags: [internal]
+      summary: Apply one verification workflow transition (admin-service only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [start_review, approve, reject, reopen, suspend, reinstate]
+                reason: { type: string, maxLength: 1000 }
+                actor_id: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+        '409':
+          description: Transition not legal from the doctor's current state (e.g. approving a rejected doctor without reopen)
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationFailed:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        fields: { type: object, additionalProperties: { type: string } }
+        request_id: { type: string }
+
+    Meta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    Qualification:
+      type: object
+      required: [degree, institution, year]
+      properties:
+        degree: { type: string }
+        institution: { type: string }
+        year: { type: integer }
+
+    BankDetails:
+      type: object
+      required: [bank_name, branch_name, account_number, account_name]
+      properties:
+        bank_name: { type: string }
+        branch_name: { type: string }
+        account_number: { type: string }
+        account_name: { type: string }
+
+    RegisterRequest:
+      type: object
+      required: [slmc_number, display_name, specialty, experience_years, fee_lkr, languages]
+      properties:
+        slmc_number: { type: string, description: "Format ^[A-Z]{0,3}[0-9]{4,8}$, case-insensitive" }
+        display_name: { type: string }
+        specialty: { type: string }
+        sub_specialties: { type: array, items: { type: string } }
+        experience_years: { type: integer, minimum: 0, maximum: 70 }
+        fee_lkr: { type: integer, minimum: 0, description: "Consultation fee in CENTS despite the legacy name (LKR 5,000.00 = 500000). Stored as doctors.fee_cents and published as events.DoctorApproved.fee_cents." }
+        languages: { type: array, items: { type: string, enum: [en, si, ta] } }
+        bio: { type: string, maxLength: 2000 }
+        photo_url: { type: string }
+        qualifications: { type: array, items: { $ref: '#/components/schemas/Qualification' } }
+        bank: { $ref: '#/components/schemas/BankDetails' }
+
+    UpdateRequest:
+      allOf:
+        - type: object
+          required: [version]
+          properties:
+            version: { type: integer }
+        - $ref: '#/components/schemas/RegisterRequest'
+
+    Doctor:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        slmc_number: { type: string }
+        specialty: { type: string }
+        sub_specialties: { type: array, items: { type: string } }
+        experience_years: { type: integer }
+        fee_cents: { type: integer, description: "Consultation fee in cents. Canonical name." }
+        fee_lkr: { type: integer, deprecated: true, description: "Deprecated alias of fee_cents, identical value. Removed in v2." }
+        currency: { type: string, description: "ISO 4217, e.g. LKR" }
+        display_name: { type: string }
+        languages: { type: array, items: { type: string } }
+        bio: { type: string }
+        photo_url: { type: string }
+        qualifications: { type: array, items: { $ref: '#/components/schemas/Qualification' } }
+        verification_status:
+          type: string
+          enum: [pending, under_review, approved, rejected, suspended]
+        rejection_reason:
+          type: string
+          description: >-
+            Present only on GET /doctors/me, the internal /doctors/pending and
+            /verify responses, and GET /doctors/{id} when the caller is the
+            doctor themselves or an admin. It is an internal credentialing note
+            and is never on the public profile.
+        verified_at: { type: string, format: date-time }
+        rating: { type: number }
+        review_count: { type: integer }
+        consultation_count: { type: integer }
+        no_show_rate: { type: number }
+        accepts_new_patients: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    SearchResult:
+      allOf:
+        - $ref: '#/components/schemas/Doctor'
+        - type: object
+          properties:
+            next_available_at: { type: string, format: date-time }
+            available_slot_count: { type: integer }
+
+    WorkingHour:
+      type: object
+      properties:
+        day_of_week: { type: integer, minimum: 0, maximum: 6 }
+        start_time: { type: string, example: "09:00:00" }
+        end_time: { type: string, example: "17:00:00" }
+        is_available: { type: boolean }
+
+    Document:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        document_type: { type: string }
+        object_key: { type: string }
+        uploaded_at: { type: string, format: date-time }
+        reviewed_at: { type: string, format: date-time }
+
+    PublicReview:
+      type: object
+      description: >-
+        A review as an unauthenticated caller sees it. It carries NO
+        patient_id and NO appointment_id: this endpoint is public, so emitting
+        them let anyone walk the doctor search and build a map of which patient
+        consulted which doctor -- which, for a psychiatrist or an HIV clinician,
+        discloses a medical condition on its own.
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        rating: { type: integer }
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+
+    OwnReview:
+      description: >-
+        A review as returned to the patient who just wrote it. The identifiers
+        here are the caller's own and were supplied by them, so echoing them
+        back discloses nothing new and lets a client tell which consultation it
+        has now reviewed.
+      allOf:
+        - $ref: '#/components/schemas/PublicReview'
+        - type: object
+          properties:
+            patient_id: { type: string, format: uuid }
+            appointment_id: { type: string, format: uuid }
+
+    PendingDoctor:
+      allOf:
+        - $ref: '#/components/schemas/Doctor'
+        - type: object
+          properties:
+            documents:
+              type: array
+              items: { $ref: '#/components/schemas/Document' }

@@ -1,0 +1,349 @@
+openapi: 3.1.0
+info:
+  title: telemed-notification-service
+  description: >
+    Multi-channel, trilingual (en/si/ta), preference-aware notification
+    delivery for the telemedicine platform. See docs/API.md for the full
+    reference including event payload contracts.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8086
+    description: local development
+tags:
+  - name: notifications
+  - name: preferences
+  - name: devices
+  - name: webhooks
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/notifications/send:
+    post:
+      tags: [notifications]
+      summary: Send a notification (internal/service role only)
+      security:
+        - bearerAuth: [service]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendRequest'
+      responses:
+        '201':
+          description: Notification(s) enqueued (and, if immediate, dispatched)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SendOutcome'
+        '403':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+
+  /api/v1/notifications:
+    get:
+      tags: [notifications]
+      summary: List my notifications, paginated, newest first
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: per_page
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+      responses:
+        '200':
+          description: A page of notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /api/v1/notifications/read-all:
+    put:
+      tags: [notifications]
+      summary: Mark every one of my unread notifications read
+      description: >
+        Clears the whole unread badge in one call. PUT, not POST, because it is
+        idempotent: a second call reports updated=0 and does not rewrite the
+        read_at timestamps the first one wrote.
+      responses:
+        '200':
+          description: How many notifications the call changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      updated:
+                        type: integer
+                        format: int64
+                        description: Rows changed; 0 when nothing was unread.
+
+  /api/v1/notifications/{id}/read:
+    put:
+      tags: [notifications]
+      summary: Mark one of my notifications read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Marked read }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/notifications/preferences:
+    get:
+      tags: [preferences]
+      summary: Get my notification preferences (platform defaults if unset)
+      responses:
+        '200':
+          description: Preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Preferences' }
+    put:
+      tags: [preferences]
+      summary: Replace my notification preferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PreferencesUpdate' }
+      responses:
+        '200':
+          description: Updated preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Preferences' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /api/v1/notifications/devices:
+    post:
+      tags: [devices]
+      summary: Register (or refresh) a push device token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterDeviceRequest' }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Device' }
+
+  /api/v1/notifications/devices/{id}:
+    delete:
+      tags: [devices]
+      summary: Invalidate one of my device tokens
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Invalidated }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /webhooks/delivery/{provider}:
+    post:
+      tags: [webhooks]
+      summary: Delivery/bounce/failure callback from a provider
+      security: []
+      description: >
+        {provider} is one of twilio|dialog|smtp|ses|fcm. twilio uses the real
+        documented status-callback shape (form-encoded); the others use a
+        generic best-effort JSON contract -- see docs/API.md for the caveat.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [twilio, dialog, smtp, ses, fcm] }
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { type: object, description: 'Twilio status callback (MessageSid, MessageStatus)' }
+          application/json:
+            schema:
+              type: object
+              properties:
+                message_id: { type: string }
+                status: { type: string, enum: [delivered, success, failed, bounced, undelivered] }
+                reason: { type: string }
+      responses:
+        '200': { description: Applied or ignored (always 200 to stop provider retry storms) }
+        '400': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Error:
+      description: Standard platform error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+
+  schemas:
+    APIError:
+      type: object
+      properties:
+        code: { type: string, example: VALIDATION_FAILED }
+        message: { type: string }
+        fields: { type: object, additionalProperties: { type: string } }
+        request_id: { type: string }
+
+    Meta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    TemplateKey:
+      type: string
+      enum:
+        - booking_confirmed
+        - reminder_1h
+        - reminder_24h
+        - doctor_approved
+        - doctor_rejected
+        - prescription_ready
+        - payment_receipt
+        - payment_failed
+        - payout_sent
+        - waitlist_available
+        - consultation_starting
+        - appointment_cancelled
+        - otp_code
+
+    Channel:
+      type: string
+      enum: [sms, push, email, in_app]
+
+    Locale:
+      type: string
+      enum: [en, si, ta]
+
+    Status:
+      type: string
+      enum: [queued, sending, sent, delivered, failed, suppressed]
+
+    TemplateData:
+      type: object
+      description: All fields optional; a template that does not reference a field ignores it.
+      properties:
+        doctor_name: { type: string }
+        date_time: { type: string, description: 'Pre-formatted, e.g. "21 Aug 2026, 14:30"' }
+        fee_lkr: { type: string, description: 'Pre-formatted, e.g. "Rs. 2,500.00"' }
+        amount_lkr: { type: string }
+        reason: { type: string }
+        download_url: { type: string, format: uri }
+        receipt_url: { type: string, format: uri }
+        join_link: { type: string, format: uri }
+        code: { type: string }
+        expires_in_minutes: { type: integer }
+
+    SendRequest:
+      type: object
+      required: [user_id, template_key, dedupe_key]
+      properties:
+        user_id: { type: string, format: uuid }
+        template_key: { $ref: '#/components/schemas/TemplateKey' }
+        data: { $ref: '#/components/schemas/TemplateData' }
+        phone: { type: string, example: '+94771234567' }
+        email: { type: string, format: email }
+        locale: { $ref: '#/components/schemas/Locale' }
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+          description: Empty = every channel with an active template for this key
+        dedupe_key: { type: string, description: Caller-supplied idempotency key }
+        immediate: { type: boolean, default: false }
+
+    SendOutcome:
+      type: object
+      properties:
+        notification_id: { type: string, format: uuid }
+        channel: { $ref: '#/components/schemas/Channel' }
+        status: { $ref: '#/components/schemas/Status' }
+        created: { type: boolean, description: false means this was a duplicate of an existing dedupe_key }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        channel: { $ref: '#/components/schemas/Channel' }
+        template_key: { $ref: '#/components/schemas/TemplateKey' }
+        locale: { $ref: '#/components/schemas/Locale' }
+        subject: { type: string }
+        body: { type: string }
+        status: { $ref: '#/components/schemas/Status' }
+        sent_at: { type: string, format: date-time, nullable: true }
+        delivered_at: { type: string, format: date-time, nullable: true }
+        read_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Preferences:
+      type: object
+      properties:
+        sms_enabled: { type: boolean }
+        push_enabled: { type: boolean }
+        email_enabled: { type: boolean }
+        in_app_enabled: { type: boolean }
+        locale: { $ref: '#/components/schemas/Locale' }
+        quiet_hours_start: { type: string, example: '22:00', nullable: true }
+        quiet_hours_end: { type: string, example: '06:00', nullable: true }
+        timezone: { type: string, example: Asia/Colombo }
+
+    PreferencesUpdate:
+      allOf:
+        - $ref: '#/components/schemas/Preferences'
+      required: [locale, timezone]
+
+    RegisterDeviceRequest:
+      type: object
+      required: [token, platform]
+      properties:
+        token: { type: string }
+        platform: { type: string, enum: [ios, android, web] }
+
+    Device:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        platform: { type: string, enum: [ios, android, web] }
+        last_seen_at: { type: string, format: date-time }

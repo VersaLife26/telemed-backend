@@ -1,0 +1,55 @@
+// The internal gRPC surface user-service exposes to the rest of the platform.
+//
+// Other services never join across the database boundary to read a user's
+// name or phone (see DECISIONS.md ADR-004); they call GetUser/GetUsersBatch
+// instead. This file is the contract for that call, versioned so a breaking
+// change ships as user.v2 alongside v1 rather than as a silent behaviour
+// change.
+syntax = "proto3";
+
+package telemed.user.v1;
+
+option go_package = "telemed/internal/pb/user/v1;userv1";
+
+import "google/protobuf/timestamp.proto";
+
+service UserService {
+  // GetUser returns one user by id. Callers must treat NOT_FOUND as a valid
+  // outcome (e.g. a stale foreign reference in another service's table) and
+  // must not treat it as a system error.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+
+  // GetUsersBatch resolves many ids in one round trip, e.g. rendering a
+  // doctor's appointment list with patient names attached. Unknown ids are
+  // silently omitted from the response rather than failing the whole call.
+  rpc GetUsersBatch(GetUsersBatchRequest) returns (GetUsersBatchResponse);
+}
+
+message User {
+  string id            = 1;
+  string phone         = 2;
+  string email         = 3;
+  string name          = 4;
+  string language      = 5;
+  string role          = 6;
+  string status        = 7;
+  int32  no_show_count = 8;
+
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message GetUsersBatchRequest {
+  repeated string user_ids = 1;
+}
+
+message GetUsersBatchResponse {
+  repeated User users = 1;
+}

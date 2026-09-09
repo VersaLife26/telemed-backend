@@ -1,0 +1,632 @@
+openapi: 3.1.0
+info:
+  title: telemed-admin-service
+  version: 0.1.0
+  description: >
+    Admin console API: doctor credentialing, platform analytics, disputes,
+    configuration, user/appointment/finance administration, and the
+    append-only audit log. Consumed only by telemed-admin-web. See
+    docs/API.md for curl examples and docs/DESIGN.md for what an admin can
+    and cannot see.
+servers:
+  - url: https://admin-api.yourapp.lk/api/v1/admin
+  - url: http://localhost:8088/api/v1/admin
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak-issued realm token with an admin role.
+
+  parameters:
+    page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    perPage:
+      name: per_page
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    from:
+      name: from
+      in: query
+      schema: { type: string, format: date }
+    to:
+      name: to
+      in: query
+      schema: { type: string, format: date }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string, example: VALIDATION_FAILED }
+        message: { type: string }
+        fields: { type: object, additionalProperties: { type: string } }
+        request_id: { type: string }
+      required: [code, message]
+
+    Meta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        actor_id: { type: string, format: uuid }
+        actor_role: { type: string }
+        action: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        old_value: {}
+        new_value: {}
+        ip: { type: string }
+        user_agent: { type: string }
+        request_id: { type: string }
+        created_at: { type: string, format: date-time }
+        prev_hash: { type: string, description: "64-char hex SHA-256" }
+        row_hash: { type: string, description: "64-char hex SHA-256" }
+
+    AuditVerifyResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        checked: { type: integer, format: int64 }
+        from_id: { type: integer, format: int64 }
+        last_id: { type: integer, format: int64 }
+        next_from_id: { type: integer, format: int64, nullable: true }
+        broken:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer, format: int64 }
+            reason: { type: string }
+
+    Doctor:
+      type: object
+      properties:
+        doctor_id: { type: string, format: uuid }
+        full_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        slmc_number: { type: string }
+        years_experience: { type: integer }
+        specialty_code: { type: string }
+        verification_status: { type: string, enum: [pending, approved, rejected] }
+        registered_at: { type: string, format: date-time }
+        slmc_certificate_url: { type: string }
+        nic_document_url: { type: string }
+        degree_certificate_url: { type: string }
+        photo_url: { type: string }
+
+    Checklist:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        slmc_format_valid: { type: boolean, nullable: true }
+        slmc_registry_checked: { type: boolean, nullable: true }
+        experience_verified: { type: boolean, nullable: true }
+        nic_matches: { type: boolean, nullable: true }
+        photo_clear: { type: boolean, nullable: true }
+        overall_status: { type: string, enum: [not_started, pending, approved, rejected] }
+        decision_reason: { type: string }
+        version: { type: integer }
+
+    User:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        full_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        role: { type: string, enum: [patient, doctor] }
+        status: { type: string, enum: [active, suspended] }
+        registered_at: { type: string, format: date-time }
+
+    Appointment:
+      type: object
+      properties:
+        appointment_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        specialty_code: { type: string }
+        district: { type: string }
+        status: { type: string, enum: [created, confirmed, cancelled, completed, no_show] }
+        scheduled_at: { type: string, format: date-time }
+
+    LedgerEntry:
+      type: object
+      properties:
+        payment_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        amount_cents: { type: integer, format: int64 }
+        commission_cents: { type: integer, format: int64 }
+        currency: { type: string }
+        status: { type: string, enum: [succeeded, failed, refunded] }
+        provider: { type: string }
+        occurred_at: { type: string, format: date-time }
+
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        category: { type: string, enum: [billing, quality_of_care, no_show, technical, other] }
+        description: { type: string }
+        status: { type: string, enum: [open, investigating, resolved, closed] }
+        assigned_to: { type: string, format: uuid }
+        resolution: { type: string }
+        refund_requested: { type: boolean }
+        refund_amount_cents: { type: integer, format: int64, nullable: true }
+        currency: { type: string }
+        version: { type: integer }
+
+    Config:
+      type: object
+      properties:
+        key: { type: string }
+        value: {}
+        version: { type: integer }
+        updated_by: { type: string, format: uuid }
+        effective_from: { type: string, format: date-time }
+
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/Error' } }
+    Conflict:
+      description: Version conflict / already in a terminal state
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/Error' } }
+    Forbidden:
+      description: Role, IP allowlist, or per-admin scope rejected the request
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/Error' } }
+
+paths:
+  /audit:
+    get:
+      summary: List audit entries
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - { name: actor_id, in: query, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: resource_type, in: query, schema: { type: string } }
+        - { name: resource_id, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /audit/export:
+    get:
+      summary: Stream a CSV export of matching audit entries
+      parameters:
+        - { name: action, in: query, schema: { type: string } }
+        - { name: resource_type, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: CSV stream
+          content:
+            text/csv: { schema: { type: string } }
+
+  /audit/verify:
+    post:
+      summary: Walk the hash chain and report the first broken link, if any
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from_id: { type: integer, format: int64 }
+                limit: { type: integer, maximum: 5000 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/AuditVerifyResult' } }
+
+  /doctors/pending:
+    get:
+      summary: Verification queue
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Doctor' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /doctors/{id}:
+    get:
+      summary: Doctor detail with checklist
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      doctor: { $ref: '#/components/schemas/Doctor' }
+                      checklist: { $ref: '#/components/schemas/Checklist' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /doctors/{id}/checklist:
+    put:
+      summary: Update one or more checklist items
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                slmc_format_valid: { type: boolean }
+                slmc_registry_checked: { type: boolean }
+                experience_verified: { type: boolean }
+                nic_matches: { type: boolean }
+                photo_clear: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/Checklist' } } }
+
+  /doctors/{id}/verify:
+    post:
+      summary: Approve or reject; publishes doctor.approved/doctor.rejected via the outbox
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [approve, reject] }
+                reason: { type: string, description: "required when action=reject" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/Checklist' } } }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /users:
+    get:
+      summary: Search patients/doctors
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - { name: query, in: query, schema: { type: string } }
+        - { name: role, in: query, schema: { type: string, enum: [patient, doctor] } }
+        - { name: status, in: query, schema: { type: string, enum: [active, suspended] } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/User' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /users/{id}:
+    get:
+      summary: Get one user
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/User' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/suspend:
+    post:
+      summary: Publishes admin.user_suspend_requested (async; see docs/DESIGN.md)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [reason], properties: { reason: { type: string } } }
+      responses:
+        "202": { description: Accepted -- command recorded, not yet applied }
+
+  /users/{id}/reinstate:
+    post:
+      summary: Publishes admin.user_reinstate_requested (async)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [reason], properties: { reason: { type: string } } }
+      responses:
+        "202": { description: Accepted }
+
+  /appointments:
+    get:
+      summary: List/search appointments
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - { name: status, in: query, schema: { type: string } }
+        - { name: doctor_id, in: query, schema: { type: string, format: uuid } }
+        - { name: patient_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Appointment' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /appointments/{id}/force-cancel:
+    post:
+      summary: Publishes admin.appointment_force_cancel_requested (async)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [reason], properties: { reason: { type: string } } }
+      responses:
+        "202": { description: Accepted }
+
+  /appointments/resolve-double-booking:
+    post:
+      summary: Publishes admin.double_booking_resolve_requested (async)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keep_appointment_id, cancel_appointment_id, reason]
+              properties:
+                keep_appointment_id: { type: string, format: uuid }
+                cancel_appointment_id: { type: string, format: uuid }
+                reason: { type: string }
+      responses:
+        "202": { description: Accepted }
+
+  /finance/ledger:
+    get:
+      summary: Payments ledger (finance/super_admin only)
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - { name: status, in: query, schema: { type: string } }
+        - { name: doctor_id, in: query, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/from'
+        - $ref: '#/components/parameters/to'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /finance/ledger/export:
+    get:
+      summary: Streamed CSV financial report (finance/super_admin only)
+      parameters: [$ref: '#/components/parameters/from', $ref: '#/components/parameters/to']
+      responses:
+        "200": { description: CSV stream, content: { text/csv: { schema: { type: string } } } }
+
+  /finance/commission-rules:
+    get:
+      summary: Current commission rule
+      responses:
+        "200": { description: OK }
+    put:
+      summary: Create a new commission rule version (never mutates a previous one)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [default_percent]
+              properties:
+                default_percent: { type: integer, minimum: 0, maximum: 100 }
+                by_specialty: { type: object, additionalProperties: { type: integer } }
+                effective_from: { type: string, format: date-time }
+      responses:
+        "201": { description: Created }
+
+  /finance/payouts/run:
+    post:
+      summary: Publishes admin.payout_batch_requested (async)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties: { from: { type: string, format: date-time }, to: { type: string, format: date-time } }
+      responses:
+        "202": { description: Accepted }
+
+  /finance/refunds:
+    post:
+      summary: Publishes admin.refund_approved (async)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_id, amount_cents, reason]
+              properties:
+                payment_id: { type: string, format: uuid }
+                amount_cents: { type: integer, format: int64 }
+                reason: { type: string }
+      responses:
+        "202": { description: Accepted }
+
+  /content/specialties:
+    get: { summary: List specialties, responses: { "200": { description: OK } } }
+    post: { summary: Create a specialty; publishes content.specialty_updated, responses: { "201": { description: Created } } }
+  /content/symptoms:
+    get: { summary: List symptoms, responses: { "200": { description: OK } } }
+    post: { summary: Create a symptom; publishes content.symptom_updated, responses: { "201": { description: Created } } }
+  /content/drugs:
+    get: { summary: List/search the drug formulary, responses: { "200": { description: OK } } }
+    post: { summary: Create a drug; publishes content.drug_updated, responses: { "201": { description: Created } } }
+  /content/articles:
+    get: { summary: List waiting-room articles, responses: { "200": { description: OK } } }
+    post: { summary: Create an article, responses: { "201": { description: Created } } }
+
+  /disputes:
+    get:
+      summary: List disputes
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+        - { name: status, in: query, schema: { type: string } }
+        - { name: assigned_to, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Dispute' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      summary: Open a dispute
+      responses: { "201": { description: Created } }
+
+  /disputes/{id}/assign:
+    post:
+      summary: Assign to an admin (optimistic-locked via version)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { "200": { description: OK }, "409": { $ref: '#/components/responses/Conflict' } }
+
+  /disputes/{id}/comments:
+    post: { summary: Add a comment, responses: { "201": { description: Created } } }
+    get: { summary: List comments, responses: { "200": { description: OK } } }
+
+  /disputes/{id}/resolve:
+    post:
+      summary: Resolve, optionally with a refund amount (optimistic-locked via version)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { "200": { description: OK }, "409": { $ref: '#/components/responses/Conflict' } }
+
+  /configs:
+    get:
+      summary: Current value of every config key ever set (feature-flag dashboard)
+      responses: { "200": { description: OK } }
+
+  /configs/{key}:
+    get:
+      summary: Current value of one config key
+      parameters: [{ name: key, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/Config' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      summary: Create a new version (never mutates the previous one)
+      parameters: [{ name: key, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties: { value: {}, effective_from: { type: string, format: date-time } }
+      responses: { "201": { description: Created } }
+
+  /configs/{key}/history:
+    get:
+      summary: Every version of a key, newest first
+      parameters: [{ name: key, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: OK } }
+
+  /analytics/revenue:
+    get: { summary: Revenue by day (reads revenue_daily), parameters: [$ref: '#/components/parameters/from', $ref: '#/components/parameters/to'], responses: { "200": { description: OK } } }
+  /analytics/bookings:
+    get: { summary: Bookings by day/specialty/status (reads bookings_daily), responses: { "200": { description: OK } } }
+  /analytics/doctors:
+    get: { summary: Top doctors by booking volume, responses: { "200": { description: OK } } }
+  /analytics/utilization:
+    get: { summary: Daily utilization series, optionally scoped to one doctor, responses: { "200": { description: OK } } }
+  /analytics/districts:
+    get: { summary: Booking activity by district, responses: { "200": { description: OK } } }
+
+  /admin-users:
+    get: { summary: List admin accounts (super_admin only), responses: { "200": { description: OK } } }
+
+  /admin-users/{id}:
+    put:
+      summary: Activate/deactivate, change role, or set a per-admin IP scope (super_admin only)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                active: { type: boolean }
+                role: { type: string, enum: [admin, super_admin, ops, finance, support] }
+                ip_allowlist: { type: array, items: { type: string } }
+                version: { type: integer }
+      responses: { "200": { description: OK }, "409": { $ref: '#/components/responses/Conflict' } }

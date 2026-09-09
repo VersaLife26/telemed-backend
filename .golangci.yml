@@ -1,0 +1,76 @@
+# golangci-lint configuration shared by every telemed Go repo.
+# The rule set is deliberately strict about the failure modes that actually bite
+# a healthcare platform: ignored errors, unclosed rows, missing contexts, and
+# SQL built by concatenation.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # an unclosed response body leaks a connection per call
+    - contextcheck   # every downstream call must inherit the request context
+    - copyloopvar
+    - durationcheck
+    - errorlint      # errors.Is/As instead of == and type assertions
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx          # no HTTP call without a context
+    - prealloc
+    - revive
+    - rowserrcheck   # pgx rows.Err() must be checked or you silently truncate
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - (github.com/rs/zerolog.Logger).Msg
+    gosec:
+      excludes:
+        - G104  # duplicated by errcheck
+      config:
+        G306: "0640"
+    revive:
+      rules:
+        - name: exported
+          disabled: true   # doc comments are reviewed by humans, not counted
+        - name: context-as-argument
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: unreachable-code
+    gocritic:
+      enabled-tags: [diagnostic, performance, style]
+      disabled-checks:
+        - hugeParam       # value receivers on config structs are intentional
+        - whyNoLint
+
+  exclusions:
+    rules:
+      # Tests may ignore errors on cleanup and use weak randomness for fixtures.
+      - path: _test\.go
+        linters: [errcheck, gosec, prealloc, unparam]
+      # Migrations and generated protobuf are not hand-maintained.
+      - path: (internal/pb|\.pb\.go)
+        linters: [revive, gocritic, unparam, gosec]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [telemed]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

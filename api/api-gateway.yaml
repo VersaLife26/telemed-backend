@@ -1,0 +1,2839 @@
+openapi: 3.1.0
+info:
+  title: Telemed API Gateway
+  description: |
+    The single public edge for the Sri Lankan telemedicine platform. Every
+    frontend (patient Flutter app, doctor Flutter app, admin Next.js web)
+    talks only to this surface; it never calls a backend service directly.
+
+    Authentication is a Keycloak-issued JWT (RS256/RS512/ES256), sent as
+    `Authorization: Bearer <token>`. The gateway verifies the signature and
+    claims once at the edge and forwards the verified identity to backend
+    services as `X-Telemed-User-ID` / `X-Telemed-Roles`; those headers are
+    gateway-internal and are stripped from any inbound client request before
+    they can influence anything.
+
+    All monetary amounts are integer cents (LKR unless noted). All
+    timestamps are RFC 3339 UTC. Every response is wrapped in the platform
+    envelope: `{"data": ...}` on success, `{"code","message","fields",
+    "request_id"}` on error.
+  version: "0.1.0"
+  contact:
+    name: telemed platform team
+servers:
+  - url: https://api.yourapp.lk
+    description: production
+  - url: http://localhost:8080
+    description: local development
+tags:
+  - name: auth
+    description: Phone OTP authentication (user-service)
+  - name: users
+    description: Patient/doctor account profile (user-service)
+  - name: doctors
+    description: Doctor directory and onboarding (doctor-service)
+  - name: scheduling
+    description: Slots, appointments, waitlist (scheduling-service)
+  - name: consultations
+    description: LiveKit video session lifecycle (consultation-service)
+  - name: payments
+    description: Stripe/PayHere/Dialog payment intents and payouts (payment-service)
+  - name: webhooks
+    description: Provider callbacks (payment-service, consultation-service)
+  - name: notifications
+    description: Notification preferences and inbox (notification-service)
+  - name: records
+    description: Prescriptions and stored medical records (record-service)
+  - name: admin
+    description: >
+      Admin console surface, IP-allowlisted (admin-service). Beyond the three
+      routes documented below, the gateway also proxies every other path
+      under /api/v1/admin/* (users, appointments override, payments ledger,
+      content, disputes, settings, audit logs -- named in source section 8.8
+      without concrete routes) to admin-service under the same admin auth +
+      IP allowlist. See config/routes.json rule "admin-catchall"; not
+      individually enumerated as paths here because the source docs do not
+      name concrete paths for them.
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak-issued access token, 15 minute lifetime.
+
+  parameters:
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Client-supplied correlation id, echoed back and forwarded to every upstream.
+
+  schemas:
+    Envelope:
+      type: object
+      required: [data]
+      properties:
+        data: {}
+        meta:
+          $ref: '#/components/schemas/Meta'
+    Meta:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        per_page: { type: integer, example: 20 }
+        total: { type: integer, example: 134 }
+        total_pages: { type: integer, example: 7 }
+    APIError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code. See httpx.ErrorCode in the platform package.
+          example: SLOT_UNAVAILABLE
+        message:
+          type: string
+          example: this field is required
+        fields:
+          type: object
+          additionalProperties: { type: string }
+        request_id:
+          type: string
+          example: 3f9c2b7a-9b3e-4b8a-8f2a-9d6a1c7e4a10
+
+    OTPSendRequest:
+      type: object
+      required: [phone, purpose]
+      properties:
+        phone: { type: string, pattern: '^\+947[0-9]{8}$', example: "+94771234567" }
+        purpose: { type: string, enum: [register, login] }
+        language: { type: string, enum: [en, si, ta], default: en }
+    OTPSendResponse:
+      type: object
+      properties:
+        request_id: { type: string }
+        expires_in: { type: integer, example: 300 }
+        attempts_remaining: { type: integer, example: 3 }
+    OTPVerifyRequest:
+      type: object
+      required: [phone, otp, device_id]
+      properties:
+        phone: { type: string, example: "+94771234567" }
+        otp: { type: string, pattern: '^[0-9]{6}$' }
+        device_id: { type: string }
+    AuthTokens:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        user: { $ref: '#/components/schemas/User' }
+    EmailRegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, example: "patient@example.lk" }
+        password: { type: string, minLength: 8, maxLength: 72 }
+        name: { type: string }
+        device_id: { type: string }
+    EmailLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+        device_id: { type: string }
+    GoogleLoginRequest:
+      type: object
+      required: [id_token]
+      properties:
+        id_token: { type: string }
+        device_id: { type: string }
+        create_account: { type: boolean, default: true }
+    SetPasswordRequest:
+      type: object
+      required: [new_password]
+      properties:
+        current_password: { type: string }
+        new_password: { type: string, minLength: 8, maxLength: 72 }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        phone: { type: string }
+        name: { type: string }
+        language: { type: string, enum: [en, si, ta] }
+        role: { type: string, enum: [patient, doctor, admin] }
+        created_at: { type: string, format: date-time }
+    FamilyMember:
+      type: object
+      required: [member_name, dob, relation]
+      properties:
+        member_name: { type: string }
+        dob: { type: string, format: date }
+        relation: { type: string, example: child }
+        nic: { type: string }
+
+    DoctorApplyRequest:
+      type: object
+      required: [phone, email, display_name, slmc_number, specialty, fee_lkr, languages]
+      properties:
+        phone: { type: string, example: "+94771234567" }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        slmc_number: { type: string, example: "SLMC12345" }
+        specialty: { type: string, example: general_practice }
+        experience_years: { type: integer, example: 8 }
+        fee_lkr: { type: integer, example: 200000, description: fee in cents }
+        languages: { type: array, items: { type: string, enum: [en, si, ta] } }
+        bio: { type: string }
+    DoctorRegisterRequest:
+      type: object
+      required: [slmc_number, specialty, experience_years, fee_lkr, languages]
+      properties:
+        slmc_number: { type: string, example: "SLMC12345" }
+        specialty: { type: string, example: Cardiology }
+        experience_years: { type: integer, example: 8 }
+        fee_lkr: { type: integer, example: 200000, description: fee in cents }
+        languages: { type: array, items: { type: string } }
+        bank_account: { type: string, description: encrypted at rest via age sealed box }
+        docs: { type: array, items: { type: string, format: uri }, description: MinIO object URLs }
+    Doctor:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        specialty: { type: string }
+        experience_years: { type: integer }
+        fee_lkr: { type: integer }
+        languages: { type: array, items: { type: string } }
+        verification_status: { type: string, enum: [pending, approved, rejected] }
+        rating: { type: number, format: double }
+    ScheduleSettings:
+      type: object
+      description: >
+        How a doctor's working hours are sliced into bookable slots.
+      properties:
+        slot_duration_minutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+          default: 30
+        buffer_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 120
+          description: >
+            Gap between consultations. NULL means the doctor has expressed no
+            preference and the scheduler keeps its own default; 0 means
+            back-to-back with no gap, which is a different and deliberate
+            answer. Do not send 0 to mean "unset".
+        max_per_day:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 0 means no cap.
+        timezone:
+          type: string
+          example: Asia/Colombo
+          description: IANA name, never a fixed offset.
+
+    WorkingHours:
+      type: object
+      description: >
+        The availability editor's save payload. `holidays` is accepted so the
+        request parses but must be empty: holidays are owned by
+        scheduling-service, which holds the holidays table and is the only thing
+        a holiday affects. A non-empty list is refused with 422 rather than
+        silently dropped.
+      properties:
+        working_hours:
+          type: array
+          items:
+            type: object
+            properties:
+              day_of_week: { type: integer, minimum: 0, maximum: 6 }
+              start_time: { type: string, example: "09:00" }
+              end_time: { type: string, example: "17:00" }
+              is_available: { type: boolean }
+        slot_duration_minutes: { type: integer, minimum: 5, maximum: 240 }
+        buffer_minutes: { type: integer, nullable: true, minimum: 0, maximum: 120 }
+        max_per_day: { type: integer, minimum: 0, maximum: 100 }
+        holidays:
+          type: array
+          maxItems: 0
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              reason: { type: string }
+
+    Slot:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        status: { type: string, enum: [AVAILABLE, BOOKED, BLOCKED, CANCELLED] }
+    AppointmentCreateRequest:
+      type: object
+      required: [doctor_id, slot_id]
+      properties:
+        doctor_id: { type: string, format: uuid }
+        slot_id: { type: string, format: uuid }
+        family_member_id: { type: string, format: uuid, nullable: true }
+        intake:
+          type: object
+          properties:
+            symptoms: { type: string }
+            allergies: { type: string }
+            images: { type: array, items: { type: string, format: uri } }
+    Appointment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        slot_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending_payment, confirmed, cancelled, completed, no_show] }
+        created_at: { type: string, format: date-time }
+    WaitlistJoinRequest:
+      type: object
+      required: [doctor_id, preferred_date]
+      properties:
+        doctor_id: { type: string, format: uuid }
+        preferred_date: { type: string, format: date }
+
+    ConsultationJoinResponse:
+      type: object
+      description: >
+        consultation_id is the id every other consultation endpoint is keyed
+        by. Join is the only one keyed by appointment id, so a client that
+        started from an appointment cannot reach /admit, /end, /consent,
+        /waiting-room or /quality without it -- including the consent endpoint
+        that gates recording. Store it from this response.
+      properties:
+        consultation_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [scheduled, waiting, active, ended, abandoned, failed]
+        role: { type: string, enum: [patient, doctor] }
+        token: { type: string }
+        token_expires_at:
+          type: string
+          format: date-time
+          description: when the LiveKit token stops working; re-join before it.
+        room_name: { type: string }
+        livekit_url: { type: string, format: uri, example: "wss://livekit.yourapp.lk" }
+        ice_servers:
+          type: array
+          items: { $ref: '#/components/schemas/ICEServer' }
+
+    ICEServer:
+      type: object
+      properties:
+        urls: { type: array, items: { type: string } }
+        username: { type: string }
+        credential: { type: string }
+
+    Consultation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [scheduled, waiting, active, ended, abandoned, failed]
+        room_name: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        duration_seconds: { type: integer }
+        recording_status:
+          type: string
+          enum: [none, pending, recording, processing, completed, failed]
+
+    ConsentRequest:
+      type: object
+      required: [type, granted]
+      properties:
+        type: { type: string, enum: [recording, telemedicine] }
+        granted: { type: boolean }
+
+    WaitingRoomStatus:
+      type: object
+      properties:
+        waiting: { type: boolean }
+        position: { type: integer }
+        patients_ahead: { type: integer }
+        estimated_wait_seconds: { type: integer }
+
+    QualityReportRequest:
+      type: object
+      required: [quality]
+      properties:
+        quality: { type: string, enum: [excellent, good, poor, lost] }
+
+    QualityReportResponse:
+      type: object
+      properties:
+        should_downgrade_video: { type: boolean }
+
+    AuthRefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+        device_id: { type: string }
+
+    Payout:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        amount_cents: { type: integer, format: int64 }
+        currency: { type: string, example: LKR }
+        period_start: { type: string, format: date }
+        period_end: { type: string, format: date }
+        status: { type: string }
+
+    Drug:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        generic_name: { type: string }
+        brand_names: { type: array, items: { type: string } }
+        strength: { type: string }
+        form: { type: string }
+
+    DoctorDocument:
+      type: object
+      required: [document_type, object_key]
+      properties:
+        id: { type: string, format: uuid }
+        document_type:
+          type: string
+          enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other]
+        object_key: { type: string, maxLength: 1024 }
+        uploaded_at: { type: string, format: date-time }
+
+    DoctorReview:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+
+    PaymentIntentRequest:
+      type: object
+      required: [appointment_id]
+      properties:
+        appointment_id: { type: string, format: uuid }
+    PaymentIntentResponse:
+      type: object
+      properties:
+        client_secret: { type: string }
+        payment_id: { type: string, format: uuid }
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        amount: { type: integer, description: cents }
+        currency: { type: string, example: LKR }
+        provider: { type: string, enum: [stripe, payhere, dialog] }
+        status: { type: string, enum: [pending, succeeded, failed, refunded] }
+
+    OrderSummary:
+      type: object
+      description: >
+        The server's arithmetic for the payment screen. The client renders
+        these figures; it never subtracts a discount itself.
+      properties:
+        payment_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        consultation_fee_cents: { type: integer, description: The doctor's list price, in integer cents. }
+        discount_cents: { type: integer }
+        total_cents: { type: integer, description: What the rail will be asked to charge. }
+        currency: { type: string, example: LKR }
+        applied_promo_code: { type: string, example: WELCOME20 }
+        promo_expires_at:
+          type: string
+          format: date-time
+          description: When the reservation lapses and the booking returns to its list price.
+
+    PromoApplyRequest:
+      type: object
+      required: [appointment_id, code]
+      properties:
+        appointment_id: { type: string, format: uuid }
+        code: { type: string, minLength: 3, maxLength: 32, example: WELCOME20 }
+
+    PromoRemoveRequest:
+      type: object
+      required: [appointment_id]
+      properties:
+        appointment_id: { type: string, format: uuid }
+
+    PromoCodeCreateRequest:
+      type: object
+      required: [code, discount_type]
+      description: >
+        Exactly one of percent_bps and amount_off_cents may be set.
+        max_discount_cents caps a percentage and is meaningless on a fixed
+        amount. max_redemptions absent means unlimited.
+      properties:
+        code: { type: string, minLength: 3, maxLength: 32 }
+        description: { type: string }
+        discount_type: { type: string, enum: [percent, fixed] }
+        percent_bps: { type: integer, description: 'Integer basis points: 2000 = 20.00%.' }
+        amount_off_cents: { type: integer }
+        max_discount_cents: { type: integer }
+        min_amount_cents: { type: integer }
+        currency: { type: string, example: LKR }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer }
+        max_per_user: { type: integer, default: 1 }
+
+    PINChallenge:
+      type: object
+      description: >
+        An outstanding carrier-billing authorisation. It carries no carrier
+        reference and no PIN: all the app needs is the deadline and how many
+        tries are left.
+      properties:
+        payment_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        masked_msisdn: { type: string, example: "+9477***4567" }
+        expires_at: { type: string, format: date-time }
+        attempts_remaining: { type: integer }
+        amount_cents: { type: integer }
+        currency: { type: string, example: LKR }
+
+    DialogPINRequest:
+      type: object
+      required: [appointment_id, phone]
+      properties:
+        appointment_id: { type: string, format: uuid }
+        phone: { type: string, example: "+94771234567" }
+
+    DialogPINConfirmRequest:
+      type: object
+      required: [appointment_id, pin]
+      properties:
+        appointment_id: { type: string, format: uuid }
+        pin: { type: string, minLength: 4, maxLength: 8 }
+
+    PINConfirmRequest:
+      type: object
+      required: [pin]
+      properties:
+        pin: { type: string, minLength: 4, maxLength: 8 }
+
+    RefundRequest:
+      type: object
+      description: >
+        cancelled_by, no_show, cancelled_at and amount_cents are ops-only and
+        ignored for a patient caller.
+      properties:
+        cancelled_by: { type: string, enum: [doctor, patient, system] }
+        no_show: { type: boolean }
+        start_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        amount_cents: { type: integer }
+        reason:
+          type: string
+          enum: [doctor_cancelled, patient_cancelled_early, patient_cancelled_late, no_show, admin_override, duplicate]
+
+    SetupIntent:
+      type: object
+      description: >
+        What the provider's SDK sheet needs to collect a card. The card number
+        goes handset-to-provider and never reaches this platform.
+      properties:
+        setup_intent_id: { type: string }
+        client_secret: { type: string, description: Short-lived, scoped to this one setup. Never logged. }
+        customer_id: { type: string }
+        ephemeral_key: { type: string, description: Lets the sheet list cards the patient already saved. }
+        provider: { type: string, enum: [stripe, payhere, dialog, mock] }
+
+    ConfirmCardSetupRequest:
+      type: object
+      required: [setup_intent_id]
+      properties:
+        setup_intent_id: { type: string, maxLength: 255 }
+
+    SavedPaymentMethod:
+      type: object
+      description: >
+        Display metadata for one tokenised instrument. No card number and no
+        CVV, here or in the database: last4 is the last four digits the
+        provider reports about a card the platform has never seen.
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [card, wallet, bank] }
+        brand: { type: string, example: visa }
+        last4: { type: string, pattern: '^[0-9]{4}$', example: "4242" }
+        exp_month: { type: integer }
+        exp_year: { type: integer }
+        is_default: { type: boolean }
+        expired: { type: boolean, description: True once the expiry month has passed. Still listed, so the patient can see why it stopped working. }
+        created_at: { type: string, format: date-time }
+
+    RegisterDeviceRequest:
+      type: object
+      required: [token, platform]
+      properties:
+        token: { type: string, description: The FCM registration token. }
+        platform: { type: string, enum: [ios, android, web], description: Lower case. }
+
+    NotificationPreferences:
+      type: object
+      properties:
+        sms_enabled: { type: boolean }
+        email_enabled: { type: boolean }
+        push_enabled: { type: boolean }
+        language: { type: string, enum: [en, si, ta] }
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        channel: { type: string, enum: [sms, email, push] }
+        template: { type: string }
+        status: { type: string, enum: [sent, failed] }
+        created_at: { type: string, format: date-time }
+
+    PrescriptionCreateRequest:
+      type: object
+      required: [appointment_id, drugs]
+      properties:
+        appointment_id: { type: string, format: uuid }
+        drugs:
+          type: array
+          items:
+            type: object
+            required: [name, dosage, frequency, duration]
+            properties:
+              name: { type: string }
+              dosage: { type: string }
+              frequency: { type: string }
+              duration: { type: string }
+              notes: { type: string }
+    Prescription:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        pdf_url: { type: string, format: uri }
+        qr_verification_url: { type: string, format: uri }
+    PrescriptionVerification:
+      type: object
+      properties:
+        valid: { type: boolean }
+        doctor_slmc: { type: string }
+        issued_at: { type: string, format: date-time }
+
+    RecordUpload:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        content_type: { type: string }
+        size_bytes: { type: integer }
+
+    AdminUserCreateRequest:
+      type: object
+      required: [email, display_name, role]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: The address they sign in with, and how the account is recovered.
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        role:
+          type: string
+          enum: [admin, super_admin, ops, finance, support]
+        ip_allowlist:
+          type: array
+          description: >-
+            CIDRs narrowing this one admin beyond the service-wide allowlist.
+            Validated here because a malformed entry is skipped at check time
+            rather than treated as a wildcard, so a typo would silently
+            restrict nothing.
+          items: { type: string }
+    AdminAccount:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role:
+          type: string
+          enum: [admin, super_admin, ops, finance, support]
+        ip_allowlist: { type: array, items: { type: string } }
+        active: { type: boolean }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        version: { type: integer }
+    WorkingHour:
+      type: object
+      properties:
+        day_of_week: { type: integer, minimum: 0, maximum: 6, description: '0 = Sunday.' }
+        start_time: { type: string, example: '09:00' }
+        end_time: { type: string, example: '13:00' }
+        is_available: { type: boolean }
+    ScheduleSettings:
+      type: object
+      properties:
+        slot_duration_minutes: { type: integer }
+        buffer_minutes:
+          type: integer
+          nullable: true
+          description: >-
+            Nullable on purpose. 0 means back-to-back consultations, which is a
+            real preference; null means never set. Collapsing the two would
+            hand the doctor the default gap forever.
+        max_per_day: { type: integer, description: '0 means no cap.' }
+        timezone: { type: string }
+    AdminSetAvailabilityRequest:
+      type: object
+      properties:
+        working_hours:
+          type: array
+          items: { $ref: '#/components/schemas/WorkingHour' }
+        slot_duration_minutes: { type: integer, minimum: 5, maximum: 240 }
+        buffer_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 120
+        max_per_day: { type: integer, minimum: 0, maximum: 100 }
+    AdminDoctorVerifyRequest:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [approve, reject] }
+        reason: { type: string }
+    RevenueDaily:
+      type: object
+      properties:
+        day: { type: string, format: date }
+        total: { type: integer, description: cents }
+        commission: { type: integer, description: cents }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+    Forbidden:
+      description: Authenticated but not permitted (wrong role, wrong IP, wrong origin).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+    NotFound:
+      description: No route or resource matched.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+    RateLimited:
+      description: Rate limit exceeded. See X-RateLimit-* response headers.
+      headers:
+        X-RateLimit-Limit: { schema: { type: integer } }
+        X-RateLimit-Remaining: { schema: { type: integer } }
+        X-RateLimit-Reset: { schema: { type: integer } }
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+    OK:
+      description: OK
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Envelope' }
+    Conflict:
+      description: >-
+        The resource changed since it was read. Re-fetch and retry; the
+        envelope's error.code names the specific conflict.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+    ServiceUnavailable:
+      description: Upstream circuit breaker open, or the gateway is shedding load.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
+
+paths:
+  /api/v1/auth/otp/send:
+    post:
+      tags: [auth]
+      summary: Request a phone OTP
+      security: []
+      description: Public. Rate limited per phone (3/hour) and per IP (20/hour).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OTPSendRequest' }
+      responses:
+        '200':
+          description: OTP dispatched
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/OTPSendResponse' } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/otp/verify:
+    post:
+      tags: [auth]
+      summary: Verify a phone OTP and mint tokens
+      security: []
+      description: Public. Rate limited per phone and per IP (brute-force protection on the OTP code itself).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OTPVerifyRequest' }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/AuthTokens' } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/register/email:
+    post:
+      tags: [auth]
+      summary: Register with email and password
+      security: []
+      description: Public. Creates a patient account and mints tokens. Rate limited per IP; user-service also limits per email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailRegisterRequest' }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/AuthTokens' } }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/login/email:
+    post:
+      tags: [auth]
+      summary: Sign in with email and password
+      security: []
+      description: Public. Rate limited per IP; user-service also limits per email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailLoginRequest' }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/AuthTokens' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/auth/oauth/google:
+    post:
+      tags: [auth]
+      summary: Sign in with a Google ID token
+      security: []
+      description: Public. user-service verifies the ID token with Google and mints platform tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogleLoginRequest' }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/AuthTokens' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/users/me:
+    get:
+      tags: [users]
+      summary: Current user profile
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [users]
+      summary: Update current user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [users]
+      summary: Request PDPA account deletion
+      description: >
+        Soft-deletes immediately and schedules erasure after a support grace
+        window, so an accidental or coerced deletion can still be reversed.
+      responses:
+        '204': { description: Deletion scheduled }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/users/me/password:
+    put:
+      tags: [users]
+      summary: Set or change the current user's password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetPasswordRequest' }
+      responses:
+        '204': { description: Password updated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/users/me/family:
+    get:
+      tags: [users]
+      summary: List the caller's family member profiles
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/FamilyMember' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [users]
+      summary: Add a family member profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FamilyMember' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/FamilyMember' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/doctors/apply:
+    post:
+      tags: [doctors]
+      summary: Public doctor application (before OTP)
+      security: []
+      description: Collects profile details for admin review. No user account is created until approval and OTP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DoctorApplyRequest' }
+      responses:
+        '201':
+          description: Application received
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/doctors/applications/eligibility:
+    get:
+      tags: [doctors]
+      summary: Doctor-portal OTP eligibility for a phone
+      security: []
+      parameters:
+        - name: phone
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Eligibility status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+
+  /api/v1/doctors/register:
+    post:
+      tags: [doctors]
+      summary: Begin doctor onboarding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DoctorRegisterRequest' }
+      responses:
+        '201':
+          description: Application submitted, pending admin verification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/doctors:
+    get:
+      tags: [doctors]
+      summary: Search doctors
+      security: []
+      description: Public. Doctor search/listing.
+      parameters:
+        - name: specialty
+          in: query
+          schema: { type: string }
+        - name: language
+          in: query
+          schema: { type: string, enum: [en, si, ta] }
+        - name: min_fee
+          in: query
+          schema: { type: integer }
+        - name: max_fee
+          in: query
+          schema: { type: integer }
+        - name: available_after
+          in: query
+          schema: { type: string, format: date-time }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [rating, fee, experience] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Doctor' } } }
+
+  /api/v1/doctors/{doctorID}:
+    get:
+      tags: [doctors]
+      summary: Doctor profile detail
+      security: []
+      description: Public. Part of doctor search.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/doctors/me/availability:
+    get:
+      tags: [doctors]
+      summary: Read own working hours and schedule settings
+      description: Requires role `doctor`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/WorkingHours' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [doctors]
+      summary: Edit own working hours
+      description: Requires role `doctor`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkingHours' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/{doctorID}/slots:
+    get:
+      tags: [scheduling]
+      summary: Available slots for a doctor
+      description: >
+        Requires authentication. Not on the public allowlist even though it
+        sits next to doctor search -- see the gateway's report for that
+        judgement call.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Slot' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/appointments:
+    get:
+      tags: [scheduling]
+      summary: The caller's appointments
+      description: >
+        One endpoint serves both sides: scheduling-service scopes the query by
+        the principal's role, so a doctor gets their schedule and a patient
+        gets their bookings. There is no /doctors/me/appointments.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Appointment' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [scheduling]
+      summary: Book an appointment
+      description: Requires role `patient`. Never retried by the gateway (POST).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppointmentCreateRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Appointment' } }
+        '409':
+          description: Slot no longer available
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/appointments/{appointmentID}/cancel:
+    put:
+      tags: [scheduling]
+      summary: Cancel an appointment
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Appointment' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/waitlist:
+    post:
+      tags: [scheduling]
+      summary: Join a doctor's waitlist
+      description: Requires role `patient`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WaitlistJoinRequest' }
+      responses:
+        '201':
+          description: Joined
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}/join:
+    post:
+      tags: [consultations]
+      summary: Issue a LiveKit room token
+      description: >
+        Patient or doctor. The returned `livekit_url` is a direct WebSocket
+        connection to the LiveKit SFU; media never flows through this
+        gateway. No WebSocket/SSE pass-through is implemented here because
+        none is needed for any documented route.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/ConsultationJoinResponse' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/consultations/{consultationID}/admit:
+    post:
+      tags: [consultations]
+      summary: Admit a patient from the waiting room
+      description: Requires role `doctor`.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/intent:
+    post:
+      tags: [payments]
+      summary: Create a payment intent
+      description: Requires role `patient`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentIntentRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/PaymentIntentResponse' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/{paymentID}:
+    get:
+      tags: [payments]
+      summary: Payment status/receipt
+      description: Ownership is enforced downstream by payment-service.
+      parameters:
+        - name: paymentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Payment' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/order/{appointmentID}:
+    get:
+      tags: [payments]
+      summary: Server-computed price breakdown for a booking
+      description: >
+        The payment screen renders this rather than subtracting a discount
+        itself. A total computed on the handset is a total an attacker
+        controls, and it disagrees with the charge the moment a promo
+        reservation lapses.
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/promo/apply:
+    post:
+      tags: [payments]
+      summary: Apply a promo code to a booking
+      description: >
+        Reserves the code and returns the recomputed order summary. The
+        reservation is held for a configured TTL and consumed only when the
+        payment captures, so a patient who applies a code and abandons the
+        checkout does not burn it. Applying a second code replaces the first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromoApplyRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/OrderSummary' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: PROMO_INVALID, PROMO_EXPIRED or PROMO_NOT_APPLICABLE
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/payments/promo/remove:
+    post:
+      tags: [payments]
+      summary: Remove the promo code from a booking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromoRemoveRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/OrderSummary' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/promo/codes:
+    get:
+      tags: [payments]
+      summary: List promotions
+      description: Requires role `super_admin` or `finance`, gated at the edge as well as downstream.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [payments]
+      summary: Issue a promotion
+      description: >
+        Requires role `super_admin` or `finance`. A promo code is a standing
+        instruction to give money away, so it is finance's decision and not a
+        doctor's or a patient's.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromoCodeCreateRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/promo/codes/{code}:
+    delete:
+      tags: [payments]
+      summary: Withdraw a promotion
+      description: >
+        Requires role `super_admin` or `finance`. Reservations already held are
+        left alone: a patient mid-checkout keeps the price they were quoted.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Withdrawn }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/dialog/request-pin:
+    post:
+      tags: [payments]
+      summary: Send a carrier-billing PIN by SMS
+      description: >
+        Opens (or re-opens) a Dialog carrier-billing challenge and returns its
+        deadline and remaining attempts. Carries no carrier reference and no
+        PIN. `phone` is required because payment-service does not hold the
+        patient's number and must not depend on user-service on the money path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DialogPINRequest' }
+      responses:
+        '201':
+          description: Challenge issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/PINChallenge' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/dialog/confirm:
+    post:
+      tags: [payments]
+      summary: Enter the carrier-billing PIN
+      description: >
+        A wrong PIN is 422 PIN_INVALID and leaves the patient on the same
+        screen with one fewer attempt; running out is 409
+        PIN_ATTEMPTS_EXCEEDED and the payment fails; an expired challenge is
+        409 PIN_EXPIRED and the payment returns to pending so a new PIN can be
+        requested.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DialogPINConfirmRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Payment' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/{paymentID}/confirm-pin:
+    post:
+      tags: [payments]
+      summary: Enter the carrier-billing PIN (payment-keyed)
+      description: >
+        The payment-keyed twin of /payments/dialog/confirm, for support tooling
+        and for a client that already holds the payment id. Both reach the same
+        service method.
+      parameters:
+        - name: paymentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PINConfirmRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Payment' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/{paymentID}/refund:
+    post:
+      tags: [payments]
+      summary: Refund a payment
+      description: >
+        payment-service applies the cancellation policy. A patient always gets
+        the patient branch whatever they send: asserting "the doctor cancelled"
+        would otherwise upgrade their own refund to 100%.
+      parameters:
+        - name: paymentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundRequest' }
+      responses:
+        '201':
+          description: Refund issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/{paymentID}/invoice:
+    get:
+      tags: [payments]
+      summary: Invoice PDF
+      description: >
+        The doctor's share is shown only to the doctor and to finance; a
+        patient's receipt shows what they paid, not what the platform kept.
+      parameters:
+        - name: paymentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/{paymentID}/ledger:
+    get:
+      tags: [payments]
+      summary: Double-entry legs behind one payment
+      description: Requires role `super_admin` or `finance`. Finance's view of the money, not the patient's receipt.
+      parameters:
+        - name: paymentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/methods:
+    get:
+      tags: [payments]
+      summary: The caller's saved cards
+      description: >
+        Display metadata only. The provider token and the provider customer
+        handle are credentials against the rail and never leave
+        payment-service. There is no card number in this response, in the
+        database, or anywhere in between.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/SavedPaymentMethod' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501':
+          description: Saved payment methods are not enabled on this deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+    post:
+      tags: [payments]
+      summary: Record the card a completed provider setup produced
+      description: >
+        Called once the provider's SDK sheet reports success. The provider's
+        setup_intent.succeeded webhook records the same card independently; the
+        two race constantly and the loser is a no-op.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmCardSetupRequest' }
+      responses:
+        '201':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/SavedPaymentMethod' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/methods/setup-intent:
+    post:
+      tags: [payments]
+      summary: Begin saving a card
+      description: >
+        Returns the provider client secret the SDK sheet confirms against, plus
+        a customer handle and ephemeral key so the sheet can list cards the
+        patient already saved. The card number goes handset-to-provider and
+        never transits this gateway.
+      responses:
+        '201':
+          description: Setup started
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/SetupIntent' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/methods/{methodID}:
+    delete:
+      tags: [payments]
+      summary: Delete a saved card
+      description: >
+        Detaches the token at the rail first, then soft-deletes the row.
+        Deleting the default promotes the next-oldest card.
+      parameters:
+        - name: methodID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/methods/{methodID}/default:
+    put:
+      tags: [payments]
+      summary: Make a saved card the default
+      description: >
+        One transaction under a partial unique index, so a patient can never
+        end up with two defaults -- which would let checkout charge a card they
+        did not choose.
+      parameters:
+        - name: methodID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/SavedPaymentMethod' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payouts/run:
+    post:
+      tags: [payments]
+      summary: Trigger the batch doctor payout run
+      description: >
+        Requires role `super_admin` or `finance`. Privileged, but the source
+        docs place it outside `/api/v1/admin/*`, so it is role-gated at the
+        gateway rather than IP-allowlisted like the rest of the admin
+        surface. See the gateway's report for this scoping gap.
+      responses:
+        '202':
+          description: Payout batch started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/webhooks/stripe:
+    post:
+      tags: [webhooks]
+      summary: Stripe webhook
+      security: []
+      description: Public at the gateway; signature verified downstream via the Stripe webhook secret.
+      responses:
+        '200': { description: Acknowledged }
+
+  /api/v1/webhooks/payhere:
+    post:
+      tags: [webhooks]
+      summary: PayHere webhook
+      security: []
+      description: Public at the gateway; MD5 hash verified downstream.
+      responses:
+        '200': { description: Acknowledged }
+
+  /api/v1/webhooks/dialog:
+    post:
+      tags: [webhooks]
+      summary: Dialog carrier billing webhook
+      security: []
+      description: Public at the gateway; sender IP checked downstream.
+      responses:
+        '200': { description: Acknowledged }
+
+  /api/v1/webhooks/livekit:
+    post:
+      tags: [webhooks]
+      summary: LiveKit egress/room webhook
+      security: []
+      description: Public at the gateway; LiveKit webhook signature verified downstream.
+      responses:
+        '200': { description: Acknowledged }
+
+  /api/v1/notifications/preferences:
+    get:
+      tags: [notifications]
+      summary: Read notification preferences
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/NotificationPreferences' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [notifications]
+      summary: Set notification preferences
+      description: >
+        PUT, not POST. notification-service registers GET and PUT on this path
+        and has no POST handler; the gateway route table declared POST until
+        this was corrected, so every preference save was rejected upstream.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPreferences' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/notifications:
+    get:
+      tags: [notifications]
+      summary: List notifications for the current user
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Notification' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/notifications/read-all:
+    put:
+      tags: [notifications]
+      summary: Mark every unread notification read
+      description: >
+        Clears the whole unread badge in one call. PUT, not POST, because it is
+        idempotent: a second call reports updated=0 and does not rewrite the
+        read timestamps the first one wrote.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/notifications/devices:
+    post:
+      tags: [notifications]
+      summary: Register or refresh a push device token
+      description: >
+        THIS is where a push token goes. notification-service has registered it
+        since day one and it was never routed, so the patient app invented
+        `PUT /users/me/push-token` against user-service instead. Device tokens
+        are many-per-user, expire, and carry delivery state, and
+        notification-service is what dispatches push -- putting one on the user
+        record would mean a cross-service read on every send.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterDeviceRequest' }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: >
+            VALIDATION_FAILED. `platform` must be one of ios, android, web --
+            lower case. Dart's `TargetPlatform.iOS.name` is "iOS" and is
+            rejected.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/notifications/devices/{deviceID}:
+    delete:
+      tags: [notifications]
+      summary: Invalidate a device token on sign-out
+      parameters:
+        - name: deviceID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Invalidated }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/prescriptions:
+    get:
+      tags: [records]
+      summary: Look up a prescription by appointment
+      description: >
+        One prescription per appointment. Query `appointment_id` is required.
+        The post-call patient summary polls this until the doctor issues the e-Rx.
+      parameters:
+        - name: appointment_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Prescription' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [records]
+      summary: Issue a prescription
+      description: Requires role `doctor`. Generates a PDF + QR; slow path (upload timeout class, 60s).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrescriptionCreateRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Prescription' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/verify/prescriptions/{prescriptionID}:
+    get:
+      tags: [records]
+      summary: Public prescription verification
+      security: []
+      description: >
+        Public. Verifies a prescription by id + HMAC, matching the QR code
+        printed on the PDF. The source docs describe this as living on a
+        separate `verify.yourapp.lk` domain; this route is the gateway's
+        equivalent surface, see the report.
+      parameters:
+        - name: prescriptionID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: h
+          in: query
+          required: true
+          schema: { type: string }
+          description: HMAC-SHA256(prescription_id + doctor_id + secret)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/PrescriptionVerification' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/records/upload:
+    post:
+      tags: [records]
+      summary: Upload a medical report/image
+      description: Max 10MB per the docs (gateway caps at 15MB with headroom, then rejects). Upload timeout class (60s).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Uploaded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/RecordUpload' } }
+        '413':
+          description: File exceeds the route's body size cap
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/records/{recordID}/download:
+    get:
+      tags: [records]
+      summary: Presigned download of a stored report/recording
+      parameters:
+        - name: recordID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK (redirect or presigned URL payload, upload timeout class)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/admin/doctors/pending:
+    get:
+      tags: [admin]
+      summary: Doctor verification queue
+      description: Requires an admin role AND gateway IP allowlist membership.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Doctor' } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/admin-users:
+    post:
+      tags: [admin]
+      summary: Create an admin account
+      description: >-
+        Creates the colleague's Keycloak login and their console account
+        together. Super_admin only, enforced by admin-service, in addition to
+        the gateway IP allowlist.
+
+
+        No password is accepted or returned. Keycloak is given UPDATE_PASSWORD,
+        CONFIGURE_TOTP and VERIFY_EMAIL as required actions, so the new admin
+        sets their own credential and enrols two-factor on first sign-in.
+
+
+        Returns 503 when the identity provider is unreachable: the account is
+        not created, rather than a row being written for a login that does not
+        exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUserCreateRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/AdminAccount' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/admin/doctors/{doctorID}/availability:
+    get:
+      tags: [admin]
+      summary: Read a doctor's working hours (staff)
+      description: >-
+        Requires an admin role AND gateway IP allowlist membership. Routed to
+        doctor-service rather than admin-service: the gateway never rewrites a
+        path, so this pattern is served where the working hours live.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/WorkingHour' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [admin]
+      summary: Set a doctor's working hours (staff)
+      description: >-
+        Doctors phone or message their hours to the clinic and an administrator
+        enters them; the /doctors/me equivalent takes the doctor from the
+        caller's own token and cannot express that.
+
+
+        Leave is NOT set here. scheduling-service owns the holidays table and
+        exposes POST /api/v1/admin/holidays; two write paths to one table would
+        be worse than one.
+
+
+        A doctor id that does not exist is a 404, not a silent success: reading
+        a schedule for an unknown doctor returns an empty set rather than an
+        error, so without the check staff would believe the doctor was
+        bookable.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminSetAvailabilityRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/WorkingHour' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/doctors/{doctorID}/schedule-settings:
+    get:
+      tags: [admin]
+      summary: Read a doctor's slot shape (staff)
+      description: >-
+        Slot duration, buffer and daily cap. Staff need this to see what they
+        are about to overwrite: the availability GET returns a bare
+        working-hours array and cannot carry it.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/ScheduleSettings' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/doctors/{doctorID}/verify:
+    post:
+      tags: [admin]
+      summary: Approve/reject a doctor application
+      description: Requires an admin role AND gateway IP allowlist membership.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminDoctorVerifyRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/analytics/revenue:
+    get:
+      tags: [admin]
+      summary: Revenue analytics
+      description: Requires an admin role AND gateway IP allowlist membership.
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/RevenueDaily' } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------------------
+  # Session lifecycle. These are public by necessity, not by oversight: a client
+  # calls them precisely because its access token has expired. The refresh token
+  # is the credential, and user-service verifies it, detects replay of a rotated
+  # token by revoking the whole session family, and refuses suspended accounts.
+  # ---------------------------------------------------------------------------
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate a refresh token
+      security: []
+      description: >
+        Public. Returns a new access/refresh pair and invalidates the presented
+        refresh token. Presenting an already-rotated token is treated as theft
+        and revokes the entire session family. A suspended account is refused
+        here, which is the durable half of account suspension.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRefreshRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/AuthTokens' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The account is suspended or deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/APIError' }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the presented refresh token
+      security: []
+      description: Public, and idempotent -- revoking a session that is already gone is not an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRefreshRequest' }
+      responses:
+        '204': { description: Revoked }
+
+  /api/v1/auth/logout-all:
+    post:
+      tags: [auth]
+      summary: Revoke every session for the caller
+      description: >
+        Authenticated, unlike logout: it acts on the whole account rather than
+        on the token presented.
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/users/me/family/{familyMemberID}:
+    put:
+      tags: [users]
+      summary: Update a family member profile
+      parameters:
+        - name: familyMemberID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FamilyMember' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/FamilyMember' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [users]
+      summary: Remove a family member profile
+      parameters:
+        - name: familyMemberID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/doctors/me:
+    get:
+      tags: [doctors]
+      summary: The calling doctor's own profile
+      description: Requires role `doctor`. Includes verification status, which the public profile does not.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [doctors]
+      summary: Edit the calling doctor's profile
+      description: >
+        Requires role `doctor`. Optimistic-locked: send the `version` you read,
+        and a concurrent edit returns 409 rather than silently winning.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Doctor' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/me/schedule-settings:
+    get:
+      tags: [doctors]
+      summary: Read the calling doctor's slot-shape settings
+      description: >
+        Requires role `doctor`. Separate from GET /doctors/me/availability,
+        which responds with a bare working-hours array: widening that response
+        to an object would break existing clients, and without this endpoint the
+        settings saved by PUT /doctors/me/availability would be write-only.
+        `buffer_minutes` is null when the doctor has expressed no preference,
+        which is a different answer from 0 (back-to-back consultations).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/ScheduleSettings' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/me/documents:
+    post:
+      tags: [doctors]
+      summary: Attach a credential document
+      description: >
+        Requires role `doctor`. The body carries only the object key -- the file
+        itself is uploaded directly to object storage -- so no bytes transit
+        this API. These keys are what the admin verification queue presigns for
+        a reviewer, so an application with none cannot be reviewed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DoctorDocument' }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/DoctorDocument' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/{doctorID}/reviews:
+    get:
+      tags: [doctors]
+      summary: Published reviews for a doctor
+      security: []
+      description: >
+        Public, like doctor search and doctor detail, which this is part of: a
+        patient compares doctors by rating before creating an account. Only
+        published, moderated reviews are returned.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/DoctorReview' } } }
+    post:
+      tags: [doctors]
+      summary: Leave a review
+      description: >
+        Requires role `patient`. One review per appointment, and only for an
+        appointment the caller actually attended.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DoctorReview' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/DoctorReview' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/appointments/{appointmentID}:
+    get:
+      tags: [scheduling]
+      summary: One appointment
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Appointment' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/appointments/{appointmentID}/complete:
+    post:
+      tags: [scheduling]
+      summary: Close out a consultation as completed
+      description: >
+        Requires role `doctor`. A patient may not close out their own
+        appointment, and scheduling-service refuses it independently of this
+        role gate.
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Completed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Appointment' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/appointments/{appointmentID}/no-show:
+    post:
+      tags: [scheduling]
+      summary: Mark a patient no-show
+      description: Requires role `doctor`. A patient must not be able to declare their own no-show.
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Appointment' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}:
+    get:
+      tags: [consultations]
+      summary: Consultation state and participants
+      description: Keyed by consultation id, which comes from the join response.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Consultation' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}/end:
+    post:
+      tags: [consultations]
+      summary: End the call
+      description: Either party may end it. Keyed by consultation id.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Ended
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Consultation' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}/consent:
+    post:
+      tags: [consultations]
+      summary: Record a consent decision
+      description: >
+        Keyed by consultation id. This is what GATES RECORDING: egress starts
+        only once BOTH parties' most recent `recording` decision is granted, and
+        a later revocation stops a recording from starting. A lone consent never
+        starts one.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsentRequest' }
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Consultation' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}/waiting-room:
+    get:
+      tags: [consultations]
+      summary: Queue position and estimated wait
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/WaitingRoomStatus' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}/quality:
+    post:
+      tags: [consultations]
+      summary: Report a connection-quality sample
+      description: >
+        Called repeatedly during a call. Returns whether the client should drop
+        to audio-only, which is the 3G fallback the platform is designed around.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QualityReportRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/QualityReportResponse' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments:
+    get:
+      tags: [payments]
+      summary: The caller's payments
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Payment' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payouts:
+    get:
+      tags: [payments]
+      summary: Payouts visible to the caller
+      description: >
+        Scoped by the principal's doctor_id. A caller with none gets an empty
+        list rather than a 403, which is what keeps this from leaking that
+        payouts exist. finance and super_admin see all.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Payout' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/notifications/{notificationID}/read:
+    put:
+      tags: [notifications]
+      summary: Mark one notification read
+      parameters:
+        - name: notificationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Marked read
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/prescriptions/{prescriptionID}:
+    get:
+      tags: [records]
+      summary: One prescription
+      parameters:
+        - name: prescriptionID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Prescription' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/prescriptions/{prescriptionID}/pdf:
+    get:
+      tags: [records]
+      summary: Rendered prescription PDF
+      description: Rendered on demand, so this route carries the upload timeout class.
+      parameters:
+        - name: prescriptionID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/records:
+    get:
+      tags: [records]
+      summary: The caller's medical record vault
+      description: record-service scopes by principal and writes an access-log entry.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/RecordUpload' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/records/{recordID}:
+    get:
+      tags: [records]
+      summary: One record's metadata
+      parameters:
+        - name: recordID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/RecordUpload' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [records]
+      summary: Soft-delete a vault document
+      description: Owning patient only. The object is retained for medical-record retention.
+      parameters:
+        - name: recordID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/drugs:
+    get:
+      tags: [records]
+      summary: Drug reference search
+      description: >
+        Backs the prescription builder's autocomplete. Authenticated with no
+        role gate, matching record-service's own registration: this is clinical
+        reference data, not patient data.
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { type: array, items: { $ref: '#/components/schemas/Drug' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/clinical-notes:
+    get:
+      tags: [records]
+      summary: List the calling doctor's clinical notes
+      description: >
+        Paginated. record-service scopes the result to the authenticated doctor;
+        there is no parameter for reading another clinician's notes.
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/clinical-notes/{appointmentID}:
+    parameters:
+      - { name: appointmentID, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [records]
+      summary: Save (autosave) a SOAP clinical note
+      description: >
+        Idempotent upsert of a draft, called on every keystroke by the doctor
+        app. Guarded by `version`; a concurrent edit from a second device gets
+        409 CONFLICT carrying the server's current version in `fields.version`.
+        This route's absence was a CRITICAL client finding -- the doctor app
+        queued every note for an endpoint that 404'd, the 404 was classified
+        non-retryable so entries were kept, and a doctor's entire clinical-note
+        history accumulated unencrypted on the handset for the life of the
+        install.
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [records]
+      summary: Read one clinical note
+      description: >
+        Authorised by record-service's treating-relationship check and recorded
+        in the append-only access log. Administrators are refused.
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/clinical-notes/{appointmentID}/finalise:
+    parameters:
+      - { name: appointmentID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [records]
+      summary: Sign a clinical note
+      description: >
+        Immutable thereafter. A later change goes through /amend, which writes a
+        revision rather than overwriting a signed medical record.
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/clinical-notes/{appointmentID}/amend:
+    parameters:
+      - { name: appointmentID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [records]
+      summary: Amend a finalised clinical note
+      description: >
+        Writes an append-only revision preserving the prior text verbatim.
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/clinical-notes/{appointmentID}/revisions:
+    parameters:
+      - { name: appointmentID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [records]
+      summary: The amendment trail for a clinical note
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/icd10:
+    get:
+      tags: [records]
+      summary: Search the ICD-10 classification
+      description: >
+        A published classification carrying no patient data, so authenticated but
+        not role-gated -- the same treatment as the drug formulary at /drugs.
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/OK' }
+        '401': { $ref: '#/components/responses/Unauthorized' }

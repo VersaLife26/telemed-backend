@@ -1,0 +1,456 @@
+openapi: 3.1.0
+info:
+  title: telemed-consultation-service
+  description: >
+    Video consultation layer over LiveKit: room lifecycle, access tokens,
+    waiting room queue, consent-gated recording, and connection-quality
+    tracking.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8084
+    description: local development
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/consultations/{appointment_id}/join:
+    post:
+      summary: Join (or rejoin) the consultation for an appointment
+      description: >
+        Authorizes the caller against the appointment's patient/doctor,
+        lazily ensures the LiveKit room exists, and mints a short-lived,
+        room-scoped access token. A patient's first join enqueues them in
+        their doctor's waiting room.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentID'
+      responses:
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinResponseEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/consultations/{id}/admit:
+    post:
+      summary: Doctor admits the next patient into an active consultation
+      description: >
+        The consultation must be in `waiting`, not `scheduled`: a 409 here means
+        the patient has not joined yet. That precondition is a security control.
+        This is the only publisher of `consultation.started`, which
+        record-service turns into a treating relationship granting the doctor
+        read and download on the patient's whole medical vault -- and only the
+        patient's own /join moves a consultation to `waiting`, so a doctor
+        cannot manufacture a relationship for a consultation nobody attended.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/ConsultationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Consultation is now active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsultationEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/consultations/{id}/end:
+    post:
+      summary: End the consultation
+      description: >
+        Idempotent: ending an already-terminal consultation returns the
+        current state rather than an error. Transitions to "ended" if the
+        call had started, "abandoned" if it never did.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/ConsultationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason:
+                  type: string
+                  maxLength: 200
+      responses:
+        '200':
+          description: Consultation ended or abandoned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsultationEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/consultations/{id}/consent:
+    post:
+      summary: Record a consent decision
+      description: >
+        Recording starts automatically once BOTH parties' most recent
+        recording consent is granted=true and the consultation is active. A
+        single party's consent, granted or not, never starts a recording.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/ConsultationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [consent_type, granted]
+              properties:
+                consent_type:
+                  type: string
+                  enum: [recording, telemedicine]
+                granted:
+                  type: boolean
+      responses:
+        '200':
+          description: Consent recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsultationEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/consultations/{id}:
+    get:
+      summary: Get a consultation and its participants
+      description: >
+        The two parties see the whole row. The five platform admin roles see the
+        envelope -- who, when, how long, how it ended, whether a recording
+        exists -- but never recording_url or egress_id. Anyone else gets 403.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/ConsultationID'
+      responses:
+        '200':
+          description: Consultation detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsultationEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/consultations/{id}/waiting-room:
+    get:
+      summary: Get the caller's position in their doctor's waiting queue
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/ConsultationID'
+      responses:
+        '200':
+          description: Waiting room status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitingRoomEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/consultations/{id}/quality:
+    post:
+      summary: Report a client-side connection-quality sample
+      description: >
+        Returns should_downgrade_video=true once the caller has reported
+        QUALITY_DEGRADE_THRESHOLD consecutive poor/lost samples. Clients act
+        on the signal (drop to audio-only); the server always records it.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/ConsultationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [quality]
+              properties:
+                quality:
+                  type: string
+                  enum: [excellent, good, poor, lost]
+                packet_loss_pct:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                bitrate_kbps:
+                  type: integer
+                  minimum: 0
+      responses:
+        '200':
+          description: Sample recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      should_downgrade_video:
+                        type: boolean
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/livekit:
+    post:
+      summary: LiveKit webhook receiver
+      description: >
+        Verified via LiveKit's own signed Authorization header (a JWT whose
+        claims include a SHA-256 checksum of the body), not a platform JWT.
+        Rate-limited and size-capped (64 KiB). Idempotent on the delivery's
+        event id.
+      security: []
+      tags: [webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '204':
+          description: Processed (or already processed -- duplicates are a silent no-op)
+        '401':
+          description: Signature verification failed
+        '413':
+          description: Body too large
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    AppointmentID:
+      name: appointment_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConsultationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Forbidden:
+      description: Caller is not a party to this consultation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Consultation is not in a state that allows this action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        fields:
+          type: object
+        request_id:
+          type: string
+
+    ICEServer:
+      type: object
+      properties:
+        urls:
+          type: array
+          items:
+            type: string
+        username:
+          type: string
+        credential:
+          type: string
+
+    JoinResponse:
+      type: object
+      description: >-
+        consultation_id is the id every OTHER endpoint on this service is keyed
+        by (/admit, /end, /consent, /waiting-room, /quality). Join is the only
+        one keyed by appointment id, so this field is what makes the rest of the
+        surface reachable for a client that started from an appointment.
+      properties:
+        consultation_id:
+          type: string
+          format: uuid
+        appointment_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [scheduled, waiting, active, ended, abandoned, failed]
+        role:
+          type: string
+          enum: [patient, doctor]
+          description: which side of the call the caller is on.
+        token:
+          type: string
+        token_expires_at:
+          type: string
+          format: date-time
+          description: when this LiveKit token stops working; re-join before it.
+        room_name:
+          type: string
+        livekit_url:
+          type: string
+        ice_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ICEServer'
+
+    JoinResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/JoinResponse'
+
+    Participant:
+      type: object
+      properties:
+        identity:
+          type: string
+        role:
+          type: string
+          enum: [patient, doctor]
+        joined_at:
+          type: string
+          format: date-time
+        left_at:
+          type: string
+          format: date-time
+        reconnect_count:
+          type: integer
+
+    Consultation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        appointment_id:
+          type: string
+          format: uuid
+        patient_id:
+          type: string
+          format: uuid
+        doctor_id:
+          type: string
+          format: uuid
+        room_name:
+          type: string
+        status:
+          type: string
+          enum: [scheduled, waiting, active, ended, abandoned, failed]
+        scheduled_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        recording_url:
+          type: string
+          description: >
+            Present only for the two parties to the consultation. Platform admin
+            roles receive the consultation without it (and without egress_id):
+            they see that a recording exists via recording_status and request it
+            through admin-service, which is IP-allowlisted and audited.
+        recording_status:
+          type: string
+          enum: [none, pending, recording, processing, completed, failed]
+        end_reason:
+          type: string
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+
+    ConsultationEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Consultation'
+
+    WaitingRoomStatus:
+      type: object
+      properties:
+        waiting:
+          type: boolean
+        position:
+          type: integer
+        patients_ahead:
+          type: integer
+        estimated_wait_seconds:
+          type: integer
+
+    WaitingRoomEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/WaitingRoomStatus'

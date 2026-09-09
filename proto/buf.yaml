@@ -1,0 +1,17 @@
+# Single-module buf v2 workspace rooted at this directory. All imports in the
+# .proto files below (e.g. `import "common/v1/common.proto";`) are relative
+# to this root -- kept as one module rather than one-module-per-domain so
+# that doctor.v1 can import common.v1's PageMeta without a multi-module
+# workspace's cross-module import-path ambiguity.
+version: v2
+
+lint:
+  use:
+    - STANDARD
+
+breaking:
+  # Nothing to compare against yet -- v0.1.0 is the first tag this repo
+  # produces. From the next tag onward, run:
+  #   buf breaking --against '.git#tag=v0.1.0'
+  use:
+    - FILE

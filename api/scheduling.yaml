@@ -1,0 +1,715 @@
+openapi: 3.1.0
+info:
+  title: telemed-scheduling-service
+  version: 0.1.0
+  summary: Slot engine, bookings, waitlist and cancellation policy for the telemedicine platform.
+  description: |
+    Owns the platform calendar. Materialises bookable slots per doctor, takes
+    bookings without ever double-booking one, runs the waitlist, and decides what
+    a cancellation is worth.
+
+    All instants are UTC RFC3339. Endpoints a human reads also return `*_local`
+    rendered in the business timezone (Asia/Colombo). `date` and
+    `preferred_date` are civil dates in that timezone, not UTC days.
+  license:
+    name: MIT
+  contact:
+    name: Platform team
+servers:
+  - url: https://api.yourapp.lk/api/v1
+    description: production
+  - url: http://localhost:8083/api/v1
+    description: local
+
+tags:
+  - name: availability
+  - name: appointments
+  - name: waitlist
+  - name: admin
+
+security:
+  - bearerAuth: []
+
+paths:
+  /doctors/{doctorID}/slots:
+    get:
+      tags: [availability]
+      operationId: listDoctorSlots
+      summary: Bookable slots for one doctor on one civil day
+      security: []
+      description: |
+        Readable without a token: browsing availability is how a patient decides
+        to sign up. Booked, blocked and waitlist-reserved slots are omitted, as
+        is anything starting within the next two minutes.
+      parameters:
+        - $ref: '#/components/parameters/DoctorID'
+        - name: date
+          in: query
+          required: false
+          description: Civil date in the business timezone. Defaults to today in Asia/Colombo.
+          schema: { type: string, format: date, examples: ['2026-08-21'] }
+      responses:
+        '200':
+          description: Availability for the day. An unknown doctor yields an empty list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [doctor_id, date, timezone, slots]
+                    properties:
+                      doctor_id: { type: string, format: uuid }
+                      date: { type: string, format: date }
+                      timezone: { type: string, examples: ['Asia/Colombo'] }
+                      slots:
+                        type: array
+                        items: { $ref: '#/components/schemas/Slot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /appointments:
+    post:
+      tags: [appointments]
+      operationId: bookAppointment
+      summary: Book a slot
+      description: |
+        Patient role only. The slot is held for 15 minutes pending payment;
+        after that the sweeper releases it and publishes `slot.released`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BookAppointmentRequest' }
+      responses:
+        '201':
+          description: Booked, awaiting payment.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Appointment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            `SLOT_UNAVAILABLE` — somebody else got it; do not retry.
+            `SLOT_LOCKED` — a booking is mid-flight; retry once after a moment.
+            `CONFLICT` — this patient already has an overlapping appointment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    get:
+      tags: [appointments]
+      operationId: listAppointments
+      summary: The caller's own appointments
+      description: |
+        Strictly the caller's own rows: a patient sees theirs, a doctor sees
+        theirs. `intake` is never included in a listing.
+
+        An administrator gets 403 here and uses
+        `GET /admin/appointments`, which is behind the IP allowlist and is
+        scoped to one doctor and a bounded window. This route carries no role
+        gate at the gateway, so it carries no allowlist and no audit either.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AppointmentStatus' }
+      responses:
+        '200':
+          description: A page of appointments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Appointment' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /appointments/{appointmentID}:
+    get:
+      tags: [appointments]
+      operationId: getAppointment
+      summary: One appointment
+      description: |
+        A caller who does not own the appointment gets 404, not 403, so the
+        endpoint cannot be used to enumerate ids. Administrators may read any
+        appointment but do not receive `intake`.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      responses:
+        '200':
+          description: The appointment.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Appointment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /appointments/{appointmentID}/cancel:
+    put:
+      tags: [appointments]
+      operationId: cancelAppointment
+      summary: Cancel and release the slot
+      description: |
+        The response carries the refund decision. A patient cancelling at least
+        two hours ahead gets FULL; later gets PARTIAL (50%). A doctor or
+        administrator cancellation is always FULL. Cancelling triggers waitlist
+        promotion.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Cancelled, with the refund policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Appointment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Already cancelled or completed, or the consultation has started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /appointments/{appointmentID}/complete:
+    post:
+      tags: [appointments]
+      operationId: completeAppointment
+      summary: Record a completed consultation
+      description: Doctor or administrator only; the appointment must be `confirmed`.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      responses:
+        '200':
+          description: Completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Appointment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /appointments/{appointmentID}/no-show:
+    post:
+      tags: [appointments]
+      operationId: noShowAppointment
+      summary: Record a no-show
+      description: |
+        Doctor or administrator only. A patient may not declare their own
+        no-show, nor complete a consultation to dodge one. A nightly backstop
+        records a no-show for anything left `confirmed` 12 hours past its end.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      responses:
+        '200':
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Appointment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /waitlist:
+    post:
+      tags: [waitlist]
+      operationId: joinWaitlist
+      summary: Queue for the next cancellation on a doctor-day
+      description: |
+        When a slot frees up the longest-waiting patient is offered it for five
+        minutes. During the hold the slot is invisible to everyone else and only
+        that patient can book it. On expiry the offer falls through to the next
+        patient and the lapsed entry goes to the back of the queue; three lapses
+        retire it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doctor_id, preferred_date]
+              properties:
+                doctor_id: { type: string, format: uuid }
+                preferred_date:
+                  type: string
+                  format: date
+                  description: Civil date in the business timezone.
+      responses:
+        '201':
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/WaitlistEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Already on this doctor's waitlist for that day.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+    get:
+      tags: [waitlist]
+      operationId: listWaitlist
+      summary: The caller's live waitlist entries
+      responses:
+        '200':
+          description: Entries in `waiting` or `notified`, by preferred date.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WaitlistEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /waitlist/{waitlistID}:
+    delete:
+      tags: [waitlist]
+      operationId: leaveWaitlist
+      summary: Withdraw a waitlist entry
+      parameters:
+        - name: waitlistID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Withdrawn. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/slots/{slotID}/block:
+    post:
+      tags: [admin]
+      operationId: blockSlot
+      summary: Withhold, retire, or restore a slot
+      description: |
+        Behind the IP allowlist and an admin role. Blocking a **booked** slot is
+        refused with 409: force-cancel the appointment first, so the patient is
+        told and a refund decision is published. Silently discarding a booking is
+        not an available operation.
+      parameters:
+        - name: slotID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                status:
+                  type: string
+                  enum: [BLOCKED, CANCELLED, AVAILABLE]
+                  default: BLOCKED
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: The updated slot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Slot' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The slot holds a live appointment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/appointments:
+    get:
+      tags: [admin]
+      operationId: listAppointmentsForAdmin
+      summary: One doctor's calendar over a bounded window
+      description: |
+        The scoped administrative listing, for resolving a double-booking. Both
+        the doctor and the window are required, and the window may not exceed
+        31 days: an administrative read that is not bounded is a bulk PHI
+        export.
+
+        There is deliberately no `patient_id` filter. Supplying one is a 422,
+        not a silent no-op. A patient's appointment history is a clinical
+        timeline and no dispute needs it; a dispute about one appointment is
+        served by `GET /appointments/{appointmentID}`.
+
+        `intake` is never included.
+      parameters:
+        - name: doctor_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AppointmentStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A page of appointments for that doctor in that window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Appointment' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /admin/appointments/{appointmentID}/force-cancel:
+    post:
+      tags: [admin]
+      operationId: forceCancelAppointment
+      summary: Cancel an appointment whose consultation window has opened
+      description: Always a FULL refund. `intake` is not returned.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Appointment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/holidays:
+    post:
+      tags: [admin]
+      operationId: setHoliday
+      summary: Record a non-working day
+      description: |
+        Omit `doctor_id` for a platform-wide closure (a Poya day, Independence
+        Day). Affects future generation runs only: slots already materialised
+        for that day stay put, because deleting them silently would strand any
+        appointment already booked into one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date, reason]
+              properties:
+                doctor_id:
+                  type: string
+                  format: uuid
+                  description: Omit for a platform-wide holiday.
+                date: { type: string, format: date }
+                reason: { type: string, maxLength: 200 }
+      responses:
+        '201':
+          description: Recorded. Re-recording the same date updates the reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      doctor_id: { type: string, format: uuid }
+                      date: { type: string, format: date }
+                      reason: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak access token. 15 minute lifetime.
+
+  parameters:
+    DoctorID:
+      name: doctorID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AppointmentID:
+      name: appointmentID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PerPage:
+      name: per_page
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  schemas:
+    Slot:
+      type: object
+      required: [id, doctor_id, start_at, end_at, start_at_local, end_at_local, duration_minutes, status]
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        start_at: { type: string, format: date-time, description: UTC }
+        end_at: { type: string, format: date-time, description: UTC }
+        start_at_local: { type: string, examples: ['2026-08-21T09:00:00+05:30'] }
+        end_at_local: { type: string, examples: ['2026-08-21T09:15:00+05:30'] }
+        duration_minutes: { type: integer }
+        status: { type: string, enum: [AVAILABLE, BOOKED, BLOCKED, CANCELLED] }
+
+    AppointmentStatus:
+      type: string
+      enum: [pending_payment, confirmed, cancelled, completed, no_show]
+
+    Appointment:
+      type: object
+      required: [id, patient_id, doctor_id, slot_id, start_at, end_at, status, version]
+      properties:
+        id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        slot_id: { type: string, format: uuid }
+        family_member_id: { type: string, format: uuid }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        start_at_local: { type: string }
+        end_at_local: { type: string }
+        status: { $ref: '#/components/schemas/AppointmentStatus' }
+        prepayment_required:
+          type: boolean
+          description: |
+            True when the patient's no-show rate exceeded 30% over at least
+            three appointments. Also published on `appointment.created`.
+        amount_cents:
+          type: integer
+          format: int64
+          description: |
+            The consultation fee QUOTED at booking, in cents. Immutable: a
+            patient who booked at LKR 2,000 is charged LKR 2,000 even if the
+            doctor raises their fee afterwards. The payment service charges this
+            number and never looks the fee up itself.
+
+            Absent only on appointments booked before pricing existed. A booking
+            that cannot be priced is refused with 422 rather than stored at
+            zero.
+        currency:
+          type: string
+          description: ISO 4217, e.g. `LKR`. Always present when `amount_cents` is.
+          example: LKR
+        specialty:
+          type: string
+          description: |
+            The doctor's specialty at booking time, denormalised. The payment
+            service prices its commission off it, so it is captured with the
+            quote rather than read live.
+        intake:
+          type: object
+          additionalProperties: true
+          description: |
+            Symptom and allergy data. PHI. Returned only to the patient who owns
+            it and the treating doctor, never in a listing, never to an
+            administrator, and never in an event payload.
+        payment_id: { type: string, format: uuid }
+        confirmed_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        no_show_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        cancelled_by_role: { type: string, enum: [patient, doctor, admin, system] }
+        cancellation_reason: { type: string }
+        refund_policy: { type: string, enum: [FULL, PARTIAL, NONE] }
+        refund_percent: { type: integer, enum: [0, 50, 100] }
+        cancellable_until:
+          type: string
+          format: date-time
+          description: After this instant a patient cancellation earns PARTIAL, not FULL.
+        version: { type: integer, description: Optimistic lock. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BookAppointmentRequest:
+      type: object
+      required: [slot_id]
+      properties:
+        slot_id: { type: string, format: uuid }
+        doctor_id:
+          type: string
+          format: uuid
+          description: Optional. If present it must own the slot, otherwise 404.
+        family_member_id:
+          type: string
+          format: uuid
+          deprecated: true
+          description: |
+            NOT ACCEPTED. Sending this field returns 422.
+
+            Dependant profiles live in telemed_user and scheduling holds no
+            read of them, so it cannot verify that the dependant belongs to the
+            caller. An unverified value would attribute the appointment -- and
+            the consultation and records that follow from it -- to another
+            account's child. The field is still decoded so the refusal can name
+            itself rather than surfacing as "unknown field".
+
+            Appointment.family_member_id is unaffected: rows written before
+            this change still read back.
+        intake:
+          type: object
+          additionalProperties: true
+
+    WaitlistEntry:
+      type: object
+      required: [id, patient_id, doctor_id, preferred_date, status, offer_count, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        preferred_date: { type: string, format: date }
+        status: { type: string, enum: [waiting, notified, booked, expired, cancelled] }
+        offered_slot_id: { type: string, format: uuid }
+        offer_expires_at:
+          type: string
+          format: date-time
+          description: The deadline the "you have five minutes" push refers to.
+        offer_count: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    Meta:
+      type: object
+      required: [page, per_page, total, total_pages]
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - BAD_REQUEST
+            - VALIDATION_FAILED
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - SLOT_UNAVAILABLE
+            - SLOT_LOCKED
+            - RATE_LIMITED
+            - UNPROCESSABLE
+            - INTERNAL_ERROR
+            - SERVICE_UNAVAILABLE
+        message: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+        request_id: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but not permitted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found, or not visible to this caller.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: The resource is not in a state that allows this.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: Well-formed but semantically invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After: { schema: { type: integer } }
+        X-RateLimit-Limit: { schema: { type: integer } }
+        X-RateLimit-Remaining: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

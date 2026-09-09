@@ -1,0 +1,317 @@
+openapi: 3.1.0
+info:
+  title: telemed-user-service
+  version: "0.1.0"
+  description: >
+    Identity, phone-OTP authentication, sessions, and family profiles for the
+    telemedicine platform. See docs/API.md for curl examples.
+servers:
+  - url: http://localhost:8081/api/v1
+tags:
+  - name: auth
+  - name: users
+
+paths:
+  /auth/otp/send:
+    post:
+      tags: [auth]
+      summary: Send a one-time password to a phone number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, purpose]
+              properties:
+                phone: { type: string, example: "+94771234567" }
+                purpose: { type: string, enum: [register, login] }
+                language: { type: string, enum: [en, si, ta] }
+      responses:
+        "200":
+          description: OTP sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request_id: { type: string }
+                      expires_in: { type: integer, example: 300 }
+                      attempts_remaining: { type: integer, example: 2 }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /auth/otp/verify:
+    post:
+      tags: [auth]
+      summary: Verify an OTP and receive a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, otp]
+              properties:
+                phone: { type: string }
+                otp: { type: string, example: "482913" }
+                device_id: { type: string }
+      responses:
+        "200":
+          description: Session issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthEnvelope" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+                device_id: { type: string }
+      responses:
+        "200":
+          description: New session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke one session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "204": { description: Logged out }
+
+  /auth/logout-all:
+    post:
+      tags: [auth]
+      summary: Revoke every session for the caller
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: All sessions revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /users/me:
+    get:
+      tags: [users]
+      summary: Get the caller's profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [users]
+      summary: Update the caller's profile (optimistic locking via version)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, language, version]
+              properties:
+                name: { type: string }
+                email: { type: string, nullable: true }
+                language: { type: string, enum: [en, si, ta] }
+                version: { type: integer }
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/User" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [users]
+      summary: Soft-delete the account and schedule PDPA erasure
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+
+  /users/me/family:
+    get:
+      tags: [users]
+      summary: List the caller's family members
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Family members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/FamilyMember" }
+    post:
+      tags: [users]
+      summary: Add a family member
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FamilyMemberInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/FamilyMember" }
+
+  /users/me/family/{id}:
+    put:
+      tags: [users]
+      summary: Update a family member
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FamilyMemberInput" }
+      responses:
+        "200":
+          description: Updated
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [users]
+      summary: Remove a family member
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /users/me/consents:
+    post:
+      tags: [users]
+      summary: Record a PDPA/GDPR consent decision
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, version, granted]
+              properties:
+                kind: { type: string, enum: [pdpa, terms, marketing, telehealth] }
+                version: { type: string, example: "2026-01" }
+                granted: { type: boolean }
+      responses:
+        "201": { description: Recorded }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    BadRequest:
+      description: Malformed request
+    Validation:
+      description: Field-level validation failure
+    Unauthorized:
+      description: Missing or invalid bearer token
+    Forbidden:
+      description: Caller may not access this resource
+    NotFound:
+      description: Resource not found
+    Conflict:
+      description: Optimistic-lock or uniqueness conflict
+    RateLimited:
+      description: Rate limit exceeded
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        phone: { type: string }
+        email: { type: string, nullable: true }
+        name: { type: string }
+        language: { type: string, enum: [en, si, ta] }
+        role: { type: string }
+        status: { type: string }
+        no_show_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+    FamilyMemberInput:
+      type: object
+      required: [name, dob, relation]
+      properties:
+        name: { type: string }
+        dob: { type: string, format: date }
+        relation: { type: string, enum: [child, parent, spouse, sibling, other] }
+        nic:
+          type: string
+          description: >-
+            Optional National Identity Card number. Stored only as
+            HMAC-SHA256(nic, NIC_HASH_PEPPER) and never returned; the response
+            reports its presence as has_nic. Formatting is normalised
+            (separators dropped, case folded) before hashing, so the same card
+            typed two ways is one identity.
+        version: { type: integer, description: "required on update; ignored on create" }
+    FamilyMember:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        dob: { type: string, format: date }
+        relation: { type: string }
+        has_nic: { type: boolean }
+        version: { type: integer }
+    AuthEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            access_token: { type: string }
+            expires_in: { type: integer, example: 900 }
+            refresh_token: { type: string }
+            user: { $ref: "#/components/schemas/User" }

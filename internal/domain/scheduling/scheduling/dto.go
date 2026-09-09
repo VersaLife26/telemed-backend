@@ -1,0 +1,164 @@
+package scheduling
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// Wire types. The rule at this boundary: instants go out in UTC as RFC3339 and
+// again as the Colombo wall-clock the patient actually reads, because a
+// TypeScript client that has to do the conversion will eventually do it wrong. Storage stays UTC; only this file knows about Asia/Colombo.
+
+// SlotDTO is one bookable slot as the API returns it.
+type SlotDTO struct {
+	ID       uuid.UUID `json:"id"`
+	DoctorID uuid.UUID `json:"doctor_id"`
+	StartAt  time.Time `json:"start_at"`
+	EndAt    time.Time `json:"end_at"`
+	// StartAtLocal and EndAtLocal are the same instants rendered in the
+	// business timezone, offset included.
+	StartAtLocal    string `json:"start_at_local"`
+	EndAtLocal      string `json:"end_at_local"`
+	DurationMinutes int    `json:"duration_minutes"`
+	Status          string `json:"status"`
+}
+
+// NewSlotDTO renders a slot for the wire.
+func NewSlotDTO(s Slot, loc *time.Location) SlotDTO {
+	return SlotDTO{
+		ID:              s.ID,
+		DoctorID:        s.DoctorID,
+		StartAt:         s.StartAt.UTC(),
+		EndAt:           s.EndAt.UTC(),
+		StartAtLocal:    s.StartAt.In(loc).Format(time.RFC3339),
+		EndAtLocal:      s.EndAt.In(loc).Format(time.RFC3339),
+		DurationMinutes: int(s.EndAt.Sub(s.StartAt).Minutes()),
+		Status:          string(s.Status),
+	}
+}
+
+// AppointmentDTO is an appointment as the API returns it.
+//
+// Intake is included only for the patient who owns it and the doctor who will
+// read it; the list endpoints omit it entirely. That is not a size
+// optimisation -- it is symptom and allergy data, and it should travel as
+// rarely as it can.
+type AppointmentDTO struct {
+	ID             uuid.UUID  `json:"id"`
+	PatientID      uuid.UUID  `json:"patient_id"`
+	DoctorID       uuid.UUID  `json:"doctor_id"`
+	SlotID         uuid.UUID  `json:"slot_id"`
+	FamilyMemberID *uuid.UUID `json:"family_member_id,omitempty"`
+
+	StartAt      time.Time `json:"start_at"`
+	EndAt        time.Time `json:"end_at"`
+	StartAtLocal string    `json:"start_at_local"`
+	EndAtLocal   string    `json:"end_at_local"`
+
+	Status             string          `json:"status"`
+	PrepaymentRequired bool            `json:"prepayment_required"`
+	Intake             json.RawMessage `json:"intake,omitempty"`
+
+	// AmountCents is the quote the patient was given at booking, in cents. It
+	// is returned so the checkout screen shows the same number the payment
+	// service will charge, rather than re-deriving it from the doctor's current
+	// fee and disagreeing by the width of one profile edit.
+	//
+	// omitempty: appointments booked before pricing existed carry no quote, and
+	// a rendered "LKR 0.00" would be a lie.
+	AmountCents int64  `json:"amount_cents,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+	Specialty   string `json:"specialty,omitempty"`
+
+	PaymentID   *uuid.UUID `json:"payment_id,omitempty"`
+	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	NoShowAt    *time.Time `json:"no_show_at,omitempty"`
+
+	CancelledAt        *time.Time `json:"cancelled_at,omitempty"`
+	CancelledByRole    string     `json:"cancelled_by_role,omitempty"`
+	CancellationReason string     `json:"cancellation_reason,omitempty"`
+	RefundPolicy       string     `json:"refund_policy,omitempty"`
+	RefundPercent      *int       `json:"refund_percent,omitempty"`
+
+	// CancellableUntil is when a patient cancellation stops earning a full
+	// refund. Returning it means the mobile clients render the policy instead of
+	// reimplementing it.
+	CancellableUntil time.Time `json:"cancellable_until"`
+
+	Version   int       `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// NewAppointmentDTO renders an appointment. withIntake must be false for any
+// listing and for any caller who is not the patient or the treating doctor.
+func NewAppointmentDTO(a Appointment, loc *time.Location, withIntake bool) AppointmentDTO {
+	d := AppointmentDTO{
+		ID:                 a.ID,
+		PatientID:          a.PatientID,
+		DoctorID:           a.DoctorID,
+		SlotID:             a.SlotID,
+		FamilyMemberID:     a.FamilyMemberID,
+		StartAt:            a.SlotStartAt.UTC(),
+		EndAt:              a.SlotEndAt.UTC(),
+		StartAtLocal:       a.SlotStartAt.In(loc).Format(time.RFC3339),
+		EndAtLocal:         a.SlotEndAt.In(loc).Format(time.RFC3339),
+		Status:             string(a.Status),
+		PrepaymentRequired: a.PrepaymentRequired,
+		AmountCents:        a.AmountCents,
+		Currency:           a.Currency,
+		Specialty:          a.Specialty,
+		PaymentID:          a.PaymentID,
+		ConfirmedAt:        a.ConfirmedAt,
+		CompletedAt:        a.CompletedAt,
+		NoShowAt:           a.NoShowAt,
+		CancelledAt:        a.CancelledAt,
+		CancelledByRole:    a.CancelledByRole,
+		CancellationReason: a.CancellationReason,
+		CancellableUntil:   a.SlotStartAt.Add(-CancellationNoticeWindow).UTC(),
+		Version:            a.Version,
+		CreatedAt:          a.CreatedAt.UTC(),
+		UpdatedAt:          a.UpdatedAt.UTC(),
+	}
+	if withIntake {
+		d.Intake = a.Intake
+	}
+	if a.RefundPolicy != nil {
+		d.RefundPolicy = string(*a.RefundPolicy)
+		pct := a.RefundPolicy.Percent()
+		d.RefundPercent = &pct
+	}
+	return d
+}
+
+// WaitlistDTO is a waitlist entry as the API returns it.
+type WaitlistDTO struct {
+	ID            uuid.UUID  `json:"id"`
+	PatientID     uuid.UUID  `json:"patient_id"`
+	DoctorID      uuid.UUID  `json:"doctor_id"`
+	PreferredDate Date       `json:"preferred_date"`
+	Status        string     `json:"status"`
+	OfferedSlotID *uuid.UUID `json:"offered_slot_id,omitempty"`
+	// OfferExpiresAt is the deadline the "you have five minutes" push refers to.
+	OfferExpiresAt *time.Time `json:"offer_expires_at,omitempty"`
+	OfferCount     int        `json:"offer_count"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// NewWaitlistDTO renders a waitlist entry.
+func NewWaitlistDTO(w WaitlistEntry) WaitlistDTO {
+	return WaitlistDTO{
+		ID:             w.ID,
+		PatientID:      w.PatientID,
+		DoctorID:       w.DoctorID,
+		PreferredDate:  w.PreferredDate,
+		Status:         string(w.Status),
+		OfferedSlotID:  w.OfferedSlotID,
+		OfferExpiresAt: w.OfferExpiresAt,
+		OfferCount:     w.OfferCount,
+		CreatedAt:      w.CreatedAt.UTC(),
+	}
+}

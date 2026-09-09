@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "name": "bad-route",
+      "pattern": "/api/v1/whatever",
+      "methods": ["GET"],
+      "upstream": "user-service",
+      "auth": "sort-of-public",
+      "timeout_class": "fast",
+      "rate_limit": "generous"
+    }
+  ]
+}

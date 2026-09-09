@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+// The internal, service-to-service scheduling API.
+//
+// It exists for the calls that sit on a user-facing latency budget and must not
+// pay for JSON and HTTP/1.1: payment-service confirming a booking, and
+// consultation-service resolving an appointment five minutes before a video
+// call. Anything a patient's phone talks to goes over REST.
+package scheduling.v1;
+
+option go_package = "telemed/internal/pb/scheduling/v1;schedulingv1";
+
+import "google/protobuf/timestamp.proto";
+
+service SchedulingService {
+  // BookSlot books an available slot for a patient. It is the same code path
+  // the REST endpoint uses, with the same three-layer race protection.
+  rpc BookSlot(BookSlotRequest) returns (BookSlotResponse);
+
+  // CancelAppointment releases a slot and returns the refund policy the
+  // cancellation earned. The caller must not re-derive that policy.
+  rpc CancelAppointment(CancelAppointmentRequest) returns (CancelAppointmentResponse);
+
+  // GetAppointment reads one appointment.
+  rpc GetAppointment(GetAppointmentRequest) returns (GetAppointmentResponse);
+}
+
+enum AppointmentStatus {
+  APPOINTMENT_STATUS_UNSPECIFIED = 0;
+  APPOINTMENT_STATUS_PENDING_PAYMENT = 1;
+  APPOINTMENT_STATUS_CONFIRMED = 2;
+  APPOINTMENT_STATUS_CANCELLED = 3;
+  APPOINTMENT_STATUS_COMPLETED = 4;
+  APPOINTMENT_STATUS_NO_SHOW = 5;
+}
+
+enum RefundPolicy {
+  REFUND_POLICY_UNSPECIFIED = 0;
+  REFUND_POLICY_FULL = 1;
+  REFUND_POLICY_PARTIAL = 2;
+  REFUND_POLICY_NONE = 3;
+}
+
+message Appointment {
+  string id = 1;
+  string patient_id = 2;
+  string doctor_id = 3;
+  string slot_id = 4;
+  google.protobuf.Timestamp start_at = 5;
+  google.protobuf.Timestamp end_at = 6;
+  AppointmentStatus status = 7;
+  // True when the patient's no-show history put them over the policy threshold
+  // at booking time.
+  bool prepayment_required = 8;
+  RefundPolicy refund_policy = 9;
+  int32 version = 10;
+  google.protobuf.Timestamp created_at = 11;
+  // Deliberately absent: intake. It is PHI, and no caller of this API needs it.
+}
+
+message BookSlotRequest {
+  string slot_id = 1;
+  string patient_id = 2;
+  // Optional. When set it must match the slot's doctor, otherwise the call
+  // fails NOT_FOUND rather than booking the wrong clinician.
+  string doctor_id = 3;
+  string family_member_id = 4;
+  // Opaque JSON. Kept out of logs and out of every event payload.
+  string intake_json = 5;
+}
+
+message BookSlotResponse {
+  Appointment appointment = 1;
+}
+
+message CancelAppointmentRequest {
+  string appointment_id = 1;
+  string actor_id = 2;
+  // "patient", "doctor" or "admin".
+  string actor_role = 3;
+  string reason = 4;
+  // Administrators only: cancel even though the slot has already started.
+  bool force = 5;
+}
+
+message CancelAppointmentResponse {
+  Appointment appointment = 1;
+  RefundPolicy refund_policy = 2;
+  int32 refund_percent = 3;
+}
+
+message GetAppointmentRequest {
+  string appointment_id = 1;
+  // Optional ownership check. Leave both empty for a trusted internal read;
+  // the mesh authenticates the caller, so this is defence in depth.
+  string actor_id = 2;
+  string actor_role = 3;
+}
+
+message GetAppointmentResponse {
+  Appointment appointment = 1;
+}

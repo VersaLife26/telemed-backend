@@ -1,0 +1,26 @@
+# build output
+bin/
+dist/
+*.exe
+
+# local configuration and secrets -- never committed
+.env
+.env.local
+*.pem
+*.key
+!testdata/*.key
+
+# test artefacts
+coverage.out
+coverage.html
+*.test
+
+# editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# generated docs
+docs/openapi/docs.go
+docs/openapi/swagger.json

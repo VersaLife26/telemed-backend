@@ -1,0 +1,1435 @@
+openapi: 3.1.0
+
+info:
+  title: telemed-payment-service
+  version: 0.1.0
+  summary: Payment intents, provider webhooks, commission, refunds, doctor payouts and invoices.
+  description: |
+    Owns money for the telemed platform. Three payment rails behind one
+    interface (Stripe cards, PayHere 2.0, Dialog Ideamart carrier billing),
+    idempotent provider webhooks, versioned commission rules, a refund policy,
+    a re-runnable daily payout job, PDF invoices, and an append-only
+    double-entry ledger.
+
+    All money is integer cents. There is no decimal field in this API.
+
+    The `/webhooks` tree is deliberately outside JWT authentication: providers
+    do not hold platform tokens. Those routes authenticate by signature, and are
+    rate limited and body-size capped instead.
+  contact:
+    name: Telemed platform
+    url: https://github.com/VersaLife26/telemed-payment-service
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.yourapp.lk
+    description: production
+  - url: http://localhost:8085
+    description: local development
+
+tags:
+  - name: payments
+  - name: promotions
+  - name: payment-methods
+  - name: refunds
+  - name: payouts
+  - name: invoices
+  - name: webhooks
+  - name: operational
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/payments/intent:
+    post:
+      tags: [payments]
+      operationId: createPaymentIntent
+      summary: Begin collecting money for an appointment
+      description: |
+        Attaches a provider intent to the pending payment created by the
+        `appointment.created` event. The amount is never taken from the request:
+        it is scheduling's fact, and a client that could name its own amount
+        could name zero.
+
+        Safe to call repeatedly. The idempotency key is derived from the payment
+        id, so the rail returns the same intent rather than creating a second.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateIntentRequest' }
+            examples:
+              card:
+                summary: Card via Stripe
+                value: { appointment_id: "a3f1c2d4-0000-4000-8000-000000000001", provider: stripe }
+              carrier:
+                summary: Carrier billing via Dialog
+                value: { appointment_id: "a3f1c2d4-0000-4000-8000-000000000001", provider: dialog, phone: "+94771234567" }
+      responses:
+        '201':
+          description: Intent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/IntentView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: |
+            `PAYMENT_NOT_READY` — the `appointment.created` event has not landed
+            yet. Retry after a short backoff.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '502': { $ref: '#/components/responses/ProviderError' }
+
+  /api/v1/payments:
+    get:
+      tags: [payments]
+      operationId: listMyPayments
+      summary: The caller's own payments
+      description: |
+        A patient token returns the payments they made; a token carrying
+        `telemed_doctor_id` returns the payments that doctor earned.
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PerPage' }
+      responses:
+        '200':
+          description: Paginated payments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Payment' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/payments/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/PaymentID' }
+    get:
+      tags: [payments]
+      operationId: getPayment
+      summary: One payment with its refunds
+      description: |
+        Readable by the paying patient, the treating doctor, and admin roles.
+        Anyone else gets 403 rather than 404: they already proved they know a
+        valid id, so pretending it does not exist buys nothing.
+      responses:
+        '200':
+          description: The payment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      payment: { $ref: '#/components/schemas/Payment' }
+                      refunds:
+                        type: array
+                        items: { $ref: '#/components/schemas/Refund' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/payments/{id}/confirm-pin:
+    parameters:
+      - { $ref: '#/components/parameters/PaymentID' }
+    post:
+      tags: [payments]
+      operationId: confirmCarrierBillingPIN
+      summary: Complete a Dialog carrier-billing payment
+      description: |
+        The second half of the two-step carrier-billing flow. `CreateIntent` on
+        the Dialog rail sends a PIN by SMS and returns `requires_pin` with no
+        money moved; this confirms it and performs the debit.
+
+        Confirming twice is harmless: an already-settled payment is returned
+        unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pin]
+              properties:
+                pin: { type: string, minLength: 4, maxLength: 8, examples: ["482913"] }
+      responses:
+        '200':
+          description: The payment, now succeeded or failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Payment' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+
+  /api/v1/payments/{id}/refund:
+    parameters:
+      - { $ref: '#/components/parameters/PaymentID' }
+    post:
+      tags: [refunds]
+      operationId: refundPayment
+      summary: Return money under the cancellation policy (finance and super_admin only)
+      description: |
+        **Ops only.** A patient does not request their own refund here: they
+        cancel the appointment, and scheduling's cancellation decision arrives
+        on `appointment.cancelled`, which this service applies automatically. A
+        patient calling this endpoint gets `403 REFUND_NOT_ALLOWED` whatever
+        they send.
+
+        That is not merely a role convention. The patient branch is priced on
+        `notice = start_at - cancelled_at`, and with `start_at` withheld from a
+        non-ops caller the notice is hugely negative, which lands on the
+        50%-refund branch. Nothing on this path establishes that the
+        appointment was ever cancelled, so a patient could attend the
+        consultation and then recover half the fee from an empty request body
+        -- and all of it by repeating the request under a different `reason`,
+        because `reason` is part of the derived idempotency key.
+
+        Policy applied on the ops path: the doctor or the platform cancelling
+        refunds in full; a patient cancelling with at least two hours' notice
+        refunds in full; less than two hours refunds 50%; a no-show refunds
+        nothing.
+
+        Idempotent on the refund key, which defaults to
+        `refund:{payment_id}:{reason}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundRequest' }
+      responses:
+        '201':
+          description: Refund issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Refund' }
+        '403':
+          description: |
+            `REFUND_NOT_ALLOWED` — the caller is not `finance` or
+            `super_admin`. Cancel the appointment instead; the refund follows
+            automatically under the cancellation policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: |
+            `REFUND_NOT_ALLOWED` — the policy returns nothing, or there is no
+            unrefunded balance left.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+        '502': { $ref: '#/components/responses/ProviderError' }
+
+  /api/v1/payments/{id}/invoice:
+    parameters:
+      - { $ref: '#/components/parameters/PaymentID' }
+    get:
+      tags: [invoices]
+      operationId: getInvoicePDF
+      summary: The invoice as a PDF
+      description: |
+        The patient copy shows what they paid. The doctor and finance copies add
+        the settlement breakdown, naming the exact commission rule version that
+        priced it, so the numbers are reproducible years later.
+
+        The document contains no clinical information and no personal
+        identifiers — parties appear as short reference ids — because an invoice
+        is routinely forwarded to an employer or an insurer.
+      responses:
+        '200':
+          description: The invoice
+          headers:
+            Content-Disposition:
+              schema: { type: string, examples: ['attachment; filename="invoice-7c9e6679-....pdf"'] }
+            Cache-Control:
+              schema: { type: string, examples: ["no-store, private"] }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/payments/{id}/ledger:
+    parameters:
+      - { $ref: '#/components/parameters/PaymentID' }
+    get:
+      tags: [payments]
+      operationId: getPaymentLedger
+      summary: The double-entry legs behind one payment
+      description: |
+        `finance` and `super_admin` only. Legs sharing an `entry_id` always
+        balance; the table is append-only, enforced by a database trigger.
+      responses:
+        '200':
+          description: Ledger legs, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/LedgerEntry' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payments/order/{appointmentID}:
+    parameters:
+      - name: appointmentID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [promotions]
+      operationId: getOrderSummary
+      summary: The server's price breakdown for a booking
+      description: |
+        The payment screen renders this rather than subtracting a discount
+        itself. A total computed on the handset is a total an attacker
+        controls, and it is also a total that silently disagrees with the
+        charge the moment a promo reservation lapses.
+      responses:
+        '200':
+          description: The breakdown
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/OrderSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`PAYMENT_NOT_READY` — the appointment.created event has not landed yet.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/payments/promo/apply:
+    post:
+      tags: [promotions]
+      operationId: applyPromoCode
+      summary: Put a promo code on a booking
+      description: |
+        Reserves the code against the caller's pending payment and returns the
+        recomputed order summary. The reservation is held for
+        `PROMO_RESERVATION_TTL` and is *consumed* only when the payment
+        captures — a patient who applies a code and then closes the app does
+        not burn it.
+
+        Applying a different code replaces the first in the same transaction;
+        two codes on one consultation is not a feature. Applying the same code
+        again refreshes the hold and changes nothing else.
+
+        Refused once the price has been quoted to a rail: a provider intent is
+        denominated in a fixed amount, so moving ours afterwards would charge
+        the patient one figure and show them another.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id, code]
+              properties:
+                appointment_id: { type: string, format: uuid }
+                code: { type: string, minLength: 3, maxLength: 32, examples: ["WELCOME20"] }
+      responses:
+        '200':
+          description: The recomputed order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/OrderSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: |
+            `PROMO_EXHAUSTED` — the code's budget, or this patient's share of
+            it, is used up. `PAYMENT_NOT_READY` — no payment exists yet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: |
+            `PROMO_INVALID` (unknown or withdrawn), `PROMO_EXPIRED` (outside
+            its window), or `PROMO_NOT_APPLICABLE` (wrong currency, under the
+            minimum spend, the price is already locked, or the discount would
+            take the total to zero).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/payments/promo/remove:
+    post:
+      tags: [promotions]
+      operationId: removePromoCode
+      summary: Take the promo code back off a booking
+      description: |
+        Returns the code to its pool and restores the list price. It exists
+        because a patient who typed the wrong code and cannot undo it abandons
+        the booking rather than paying a price they did not expect.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id]
+              properties:
+                appointment_id: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The order at its list price
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/OrderSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: '`PROMO_NOT_APPLICABLE` — there is no code on this booking to remove.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/payments/promo/codes:
+    get:
+      tags: [promotions]
+      operationId: listPromoCodes
+      summary: Promotions on offer (finance and super_admin only)
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PerPage' }
+        - name: include_inactive
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Paginated promo codes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PromoCode' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [promotions]
+      operationId: createPromoCode
+      summary: Issue a promotion (finance and super_admin only)
+      description: |
+        Restricted because a promo code is a standing instruction to give money
+        away. Exactly one of `percent_bps` and `amount_off_cents` may be set;
+        `max_discount_cents` caps a percentage and is meaningless on a fixed
+        amount. `max_redemptions` absent means unlimited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePromoCodeRequest' }
+            examples:
+              percentage:
+                summary: 20% off, capped at LKR 500, 1000 redemptions, one per patient
+                value:
+                  code: WELCOME20
+                  discount_type: percent
+                  percent_bps: 2000
+                  max_discount_cents: 50000
+                  max_redemptions: 1000
+                  max_per_user: 1
+              fixed:
+                summary: LKR 250 off any consultation over LKR 1,000
+                value:
+                  code: LKR250OFF
+                  discount_type: fixed
+                  amount_off_cents: 25000
+                  min_amount_cents: 100000
+      responses:
+        '201':
+          description: The promotion
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PromoCode' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /api/v1/payments/promo/codes/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [promotions]
+      operationId: deactivatePromoCode
+      summary: Withdraw a promotion (finance and super_admin only)
+      description: |
+        Stops the code being redeemed. Reservations already held are left
+        alone: a patient part-way through a checkout keeps the price they were
+        quoted. Withdrawing a promotion is a decision about the future, not a
+        repricing of carts in flight.
+      responses:
+        '204': { description: Withdrawn }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/payments/dialog/request-pin:
+    post:
+      tags: [payments]
+      operationId: requestCarrierBillingPIN
+      summary: Send a carrier-billing PIN to the patient's handset
+      description: |
+        Opens (or re-opens) a Dialog carrier-billing challenge for an
+        appointment's payment, and returns the deadline and the remaining
+        attempts. It carries no carrier reference and obviously no PIN.
+
+        Tapping this again supersedes the outstanding challenge rather than
+        adding a second: two live references would mean the SMS the patient is
+        reading might correspond to either.
+
+        `phone` is required. This service does not hold the patient's number —
+        user-service does — and fetching it on the money path would put a
+        user-service outage between a patient and their consultation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id, phone]
+              properties:
+                appointment_id: { type: string, format: uuid }
+                phone: { type: string, examples: ["+94771234567"] }
+      responses:
+        '201':
+          description: The challenge
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PINChallenge' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`CONFLICT` — this consultation is already paid for.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+        '502': { $ref: '#/components/responses/ProviderError' }
+
+  /api/v1/payments/dialog/confirm:
+    post:
+      tags: [payments]
+      operationId: confirmCarrierBillingPINForAppointment
+      summary: Enter the carrier-billing PIN
+      description: |
+        The appointment-keyed twin of `POST /payments/{id}/confirm-pin`; both
+        call the same service method. This one exists because an appointment id
+        is the only identifier the patient's app holds when it opens the
+        carrier-billing screen.
+
+        A wrong PIN is `422 PIN_INVALID` and leaves the patient on the same
+        screen with one fewer attempt. Running out is `409
+        PIN_ATTEMPTS_EXCEEDED` and the payment fails. An expired challenge is
+        `409 PIN_EXPIRED` and the payment returns to `pending`, from which a
+        new PIN can be requested.
+
+        A carrier that never answered costs the patient nothing: the attempt is
+        given back.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id, pin]
+              properties:
+                appointment_id: { type: string, format: uuid }
+                pin: { type: string, minLength: 4, maxLength: 8 }
+      responses:
+        '200':
+          description: The payment, now succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Payment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`PIN_NOT_OUTSTANDING`, `PIN_EXPIRED` or `PIN_ATTEMPTS_EXCEEDED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`PIN_INVALID` — wrong PIN, attempts remain.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+        '502': { $ref: '#/components/responses/ProviderError' }
+
+  /api/v1/payments/methods:
+    get:
+      tags: [payment-methods]
+      operationId: listPaymentMethods
+      summary: The caller's saved cards, default first
+      description: |
+        Returns display metadata only. The provider token and the provider
+        customer handle are credentials against the rail and are never
+        serialised to a client.
+      responses:
+        '200':
+          description: Saved methods
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SavedPaymentMethod' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+    post:
+      tags: [payment-methods]
+      operationId: confirmCardSetup
+      summary: Record the card a completed setup produced
+      description: |
+        Called by the client once the provider's SDK sheet reports success. The
+        provider's `setup_intent.succeeded` webhook records the same card
+        independently; the two race constantly and the loser is a no-op,
+        because the write is idempotent on the provider token.
+
+        Ownership comes from the setup intent's own metadata, not from the
+        caller, so one patient cannot claim another's setup by guessing its id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setup_intent_id]
+              properties:
+                setup_intent_id: { type: string, maxLength: 255 }
+      responses:
+        '201':
+          description: The saved card
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/SavedPaymentMethod' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: '`PAYMENT_METHOD_INVALID` — the setup did not complete.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+
+  /api/v1/payments/methods/setup-intent:
+    post:
+      tags: [payment-methods]
+      operationId: startCardSetup
+      summary: Begin saving a card
+      description: |
+        Returns the client secret the provider's own SDK sheet confirms
+        against, plus the customer handle and an ephemeral key so that sheet
+        can also list cards the patient already saved.
+
+        The card number is typed into the provider's sheet and goes to the
+        provider directly. It never reaches this service, and there is no
+        column it could be written to.
+      responses:
+        '201':
+          description: The setup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/SetupIntent' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+        '502': { $ref: '#/components/responses/ProviderError' }
+
+  /api/v1/payments/methods/{methodID}:
+    parameters:
+      - name: methodID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [payment-methods]
+      operationId: forgetPaymentMethod
+      summary: Delete a saved card
+      description: |
+        Detaches the token at the rail first, then soft-deletes the row. That
+        order matters: deleting our row first and then failing the detach would
+        leave a chargeable token at the provider that we can no longer see.
+
+        Deleting the default promotes the patient's next-oldest card, because a
+        patient with cards and no default is shown "enter a card" at checkout.
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+
+  /api/v1/payments/methods/{methodID}/default:
+    parameters:
+      - name: methodID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [payment-methods]
+      operationId: setDefaultPaymentMethod
+      summary: Make a saved card the default
+      description: |
+        Clearing the old default and setting the new one happen in one
+        transaction under a partial unique index, so the database refuses any
+        interleaving that would leave a patient with two defaults — which is
+        not cosmetic: checkout would charge whichever row came back first.
+      responses:
+        '200':
+          description: The new default
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/SavedPaymentMethod' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotSupported' }
+
+  /api/v1/payouts/run:
+    post:
+      tags: [payouts]
+      operationId: runPayouts
+      summary: Run the settlement job now
+      description: |
+        `super_admin` only. Safe to call at any time and safe to call twice: the
+        job resumes unsettled batches before creating new ones, payments are
+        claimed exactly once by `WHERE payout_id IS NULL`, and each transfer
+        carries its batch's stable idempotency key.
+      responses:
+        '200':
+          description: Run summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/RunSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/payouts:
+    get:
+      tags: [payouts]
+      operationId: listPayouts
+      summary: Settlement history
+      description: |
+        A doctor sees their own; `super_admin` and `finance` see everyone's. A
+        caller who is neither gets an empty list rather than a 403, which would
+        leak that payouts exist at all.
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PerPage' }
+      responses:
+        '200':
+          description: Paginated payouts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Payout' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  /webhooks/stripe:
+    post:
+      tags: [webhooks]
+      operationId: stripeWebhook
+      summary: Stripe event callback
+      security: []
+      description: |
+        Authenticated by the `Stripe-Signature` header: HMAC-SHA256 over
+        `timestamp.body`, with a five-minute replay window. A signature stays
+        cryptographically valid forever, so the age check is the replay defence,
+        not an optimisation.
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string, examples: ["t=1755678000,v1=5257a86..."] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { $ref: '#/components/responses/WebhookAccepted' }
+        '401': { $ref: '#/components/responses/SignatureInvalid' }
+        '404': { $ref: '#/components/responses/WebhookUnmatched' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /webhooks/payhere:
+    post:
+      tags: [webhooks]
+      operationId: payhereNotify
+      summary: PayHere notify callback
+      security: []
+      description: |
+        Form-encoded. Authenticated by the `md5sig` field:
+        `MD5(merchant_id + order_id + payhere_amount + payhere_currency + status_code + MD5(secret))`,
+        uppercased, compared with `crypto/subtle.ConstantTimeCompare`.
+
+        PayHere sends no timestamp and no event id. The event id is synthesised
+        from `order_id:payment_id:status_code`, which is stable across
+        redeliveries, and the `(provider, event_id)` unique index is the only
+        replay defence available. An IP allowlist in front of this endpoint is
+        strongly recommended.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [merchant_id, order_id, payhere_amount, payhere_currency, status_code, md5sig]
+              properties:
+                merchant_id: { type: string }
+                order_id: { type: string, description: the payment id }
+                payment_id: { type: string, description: PayHere's own id }
+                payhere_amount: { type: string, examples: ["5000.00"] }
+                payhere_currency: { type: string, examples: ["LKR"] }
+                status_code: { type: string, enum: ["2", "0", "-1", "-2", "-3"] }
+                md5sig: { type: string }
+                method: { type: string }
+                status_message: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/WebhookAccepted' }
+        '401': { $ref: '#/components/responses/SignatureInvalid' }
+        '404': { $ref: '#/components/responses/WebhookUnmatched' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /webhooks/dialog:
+    post:
+      tags: [webhooks]
+      operationId: dialogCallback
+      summary: Dialog Ideamart status callback
+      security: []
+      description: |
+        Ideamart does not sign its callbacks. This endpoint requires an
+        HMAC-SHA256 header we ask Dialog to configure, verified in constant time,
+        plus a timestamp header bounding a five-minute replay window. Where that
+        cannot be arranged, `DIALOG_ALLOW_UNSIGNED_WEBHOOKS=true` downgrades to
+        IP-allowlist-only protection and the downgrade is logged on every boot.
+      parameters:
+        - name: X-Ideamart-Signature
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Ideamart-Timestamp
+          in: header
+          required: true
+          schema: { type: string, description: unix seconds }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                statusCode: { type: string, examples: ["S1000"] }
+                statusDetail: { type: string }
+                internalTrxId: { type: string }
+                externalTrxId: { type: string }
+                amount: { type: string }
+                currencyCode: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/WebhookAccepted' }
+        '401': { $ref: '#/components/responses/SignatureInvalid' }
+        '404': { $ref: '#/components/responses/WebhookUnmatched' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /webhooks/mock:
+    post:
+      tags: [webhooks]
+      operationId: mockWebhook
+      summary: Mock rail callback (development only)
+      security: []
+      description: |
+        The mock rail signs with the same scheme as Stripe and enforces the same
+        replay window, so local development exercises the real verification path
+        rather than skipping it. The rail refuses to be enabled when `ENV=prod`.
+      parameters:
+        - name: X-Mock-Signature
+          in: header
+          required: true
+          schema: { type: string, examples: ["t=1755678000,v1=deadbeef..."] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, type]
+              properties:
+                id: { type: string }
+                type:
+                  type: string
+                  enum: [payment.succeeded, payment.failed, payment.pending, refund.succeeded, refund.failed]
+                provider_intent_id: { type: string }
+                payment_id: { type: string }
+                appointment_id: { type: string }
+                amount_cents: { type: integer, format: int64 }
+                provider_fee_cents: { type: integer, format: int64 }
+                failure_reason: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/WebhookAccepted' }
+        '401': { $ref: '#/components/responses/SignatureInvalid' }
+
+  /health/live:
+    get:
+      tags: [operational]
+      operationId: liveness
+      security: []
+      summary: Liveness — never touches a dependency
+      responses:
+        '200':
+          description: Alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, examples: [alive] }
+                  service: { type: string }
+
+  /health/ready:
+    get:
+      tags: [operational]
+      operationId: readiness
+      security: []
+      summary: Readiness — probes Postgres and Redis
+      responses:
+        '200': { description: Ready }
+        '503': { description: Degraded or draining }
+
+  /metrics:
+    get:
+      tags: [operational]
+      operationId: metrics
+      security: []
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Metrics
+          content:
+            text/plain: { schema: { type: string } }
+
+  /version:
+    get:
+      tags: [operational]
+      operationId: version
+      security: []
+      summary: Build information
+      responses:
+        '200':
+          description: Version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: { type: string }
+                  version: { type: string }
+                  env: { type: string }
+                  go: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        RS256 JWT from either issuer: telemed-user-service for patient and
+        doctor tokens, Keycloak for admin tokens. Both key sets are trusted and
+        the `iss` claim is checked against an allowlist — verifying the
+        signature alone would let either issuer mint an admin token.
+
+  parameters:
+    PaymentID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PerPage:
+      name: per_page
+      in: query
+      description: Capped at 100 so one client cannot pull the whole table.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    BadRequest:
+      description: Unparseable body, unknown field, or malformed UUID
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Authenticated, but not a party to this resource
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: No such resource
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: The resource is in a state this operation cannot be applied to
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ValidationFailed:
+      description: A field failed validation; see `fields`
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PaymentRequired:
+      description: The rail declined — card declined, insufficient balance, wrong PIN
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ProviderError:
+      description: The rail is not responding; retry after a short backoff
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotSupported:
+      description: |
+        The payment's rail cannot perform this operation. PayHere refunds are
+        full-amount only; Dialog carrier billing cannot refund or pay out at all.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PayloadTooLarge:
+      description: Webhook body exceeded 256 KiB
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    SignatureInvalid:
+      description: |
+        Signature verification failed, or the delivery is outside the replay
+        tolerance window. The response deliberately does not say which.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rejected:
+              value: { code: SIGNATURE_INVALID, message: signature verification failed }
+    WebhookAccepted:
+      description: |
+        Accepted. `replayed: true` means the event was already known and nothing
+        changed. Both cases answer 200: anything else makes the provider retry.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              received: { type: boolean }
+              replayed: { type: boolean }
+              outcome:
+                type: string
+                enum: [payment_succeeded, payment_failed, payment_pending,
+                       refund_succeeded, refund_failed, payout_paid, payout_failed, ignored]
+    WebhookUnmatched:
+      description: |
+        No payment matches this event yet — usually the webhook overtook
+        `appointment.created`. The provider should retry.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [BAD_REQUEST, VALIDATION_FAILED, UNAUTHORIZED, FORBIDDEN, NOT_FOUND,
+                 CONFLICT, PAYMENT_NOT_READY, REFUND_NOT_ALLOWED, PAYMENT_REQUIRED,
+                 PROVIDER_ERROR, SIGNATURE_INVALID, RATE_LIMITED, UNPROCESSABLE,
+                 INTERNAL_ERROR, SERVICE_UNAVAILABLE, TIMEOUT]
+        message: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+        request_id: { type: string }
+
+    Meta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer, format: int64 }
+        total_pages: { type: integer }
+
+    CreateIntentRequest:
+      type: object
+      required: [appointment_id]
+      additionalProperties: false
+      properties:
+        appointment_id: { type: string, format: uuid }
+        provider:
+          type: string
+          enum: [stripe, payhere, dialog, mock]
+        phone:
+          type: string
+          description: |
+            E.164 Sri Lankan mobile. Required for carrier billing, ignored
+            otherwise. Accepts 0771234567, 94771234567 and +94 77 123 4567.
+          pattern: '^\+947[0-9]{8}$'
+        return_url: { type: string, format: uri }
+
+    IntentView:
+      type: object
+      properties:
+        payment: { $ref: '#/components/schemas/Payment' }
+        client_secret:
+          type: string
+          description: Stripe browser confirmation token. A short-lived secret, never logged.
+        redirect_url:
+          type: string
+          description: PayHere hosted checkout.
+        reference:
+          type: string
+          description: |
+            The rail's own correlation reference. For PayHere this is the signed
+            checkout payload as JSON; for Dialog it is the PIN challenge id.
+        next_action:
+          type: string
+          enum: [confirm_card, redirect, enter_pin, none]
+        pin_challenge:
+          allOf: [{ $ref: '#/components/schemas/PINChallenge' }]
+          description: Present only when `next_action` is `enter_pin`.
+        order: { $ref: '#/components/schemas/OrderSummary' }
+
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        specialty: { type: string }
+        corporate_client: { type: string }
+        amount_cents:
+          type: integer
+          format: int64
+          description: |
+            Integer cents. Never a decimal. This is what the rail is asked to
+            charge and what the commission split is computed from -- i.e. the
+            price AFTER any promotion.
+        gross_amount_cents:
+          type: integer
+          format: int64
+          description: The doctor's list price, frozen at creation and never moved afterwards.
+        discount_cents:
+          type: integer
+          format: int64
+          description: '`gross_amount_cents - amount_cents`, enforced by a CHECK constraint.'
+        promo_code: { type: string, examples: ["WELCOME20"] }
+        currency: { type: string, examples: [LKR] }
+        provider: { type: string, enum: [stripe, payhere, dialog, mock] }
+        provider_intent_id: { type: string }
+        status:
+          type: string
+          enum: [pending, requires_action, requires_pin, succeeded, failed, partially_refunded, refunded]
+        commission_cents: { type: integer, format: int64 }
+        provider_fee_cents: { type: integer, format: int64 }
+        doctor_payout_cents: { type: integer, format: int64 }
+        refunded_cents: { type: integer, format: int64 }
+        refunded_commission_cents: { type: integer, format: int64 }
+        refunded_payout_cents: { type: integer, format: int64 }
+        commission_rule_id:
+          type: string
+          format: uuid
+          description: |
+            The exact, immutable commission rule version that priced this
+            payment. This is what makes an invoice reprinted years later
+            reproduce the original numbers.
+        commission_rule_key: { type: string, examples: ["specialty:gp"] }
+        commission_rule_version: { type: integer }
+        payout_id: { type: string, format: uuid, description: Non-null once settled to the doctor. }
+        failure_reason: { type: string }
+        succeeded_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: Optimistic lock. }
+      description: |
+        For any settled payment,
+        `commission_cents + provider_fee_cents + doctor_payout_cents == amount_cents`
+        exactly, and
+        `refunded_commission_cents + refunded_payout_cents == refunded_cents`.
+        Both are enforced by CHECK constraints, not only by the application.
+
+    OrderSummary:
+      type: object
+      description: |
+        The server's arithmetic for the payment screen. The client renders
+        these figures; it never subtracts a discount itself.
+      properties:
+        payment_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        consultation_fee_cents:
+          type: integer
+          format: int64
+          description: The doctor's list price, in integer cents.
+        discount_cents: { type: integer, format: int64 }
+        total_cents:
+          type: integer
+          format: int64
+          description: '`consultation_fee_cents - discount_cents`; what the rail will be asked to charge.'
+        currency: { type: string, examples: [LKR] }
+        applied_promo_code: { type: string, examples: ["WELCOME20"] }
+        promo_expires_at:
+          type: string
+          format: date-time
+          description: |
+            When the reservation lapses. After this the code returns to its
+            pool and the booking is quoted at the list price again.
+
+    PromoCode:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, description: Stored and matched upper-case. }
+        description: { type: string }
+        discount_type: { type: string, enum: [percent, fixed] }
+        percent_bps:
+          type: integer
+          description: 'Integer basis points: 2000 = 20.00%. No floating point anywhere.'
+        amount_off_cents: { type: integer, format: int64 }
+        max_discount_cents: { type: integer, format: int64, description: Caps a percentage. 0 means uncapped. }
+        min_amount_cents: { type: integer, format: int64 }
+        currency: { type: string, examples: [LKR] }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer, description: Absent means unlimited. }
+        max_per_user: { type: integer }
+        redemption_count:
+          type: integer
+          description: Live redemptions -- reserved plus consumed, never released.
+        active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreatePromoCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [code, discount_type]
+      properties:
+        code: { type: string, minLength: 3, maxLength: 32 }
+        description: { type: string, maxLength: 200 }
+        discount_type: { type: string, enum: [percent, fixed] }
+        percent_bps: { type: integer, minimum: 0, maximum: 10000 }
+        amount_off_cents: { type: integer, format: int64, minimum: 0 }
+        max_discount_cents: { type: integer, format: int64, minimum: 0 }
+        min_amount_cents: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer, minimum: 1 }
+        max_per_user: { type: integer, minimum: 1, default: 1 }
+
+    PINChallenge:
+      type: object
+      description: |
+        An outstanding carrier-billing authorisation. It carries no carrier
+        reference and no PIN: everything the app needs is the deadline and how
+        many tries are left.
+      properties:
+        payment_id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        masked_msisdn: { type: string, examples: ["+9477***4567"] }
+        expires_at: { type: string, format: date-time }
+        attempts_remaining: { type: integer }
+        amount_cents: { type: integer, format: int64 }
+        currency: { type: string, examples: [LKR] }
+
+    SetupIntent:
+      type: object
+      description: |
+        What the provider's SDK sheet needs to collect a card. The card number
+        goes from the handset to the provider directly and never reaches this
+        service.
+      properties:
+        setup_intent_id: { type: string }
+        client_secret:
+          type: string
+          description: Short-lived, scoped to this one setup. Returned to the owning patient, never logged.
+        customer_id:
+          type: string
+          description: The rail's customer handle, for the sheet's saved-card list.
+        ephemeral_key:
+          type: string
+          description: |
+            Lets the sheet display cards the patient already saved. Absent when
+            the rail has no such concept, in which case the sheet can only
+            collect a new card.
+        provider: { type: string, enum: [stripe, payhere, dialog, mock] }
+
+    SavedPaymentMethod:
+      type: object
+      description: |
+        Display metadata for one tokenised instrument. There is no card number
+        here and no CVV, in this schema or in the database: `last4` is the last
+        four digits the provider reports about a card this service has never
+        seen. The provider token and customer handle are credentials against
+        the rail and are deliberately absent from this shape.
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [card, wallet, bank] }
+        brand: { type: string, examples: [visa] }
+        last4: { type: string, pattern: '^[0-9]{4}$', examples: ["4242"] }
+        exp_month: { type: integer, minimum: 1, maximum: 12 }
+        exp_year: { type: integer }
+        is_default: { type: boolean }
+        expired:
+          type: boolean
+          description: |
+            True once the expiry month has passed. An expired card is still
+            listed rather than hidden, so the patient can see why it stopped
+            working.
+        created_at: { type: string, format: date-time }
+
+    RefundRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        cancelled_by:
+          type: string
+          enum: [doctor, patient, system]
+          description: Ops only. A patient always gets the patient branch.
+        no_show:
+          type: boolean
+          description: Ops only. Overrides the actor and refunds nothing.
+        start_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time, description: Ops only. Defaults to now. }
+        amount_cents:
+          type: integer
+          format: int64
+          description: Ops only. Overrides the policy.
+        reason:
+          type: string
+          enum: [doctor_cancelled, patient_cancelled_early, patient_cancelled_late,
+                 no_show, admin_override, duplicate]
+
+    Refund:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        payment_id: { type: string, format: uuid }
+        amount_cents: { type: integer, format: int64 }
+        currency: { type: string }
+        reason:
+          type: string
+          enum: [doctor_cancelled, patient_cancelled_early, patient_cancelled_late,
+                 no_show, admin_override, duplicate]
+        policy:
+          type: string
+          description: The policy clause that produced the amount, quoted verbatim.
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        provider_refund_id: { type: string }
+        status: { type: string, enum: [pending, succeeded, failed] }
+        failure_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    Payout:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        amount_cents: { type: integer, format: int64 }
+        currency: { type: string }
+        payment_count: { type: integer }
+        status: { type: string, enum: [pending, processing, paid, failed, cancelled] }
+        provider: { type: string, enum: [stripe, payhere, dialog, mock] }
+        transfer_id: { type: string }
+        failure_reason: { type: string }
+        initiated_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+        attempts: { type: integer }
+        created_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    RunSummary:
+      type: object
+      properties:
+        resumed: { type: integer, description: Batches carried over from a previous, crashed run. }
+        created: { type: integer }
+        paid: { type: integer }
+        failed: { type: integer }
+        skipped: { type: integer }
+        amount_cents: { type: integer, format: int64 }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+
+    LedgerEntry:
+      type: object
+      description: |
+        One leg of a balanced double-entry transaction. Legs sharing an
+        `entry_id` always sum to zero. The table is append-only: UPDATE, DELETE
+        and TRUNCATE are refused by a database trigger.
+      properties:
+        id: { type: integer, format: int64 }
+        entry_id: { type: string, format: uuid }
+        entry_type:
+          type: string
+          enum: [payment.captured, refund.issued, payout.sent, correction]
+        account:
+          type: string
+          enum: ['asset:provider_receivable', 'asset:cash', 'revenue:commission',
+                 'liability:doctor_payable', 'liability:provider_fee_payable']
+        direction: { type: string, enum: [debit, credit] }
+        amount_cents: { type: integer, format: int64, minimum: 1 }
+        currency: { type: string }
+        payment_id: { type: string, format: uuid }
+        payout_id: { type: string, format: uuid }
+        refund_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        description: { type: string }
+        occurred_at: { type: string, format: date-time }

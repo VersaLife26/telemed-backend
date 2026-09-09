@@ -1,0 +1,1314 @@
+{
+  "routes": [
+    {
+      "name": "otp-send",
+      "pattern": "/api/v1/auth/otp/send",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "strict_otp",
+      "rate_limit_key_field": "phone",
+      "description": "Request a phone OTP. Public per AGENT-BRIEF explicit allowlist."
+    },
+    {
+      "name": "otp-verify",
+      "pattern": "/api/v1/auth/otp/verify",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "strict_otp_verify",
+      "rate_limit_key_field": "phone",
+      "description": "Verify a phone OTP and mint tokens. Public per AGENT-BRIEF explicit allowlist; also phone+IP limited because this is the OTP brute-force surface."
+    },
+    {
+      "name": "auth-register-email",
+      "pattern": "/api/v1/auth/register/email",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Register a patient with email and password. Public; user-service rate-limits per email and per IP. Doctors are not created here."
+    },
+    {
+      "name": "auth-login-email",
+      "pattern": "/api/v1/auth/login/email",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Email and password login for patients and doctors. Public; the password is the credential. User-service rate-limits per email."
+    },
+    {
+      "name": "auth-oauth-google",
+      "pattern": "/api/v1/auth/oauth/google",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Google ID-token login. Public; user-service verifies the token with Google and mints the platform JWT."
+    },
+    {
+      "name": "auth-refresh",
+      "pattern": "/api/v1/auth/refresh",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Rotate a refresh token into a new access token. PUBLIC by necessity: the caller's access token has expired, which is the entire reason it is calling. The refresh token itself is the credential, and user-service verifies it, detects reuse and refuses suspended accounts. Rate-limited harder than a normal read because it is a credential-presentation endpoint. Its absence from this table meant every session died 15 minutes after login with no way to renew."
+    },
+    {
+      "name": "auth-logout",
+      "pattern": "/api/v1/auth/logout",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Revoke the presented refresh token. Public for the same reason as refresh: a client logging out after its access token expired must still be able to kill the session. Idempotent upstream."
+    },
+    {
+      "name": "auth-logout-all",
+      "pattern": "/api/v1/auth/logout-all",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Revoke every session for the caller. Requires a live access token because it acts on the whole account, not one presented token."
+    },
+    {
+      "name": "user-me-get",
+      "pattern": "/api/v1/users/me",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Current user profile."
+    },
+    {
+      "name": "user-me-put",
+      "pattern": "/api/v1/users/me",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Update current user profile."
+    },
+    {
+      "name": "user-me-password",
+      "pattern": "/api/v1/users/me/password",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Set or change the caller's password so they can use email login after an OTP or Google session."
+    },
+    {
+      "name": "user-me-delete",
+      "pattern": "/api/v1/users/me",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Request PDPA account deletion. Soft-deletes now and schedules erasure after the support grace window."
+    },
+    {
+      "name": "user-family-list",
+      "pattern": "/api/v1/users/me/family",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "List the caller's family member profiles."
+    },
+    {
+      "name": "user-family-post",
+      "pattern": "/api/v1/users/me/family",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Add a family member profile. NOTE the /me/ segment: user-service registers this subtree under /users/me/family, and this entry previously omitted it, so every call 404'd at the upstream."
+    },
+    {
+      "name": "user-family-put",
+      "pattern": "/api/v1/users/me/family/{familyMemberID}",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Update a family member profile."
+    },
+    {
+      "name": "user-family-delete",
+      "pattern": "/api/v1/users/me/family/{familyMemberID}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Remove a family member profile."
+    },
+    {
+      "name": "doctor-apply",
+      "pattern": "/api/v1/doctors/apply",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "doctor-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "strict_otp",
+      "rate_limit_key_field": "phone",
+      "description": "Public doctor application before OTP. No account is created until admin approval and OTP."
+    },
+    {
+      "name": "doctor-application-eligibility",
+      "pattern": "/api/v1/doctors/applications/eligibility",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "moderate",
+      "description": "Whether a phone may complete doctor-portal OTP (approved application or already activated)."
+    },
+    {
+      "name": "doctor-register",
+      "pattern": "/api/v1/doctors/register",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Begin doctor onboarding. Any authenticated user; doctor-service enforces the rest."
+    },
+    {
+      "name": "doctor-search",
+      "pattern": "/api/v1/doctors",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "moderate",
+      "description": "Search approved doctors. Public per AGENT-BRIEF explicit allowlist."
+    },
+    {
+      "name": "doctor-me-get",
+      "pattern": "/api/v1/doctors/me",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The calling doctor's own profile, including verification status. Static /me beats the /{doctorID} pattern in chi's tree, so this does not shadow doctor-detail."
+    },
+    {
+      "name": "doctor-me-put",
+      "pattern": "/api/v1/doctors/me",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Edit the calling doctor's profile (fee, specialty, languages, bio, qualifications). Optimistic-locked on version upstream."
+    },
+    {
+      "name": "doctor-availability-get",
+      "pattern": "/api/v1/doctors/me/availability",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Read the calling doctor's declared weekly working hours."
+    },
+    {
+      "name": "doctor-availability-put",
+      "pattern": "/api/v1/doctors/me/availability",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Declare weekly working hours. Doctor role only."
+    },
+    {
+      "name": "doctor-schedule-settings-get",
+      "pattern": "/api/v1/doctors/me/schedule-settings",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Read back the slot-shape settings saved by the availability editor (slot duration, buffer, daily cap, timezone). It is a separate endpoint from GET /doctors/me/availability because that one responds with a bare working-hours array and widening it to an object would break the doctor app's parser; without this the settings would be write-only, and the editor would show defaults on a second device with no way to know they are wrong."
+    },
+    {
+      "name": "doctor-documents-post",
+      "pattern": "/api/v1/doctors/me/documents",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Attach a credential document (SLMC certificate, NIC, degree certificate, photo) to the calling doctor's application. The body carries only the object key -- bytes go straight to object storage -- so this is a write, not an upload."
+    },
+    {
+      "name": "doctor-detail",
+      "pattern": "/api/v1/doctors/{doctorID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "moderate",
+      "description": "Public doctor profile. Public per AGENT-BRIEF explicit allowlist."
+    },
+    {
+      "name": "doctor-reviews-get",
+      "pattern": "/api/v1/doctors/{doctorID}/reviews",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "moderate",
+      "description": "Published, moderated patient reviews for a doctor. Public for the same reason as doctor search and doctor detail, which it is part of: a patient chooses a doctor by rating before creating an account, and doctor-service serves this route under OptionalAuth. Carries no PHI -- rating, comment and publication state only."
+    },
+    {
+      "name": "doctor-reviews-post",
+      "pattern": "/api/v1/doctors/{doctorID}/reviews",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Leave a review for a completed appointment. doctor-service enforces one review per appointment and that the caller actually attended it."
+    },
+    {
+      "name": "doctor-slots-get",
+      "pattern": "/api/v1/doctors/{doctorID}/slots",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Available slots for a doctor on a date. Owned by scheduling-service, not doctor-service: chi resolves this more specific pattern ahead of doctor-service's /{doctorID}."
+    },
+    {
+      "name": "appointments-post",
+      "pattern": "/api/v1/appointments",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Book a slot. Patient role only."
+    },
+    {
+      "name": "appointments-list",
+      "pattern": "/api/v1/appointments",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The caller's appointments. One endpoint serves both sides: scheduling-service scopes the query by the principal's role, so a doctor gets their schedule and a patient gets their bookings. This is what the doctor app's dashboard calls -- there is no /doctors/me/appointments in doctor-service, and the entry that used to claim there was routed every call to a 404."
+    },
+    {
+      "name": "appointment-detail",
+      "pattern": "/api/v1/appointments/{appointmentID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "One appointment. scheduling-service authorises that the caller is a party to it."
+    },
+    {
+      "name": "appointments-cancel",
+      "pattern": "/api/v1/appointments/{appointmentID}/cancel",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Cancel an appointment. Either party may; scheduling-service applies the refund policy."
+    },
+    {
+      "name": "appointment-complete",
+      "pattern": "/api/v1/appointments/{appointmentID}/complete",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Close out a consultation as completed. Doctor only -- scheduling-service refuses a patient outright, and this role gate is the same rule stated at the edge."
+    },
+    {
+      "name": "appointment-no-show",
+      "pattern": "/api/v1/appointments/{appointmentID}/no-show",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Mark a patient no-show. Doctor only: a patient must not be able to declare their own no-show, nor close out a consultation to dodge one."
+    },
+    {
+      "name": "waitlist-post",
+      "pattern": "/api/v1/waitlist",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Join a doctor's waitlist. Patient role only."
+    },
+    {
+      "name": "consultation-join",
+      "pattern": "/api/v1/consultations/{consultationID}/join",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Join a consultation and mint a LiveKit token. The path id here is the APPOINTMENT id -- this is the only endpoint on the service keyed that way, and the response returns consultation_id for every call below. The path parameter is named {consultationID} to match its siblings because chi permits only one parameter name per position in its tree; the value is an appointment id."
+    },
+    {
+      "name": "consultation-get",
+      "pattern": "/api/v1/consultations/{consultationID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Consultation state and participants. Keyed by consultation id, from the join response."
+    },
+    {
+      "name": "consultation-admit",
+      "pattern": "/api/v1/consultations/{consultationID}/admit",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Doctor admits a waiting patient. Keyed by consultation id."
+    },
+    {
+      "name": "consultation-end",
+      "pattern": "/api/v1/consultations/{consultationID}/end",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "End the call. Either party may. Keyed by consultation id."
+    },
+    {
+      "name": "consultation-consent",
+      "pattern": "/api/v1/consultations/{consultationID}/consent",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Record a telemedicine or recording consent decision. This is the endpoint that GATES RECORDING: egress starts only once both parties have granted. It was absent from this table, so recording consent could not be given through the gateway at all."
+    },
+    {
+      "name": "consultation-waiting-room",
+      "pattern": "/api/v1/consultations/{consultationID}/waiting-room",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Queue position and estimated wait for a waiting patient. Keyed by consultation id."
+    },
+    {
+      "name": "consultation-quality",
+      "pattern": "/api/v1/consultations/{consultationID}/quality",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Report a connection-quality sample and learn whether to downgrade video. Called repeatedly during a call on a bad 3G link, so it is rate-limited generously and timed as a read."
+    },
+    {
+      "name": "payment-intent-post",
+      "pattern": "/api/v1/payments/intent",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Create a payment intent for an appointment."
+    },
+    {
+      "name": "payments-list",
+      "pattern": "/api/v1/payments",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The caller's payments. payment-service scopes by principal."
+    },
+    {
+      "name": "payment-get",
+      "pattern": "/api/v1/payments/{paymentID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Payment status."
+    },
+    {
+      "name": "payment-order-get",
+      "pattern": "/api/v1/payments/order/{appointmentID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The server's price breakdown for a booking. The payment screen renders this instead of subtracting a discount itself: a total computed on the handset is a total an attacker controls."
+    },
+    {
+      "name": "payment-promo-apply",
+      "pattern": "/api/v1/payments/promo/apply",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Reserve a promo code against the caller's pending payment. Moderate rate limit, not generous: this is the endpoint someone would use to guess codes."
+    },
+    {
+      "name": "payment-promo-remove",
+      "pattern": "/api/v1/payments/promo/remove",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Take the promo code back off a booking and return it to its pool."
+    },
+    {
+      "name": "payment-promo-codes-get",
+      "pattern": "/api/v1/payments/promo/codes",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "roles": [
+        "super_admin",
+        "finance"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "List promotions. Role-gated at the edge as well as in payment-service, so a patient token is refused before it reaches an upstream. Not auth mode 'admin': promo management lives under /payments and is reached by finance staff, not only from the admin-web IP allowlist."
+    },
+    {
+      "name": "payment-promo-codes-post",
+      "pattern": "/api/v1/payments/promo/codes",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "roles": [
+        "super_admin",
+        "finance"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Issue a promotion. A promo code is a standing instruction to give money away, so it is finance's decision."
+    },
+    {
+      "name": "payment-promo-codes-delete",
+      "pattern": "/api/v1/payments/promo/codes/{code}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "roles": [
+        "super_admin",
+        "finance"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Withdraw a promotion. Reservations already held are left alone."
+    },
+    {
+      "name": "payment-dialog-request-pin",
+      "pattern": "/api/v1/payments/dialog/request-pin",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Send a carrier-billing PIN by SMS. Moderate, not generous: every call costs an SMS and reaches Dialog."
+    },
+    {
+      "name": "payment-dialog-confirm",
+      "pattern": "/api/v1/payments/dialog/confirm",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Enter the carrier-billing PIN. The attempt allowance in payment-service is the real brute-force defence; this limit is the outer one."
+    },
+    {
+      "name": "payment-confirm-pin",
+      "pattern": "/api/v1/payments/{paymentID}/confirm-pin",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Payment-keyed twin of /payments/dialog/confirm, for support tooling and any client that already holds the payment id. payment-service registers it and it was not routed at all."
+    },
+    {
+      "name": "payment-refund-post",
+      "pattern": "/api/v1/payments/{paymentID}/refund",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Refund a payment. payment-service applies the cancellation policy and refuses a patient asserting who cancelled. Registered and previously unrouted."
+    },
+    {
+      "name": "payment-invoice-get",
+      "pattern": "/api/v1/payments/{paymentID}/invoice",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "generous",
+      "description": "Invoice PDF. Upload timeout class because it renders a document, not because it uploads one."
+    },
+    {
+      "name": "payment-ledger-get",
+      "pattern": "/api/v1/payments/{paymentID}/ledger",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "roles": [
+        "super_admin",
+        "finance"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "The double-entry legs behind one payment. Finance's view of the money, not the patient's receipt."
+    },
+    {
+      "name": "payment-methods-get",
+      "pattern": "/api/v1/payments/methods",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The caller's saved cards. Display metadata only: the provider token never leaves payment-service."
+    },
+    {
+      "name": "payment-methods-post",
+      "pattern": "/api/v1/payments/methods",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Record the card a completed provider SetupIntent produced."
+    },
+    {
+      "name": "payment-methods-setup-intent",
+      "pattern": "/api/v1/payments/methods/setup-intent",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Begin saving a card. Returns the provider client secret the SDK sheet confirms against; the card number goes handset-to-provider and never transits this gateway."
+    },
+    {
+      "name": "payment-method-delete",
+      "pattern": "/api/v1/payments/methods/{methodID}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Delete a saved card. Detaches the token at the rail first."
+    },
+    {
+      "name": "payment-method-default-put",
+      "pattern": "/api/v1/payments/methods/{methodID}/default",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Make a saved card the default."
+    },
+    {
+      "name": "payouts-list",
+      "pattern": "/api/v1/payouts",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "payment-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Payouts visible to the caller. No role gate: payment-service scopes by the principal's doctor_id and returns an empty list -- not a 403 -- to a caller with none, which is what keeps the endpoint from leaking that payouts exist. Backs the doctor app's earnings screen."
+    },
+    {
+      "name": "payouts-run",
+      "pattern": "/api/v1/payouts/run",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "admin",
+      "roles": [
+        "super_admin",
+        "finance"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Trigger a payout batch: the single highest-value money mutation on the platform. Auth mode 'admin', not merely role-gated. The previous note here claimed the admin IP allowlist only wraps /api/v1/admin/* -- it does not: router.go's composeMiddleware applies IPAllowlist, restrictOrigin and RequireTokenIssuer by AUTH MODE, per rule, and the URL prefix is a naming convention. Leaving this route on auth mode 'authenticated' therefore ran the platform's payout trigger with no IP allowlist, no admin-origin rejection and no issuer binding, all of which every read-only /admin/analytics route already had. The prefix convention is preserved by an explicit, named exception in routes_test.go."
+    },
+    {
+      "name": "webhook-stripe",
+      "pattern": "/api/v1/webhooks/stripe",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "webhook",
+      "description": "Stripe webhook. Public per AGENT-BRIEF explicit allowlist; payment-service verifies the signature."
+    },
+    {
+      "name": "webhook-payhere",
+      "pattern": "/api/v1/webhooks/payhere",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "webhook",
+      "description": "PayHere webhook. Public per AGENT-BRIEF explicit allowlist; payment-service verifies the signature."
+    },
+    {
+      "name": "webhook-dialog",
+      "pattern": "/api/v1/webhooks/dialog",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "webhook",
+      "description": "Dialog Genie webhook. Public per AGENT-BRIEF explicit allowlist; payment-service verifies the signature."
+    },
+    {
+      "name": "webhook-livekit",
+      "pattern": "/api/v1/webhooks/livekit",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "public",
+      "timeout_class": "write",
+      "rate_limit": "webhook",
+      "description": "LiveKit room/egress webhook. Public per AGENT-BRIEF explicit allowlist; consultation-service verifies the signature."
+    },
+    {
+      "name": "notifications-get",
+      "pattern": "/api/v1/notifications",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "In-app notification list."
+    },
+    {
+      "name": "notification-read-put",
+      "pattern": "/api/v1/notifications/{notificationID}/read",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Mark one notification read. PUT, not POST: notification-service registers it as PUT."
+    },
+    {
+      "name": "notification-preferences-get",
+      "pattern": "/api/v1/notifications/preferences",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Read channel and quiet-hours preferences. Static 'preferences' beats the /{notificationID} pattern in chi's tree."
+    },
+    {
+      "name": "notification-preferences-put",
+      "pattern": "/api/v1/notifications/preferences",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Update channel and quiet-hours preferences. PUT, not POST: this entry previously declared POST, which notification-service does not register, so every preference save 405'd."
+    },
+    {
+      "name": "notification-read-all-put",
+      "pattern": "/api/v1/notifications/read-all",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Clear the whole unread badge. Static 'read-all' beats the /{notificationID} pattern in chi's tree."
+    },
+    {
+      "name": "notification-devices-post",
+      "pattern": "/api/v1/notifications/devices",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Register or refresh an FCM device token. notification-service has registered this since day one and it was never routed, so push registration was unreachable through the only ingress the mobile apps have -- which is why the patient app invented POST /users/me/push-token."
+    },
+    {
+      "name": "notification-device-delete",
+      "pattern": "/api/v1/notifications/devices/{deviceID}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "notification-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Invalidate a device token on sign-out. Also registered and never routed."
+    },
+    {
+      "name": "prescriptions-post",
+      "pattern": "/api/v1/prescriptions",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Issue an e-prescription. Doctor role only."
+    },
+    {
+      "name": "prescriptions-by-appointment-get",
+      "pattern": "/api/v1/prescriptions",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Look up the prescription issued for an appointment (?appointment_id=). Patient, treating doctor, or active share."
+    },
+    {
+      "name": "prescription-get",
+      "pattern": "/api/v1/prescriptions/{prescriptionID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "One prescription, for a party to it. Static /verify lives at /api/v1/verify/prescriptions, so it does not collide with this parameter."
+    },
+    {
+      "name": "prescription-pdf-get",
+      "pattern": "/api/v1/prescriptions/{prescriptionID}/pdf",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Rendered prescription PDF. Upload timeout class because record-service renders the document on demand."
+    },
+    {
+      "name": "prescription-verify-get",
+      "pattern": "/api/v1/verify/prescriptions/{prescriptionID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "moderate",
+      "description": "Pharmacist prescription verification by QR. Public per AGENT-BRIEF explicit allowlist. The path is /verify/prescriptions/{id}, which is where record-service mounts it -- this entry previously declared /prescriptions/verify/{id}, a path no service registers, so every pharmacist scan 404'd."
+    },
+    {
+      "name": "records-list",
+      "pattern": "/api/v1/records",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The caller's medical record vault. record-service scopes by principal and logs the access."
+    },
+    {
+      "name": "records-upload-post",
+      "pattern": "/api/v1/records/upload",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Upload a medical record. Static 'upload' beats the /{recordID} pattern in chi's tree."
+    },
+    {
+      "name": "record-get",
+      "pattern": "/api/v1/records/{recordID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "One record's metadata."
+    },
+    {
+      "name": "records-delete",
+      "pattern": "/api/v1/records/{recordID}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Soft-delete a vault document. Owning patient only."
+    },
+    {
+      "name": "records-download-get",
+      "pattern": "/api/v1/records/{recordID}/download",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Download a medical record."
+    },
+    {
+      "name": "drugs-search",
+      "pattern": "/api/v1/drugs",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Drug reference search, backing the prescription builder's autocomplete. Authenticated with no role gate, matching record-service's own registration: this is clinical reference data, not patient data."
+    },
+    {
+      "name": "admin-doctors-pending",
+      "pattern": "/api/v1/admin/doctors/pending",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "admin-service",
+      "auth": "admin",
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "Doctor verification queue. Admin auth mode: role check plus the IP allowlist."
+    },
+    {
+      "name": "admin-doctors-verify",
+      "pattern": "/api/v1/admin/doctors/{doctorID}/verify",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "admin-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Approve or reject a doctor. Admin auth mode."
+    },
+    {
+      "name": "admin-analytics-revenue",
+      "pattern": "/api/v1/admin/analytics/revenue",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "admin-service",
+      "auth": "admin",
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "Revenue analytics. Admin auth mode."
+    },
+    {
+      "name": "admin-users-create",
+      "pattern": "/api/v1/admin/admin-users",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "admin-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Create an admin account, provisioning its Keycloak login. Super_admin only, enforced by admin-service. Write timeout: this call fans out to the identity provider."
+    },
+    {
+      "name": "doctor-availability-admin-read",
+      "pattern": "/api/v1/admin/doctors/{doctorID}/availability",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "admin",
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "Read a doctor's weekly working hours as staff. auth:admin, so the IP allowlist and admin origin restriction apply -- the same protections /api/v1/admin/* carries."
+    },
+    {
+      "name": "doctor-availability-admin-write",
+      "pattern": "/api/v1/admin/doctors/{doctorID}/availability",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "doctor-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Set a doctor's weekly working hours as staff. Doctors phone their hours in; an administrator enters them. Regenerates slots downstream, hence the write timeout."
+    },
+    {
+      "name": "doctor-schedule-settings-admin-read",
+      "pattern": "/api/v1/admin/doctors/{doctorID}/schedule-settings",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "admin",
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "Read a doctor's slot shape (duration, buffer, daily cap). Staff need it to see what they are about to overwrite."
+    },
+    {
+      "name": "admin-catchall",
+      "pattern": "/api/v1/admin/*",
+      "upstream": "admin-service",
+      "auth": "admin",
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "Everything else under the admin prefix. Named routes above exist for documentation and per-route timeouts; this guarantees no admin path can be reached without the IP allowlist by being absent from the table."
+    },
+    {
+      "name": "clinical-notes-list",
+      "pattern": "/api/v1/clinical-notes",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "A doctor's own clinical notes, paginated. record-service scopes to the caller."
+    },
+    {
+      "name": "clinical-notes-save",
+      "pattern": "/api/v1/clinical-notes/{appointmentID}",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "SOAP autosave. This route's absence was a CRITICAL client finding: the doctor app queued every note for an endpoint that 404'd, the 404 was classified non-retryable so entries were kept, and a doctor's entire clinical-note history accumulated unencrypted on the handset forever."
+    },
+    {
+      "name": "clinical-notes-get",
+      "pattern": "/api/v1/clinical-notes/{appointmentID}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Read one clinical note. Authorised and access-logged by record-service."
+    },
+    {
+      "name": "clinical-notes-finalise",
+      "pattern": "/api/v1/clinical-notes/{appointmentID}/finalise",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Sign a clinical note. Immutable thereafter except by amendment."
+    },
+    {
+      "name": "clinical-notes-amend",
+      "pattern": "/api/v1/clinical-notes/{appointmentID}/amend",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "generous",
+      "description": "Amend a finalised note; writes an append-only revision rather than overwriting."
+    },
+    {
+      "name": "clinical-notes-revisions",
+      "pattern": "/api/v1/clinical-notes/{appointmentID}/revisions",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The amendment trail for a note."
+    },
+    {
+      "name": "icd10-search",
+      "pattern": "/api/v1/icd10",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "ICD-10 reference search. A published classification, no patient data, so authenticated but not role-gated -- same treatment as /drugs."
+    }
+  ]
+}
