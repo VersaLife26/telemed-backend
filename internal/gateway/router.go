@@ -3,7 +3,6 @@ package gateway
 import (
 	"fmt"
 	"net/http"
-	"net/http/httputil"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
@@ -35,8 +34,14 @@ type Deps struct {
 // (doctor-service) for that one path shape while everything else falls
 // through to the wildcard.
 func Mount(r chi.Router, d Deps) error {
-	proxies := make(map[string]*httputil.ReverseProxy, len(d.Upstreams))
+	// One dispatcher per upstream: a reverse proxy for a service across the
+	// network, the domain's own handler when it is in this process.
+	proxies := make(map[string]http.Handler, len(d.Upstreams))
 	for name, up := range d.Upstreams {
+		if up.Handler != nil {
+			proxies[name] = newInProcessProxy(up, d.Metrics)
+			continue
+		}
 		proxies[name] = newReverseProxy(up, d.Metrics)
 	}
 

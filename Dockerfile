@@ -1,9 +1,9 @@
-# One image per entrypoint, selected at build time with --build-arg SERVICE.
+# One image, one binary: the whole platform.
 #
-# Phase 1 of consolidation keeps the nine deployables the platform already has;
-# only their source moved. So this file still produces nine images with the same
-# names and the same scratch/non-root shape as the nine repositories did --
-# what changed is that they are built from one module instead of nine.
+# There is no SERVICE build argument any more. cmd/telemed composes every domain
+# and the edge into one process, and TELEMED_DOMAINS selects a subset at RUN
+# time -- so the nine-process topology is still one `docker run` away from this
+# same image, without a second build.
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 RUN apk add --no-cache git ca-certificates tzdata
 WORKDIR /src
@@ -11,7 +11,6 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY . .
-ARG SERVICE=api-gateway
 ARG TARGETARCH
 ARG VERSION=dev
 ARG BUILD_TIME
@@ -21,7 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build \
       -trimpath \
       -ldflags="-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
-      -o /out/server ./cmd/${SERVICE}
+      -o /out/server ./cmd/telemed
 
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
@@ -30,5 +29,7 @@ COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /out/server /server
 USER 65532:65532
 ENV TZ=UTC
+# 8080 is the edge. The gRPC ports are only bound when EXPOSE_GRPC is set,
+# which a single-process deployment never needs.
 EXPOSE 8080 9090
 ENTRYPOINT ["/server"]

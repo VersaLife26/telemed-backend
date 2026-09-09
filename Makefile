@@ -1,9 +1,10 @@
-SERVICES := user-service doctor-service scheduling-service consultation-service \
-            payment-service notification-service record-service admin-service api-gateway
+# One binary now. TELEMED_DOMAINS picks a subset at run time; there is nothing
+# to select at build time.
+DOMAINS   := user doctor scheduling consultation payment notification record admin
 REGISTRY  ?= ghcr.io/versalife26/telemed
 VERSION   ?= 0.3.0
 
-.PHONY: help build test vet lint fmt tidy images $(addprefix image-,$(SERVICES))
+.PHONY: help build run test integration vet lint fmt tidy image migrate
 
 help: ## Show this help
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n",$$1,$$2}'
@@ -29,7 +30,11 @@ tidy: ## Assert go.mod/go.sum are tidy
 lint: ## golangci-lint
 	golangci-lint run
 
-images: $(addprefix image-,$(SERVICES)) ## Build all nine images
+run: ## Run the whole platform locally
+	go run ./cmd/telemed
 
-image-%: ## Build one service image: make image-user-service
-	docker build --build-arg SERVICE=$* -t $(REGISTRY)/$*:$(VERSION) .
+image: ## Build the image
+	docker build -t $(REGISTRY)/backend:$(VERSION) .
+
+migrate: ## Apply the bootstrap schemas then every domain's migrations
+	./scripts/migrate.sh

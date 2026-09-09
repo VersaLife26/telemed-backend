@@ -68,6 +68,20 @@ type Server struct {
 	checks []HealthCheck
 }
 
+// AddHealthChecks appends to the readiness probe after construction.
+//
+// The edge's per-upstream checks cannot be known when the server is built:
+// they are created while wiring the upstreams, which needs the router the
+// server owns. Guarded by the same lock the probe reads under.
+func (s *Server) AddHealthChecks(checks ...HealthCheck) {
+	if len(checks) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checks = append(s.checks, checks...)
+}
+
 // New builds the router with the standard middleware chain already applied.
 func New(o Options) *Server {
 	if o.RequestTimeout <= 0 {

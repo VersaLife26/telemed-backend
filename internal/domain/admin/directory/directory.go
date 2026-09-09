@@ -102,6 +102,22 @@ func New(addr string, timeout time.Duration, tlsCfg TLSConfig, creds credentials
 }
 
 // Close releases the gRPC connection.
+// NewInProcess wraps a UserServiceClient that is already resolved, instead of
+// dialling one.
+//
+// cmd/telemed passes user.InProcessClient here when the user domain is loaded
+// in this process. Nothing else changes: this type still holds a
+// userv1.UserServiceClient and still applies its own timeout, so the mapping
+// of NOT_FOUND, the PHI-safe logging and the projection behaviour are the same
+// code either way. conn stays nil, and Close is written to tolerate that.
+//
+// When the user domain is NOT in this process, the composer calls New
+// instead and the real gRPC client -- with its required mesh credential -- is
+// used exactly as before.
+func NewInProcess(client userv1.UserServiceClient, timeout time.Duration) *GRPCClient {
+	return &GRPCClient{client: client, timeout: timeout}
+}
+
 func (c *GRPCClient) Close() error {
 	if c.conn == nil {
 		return nil

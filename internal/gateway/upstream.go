@@ -17,6 +17,17 @@ type Upstream struct {
 	BaseURL *url.URL
 	Client  *http.Client
 	Breaker *Breaker
+
+	// Handler is set when this "upstream" is a domain in this process rather
+	// than a service across the network. When it is set, BaseURL and Client
+	// are nil and nothing dials. See inprocess.go.
+	Handler http.Handler
+
+	// sem bounds this domain's share of the process's in-flight work. Nil
+	// means unbounded, which is right for a real network upstream: the thing
+	// being protected there is the other process, and its own load shedding
+	// does that.
+	sem chan struct{}
 }
 
 // NewUpstream builds an Upstream with a transport whose connection pool is

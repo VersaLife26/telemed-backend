@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"net/http"
-	"net/http/httputil"
 	"time"
 
 	"telemed/internal/platform/httpx"
@@ -41,8 +40,13 @@ func bodyLimitFor(class TimeoutClass, cfg Config) int64 {
 // routeProxyHandler builds the innermost handler for one route: enforce the
 // body size cap, bound the whole round trip (including retries) by the
 // route's timeout class, consult the upstream's circuit breaker, and only
-// then hand off to the reverse proxy.
-func routeProxyHandler(rule RouteRule, up *Upstream, proxy *httputil.ReverseProxy, cfg Config) http.Handler {
+// then hand off.
+//
+// proxy is an http.Handler rather than a *httputil.ReverseProxy because the
+// same route table now serves both shapes: a reverse proxy when the domain is
+// another process, and the domain's own handler when it is in this one. Every
+// control above this line is identical either way, which is the point.
+func routeProxyHandler(rule RouteRule, up *Upstream, proxy http.Handler, cfg Config) http.Handler {
 	timeout := timeoutFor(rule.Timeout)
 	limit := rule.BodyLimitBytes
 	if limit <= 0 {

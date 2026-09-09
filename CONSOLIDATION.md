@@ -159,9 +159,115 @@ run, `scripts/migrate.sh` has not been executed against a real database, and
 gate for accepting Phase 2 — the SQL rewrites above are exactly the kind of
 change that compiles fine and fails on contact with a server.
 
-## Phase 3 — one binary
+## Phase 3 — one binary (done)
 
-`cmd/telemed`; gRPC clients become in-process adapters **carrying the
-`grpcauth` authorisation checks**; `internal/gateway` becomes `internal/edge`
-over the unchanged 103-route policy table. NATS and the transactional outbox
-stay exactly as they are.
+`cmd/telemed` is the platform. The nine `cmd/*-service` entrypoints are gone;
+`cmd/signhook` (a separate CLI) remains.
+
+### Shape
+
+Each domain's boot sequence moved out of its `main.go` into
+`internal/modules/<domain>`, which returns a `modular.Module`: its pool, its
+routes, its workers, its health checks, its closers. `cmd/telemed` builds the
+shared dependencies once — logger, metrics, tracing, Redis, NATS, the
+authenticator — and asks each enabled domain for a Module.
+
+The wiring inside each module was **moved, not retyped**. It is the same code,
+sliced out of the same file, with only the parts the composer now owns removed.
+
+### One binary, still any topology
+
+`TELEMED_DOMAINS` selects what a process runs. Default is everything.
+
+```
+telemed                                            # the whole platform
+TELEMED_DOMAINS=user  GRPC_PORT=9091 HTTP_PORT=8081 # the old user-service
+TELEMED_DOMAINS=edge                HTTP_PORT=8080  # the old api-gateway
+```
+
+That is the rollback path, and it needs no second build. A process that does not
+hold a domain reaches it exactly as before — over gRPC, with the mesh
+credential — because each module asks the registry first and falls back to
+dialling.
+
+### Least privilege is kept, not lost
+
+The plan recorded **L1** — losing the nine per-database least-privilege roles —
+as the migration's one unavoidable loss. It is not lost, because nothing forces
+one process to hold one connection identity.
+
+`dsnResolver` in `cmd/telemed/main.go` gives every domain **its own pool**, as
+`telemed_<domain>_app`, with `search_path` pinned to `svc_<domain>`. That role
+has no `USAGE` on any other schema, so a bug in the payment domain still cannot
+read the user directory even though the code shares an address space — enforced
+by Postgres, not by application code. `scripts/verify-db-privileges.sh` in
+telemed-infra proves it, and `TestDSNResolver_GivesEachDomainItsOwnRoleAndSchema`
+fails if two domains ever share a role.
+
+### The gRPC mesh
+
+Only two production call sites ever dialled: the admin and notification domains
+resolving users. Both now get `user.InProcessClient` from the module registry
+when the user domain is in the process.
+
+**On the mesh token.** The gRPC interceptor exists because "not routed from the
+internet" is a network accident, not an access control — anything that could
+open a TCP connection to :9091 could dump the patient directory. A Go method
+call from another package in the same binary is not reachable that way, and a
+process minting a token for itself and immediately verifying it authenticates
+nothing. The in-process path therefore does not re-check it. What does stay
+true, and is tested:
+
+- the listener keeps its interceptor whenever it is started, and it still fails
+  closed (`grpc_auth_test.go`, unchanged and passing);
+- the listener is **off by default** — `EXPOSE_GRPC` gates it. In one process
+  nothing dials :9091, and a PII surface nothing uses is a surface nothing
+  should be able to reach;
+- the adapter is only handed out inside the process that owns the user domain.
+- the per-caller authorisation that actually matters was never in the
+  interceptor: it is in the user service, which both paths call.
+
+### The edge
+
+`internal/gateway` keeps its name and its 103-route policy table. `Upstream`
+gained a `Handler` field; when it is set, `newInProcessProxy` calls the domain's
+router instead of dialling it, and reports the same outcome to the same circuit
+breaker and the same dependency metric. Auth class, rate-limit class, timeout
+class, body cap, admin IP allowlist and `TRUSTED_PROXIES` are untouched — the
+gateway's own test suite, including the 444-line route-table contract test,
+passes unmodified.
+
+**The one real regression, and its mitigation.** Nine processes each had their
+own goroutine budget, so a payment stampede degraded payments. One process
+shares one budget. `NewInProcessUpstream` takes a per-domain concurrency limit —
+the global `MaxInFlight` divided across the upstreams — so one domain cannot
+consume the whole budget and starve OTP verification. Over the limit it returns
+the same 503 the breaker already returns, so no caller learns a new failure mode.
+
+### What deliberately did not change
+
+NATS and the transactional outbox. A business change and its event are still
+written in one Postgres transaction and relayed afterwards. Replacing that with
+a direct call because the consumer now shares an address space would reintroduce
+exactly the failure the outbox prevents — "slot booked, nobody notified" — while
+looking like a simplification.
+
+### Verification
+
+```
+go build ./...                 PASS   (one binary: cmd/telemed, plus cmd/signhook)
+go vet ./...                   PASS
+go vet -tags=integration ./... PASS
+gofmt -l .                     clean
+go test ./...                  43 packages ok, 0 fail
+```
+
+New tests: `inprocess_test.go` (the adapter satisfies the generated interface,
+delegates, and passes errors back unchanged so a NOT_FOUND still stops rather
+than retries) and `cmd/telemed/main_test.go` (no two domains share a database
+role; `TELEMED_DOMAINS` parsing; the user domain is built first).
+
+**Still not verified:** anything needing live infrastructure. The process has
+never been started — no Postgres, no Redis, no NATS, no Docker daemon here — so
+boot order, shutdown draining and the golden-transcript replay remain the gate
+before this is deployed.
