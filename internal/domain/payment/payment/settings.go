@@ -42,19 +42,30 @@ type Settings struct {
 	PayHereReturnURL      string `mapstructure:"payhere_return_url"`
 	PayHereCancelURL      string `mapstructure:"payhere_cancel_url"`
 
-	DialogApplicationID string        `mapstructure:"dialog_application_id"`
-	DialogPassword      string        `mapstructure:"dialog_password"`
-	DialogBaseURL       string        `mapstructure:"dialog_base_url"`
-	DialogWebhookSecret string        `mapstructure:"dialog_webhook_secret"`
-	DialogAllowUnsigned bool          `mapstructure:"dialog_allow_unsigned_webhooks"`
-	DialogTolerance     time.Duration `mapstructure:"dialog_webhook_tolerance"`
-	// DialogWebhookCIDRs is the carrier's egress ranges, comma separated. It
+	// DIALOG_PAY_*, not DIALOG_*.
+	//
+	// The user and notification domains use DIALOG_BASE_URL,
+	// DIALOG_APPLICATION_ID and DIALOG_PASSWORD for Dialog's SMS gateway
+	// (api.dialog.lk). This domain uses its own for Dialog's CARRIER BILLING
+	// rail (api.ideamart.io) -- a different product, a different endpoint and
+	// different credentials that happened to share three variable names.
+	//
+	// Nine processes each read their own .env, so the clash was invisible. One
+	// process reads one environment, and the clash would have handed the SMS
+	// gateway's credentials to the payment rail, or the reverse.
+	DialogPayApplicationID string        `mapstructure:"dialog_pay_application_id"`
+	DialogPayPassword      string        `mapstructure:"dialog_pay_password"`
+	DialogPayBaseURL       string        `mapstructure:"dialog_pay_base_url"`
+	DialogPayWebhookSecret string        `mapstructure:"dialog_pay_webhook_secret"`
+	DialogPayAllowUnsigned bool          `mapstructure:"dialog_pay_allow_unsigned_webhooks"`
+	DialogPayTolerance     time.Duration `mapstructure:"dialog_pay_webhook_tolerance"`
+	// DialogPayWebhookCIDRs is the carrier's egress ranges, comma separated. It
 	// is the compensating control for a rail that signs nothing natively, so
 	// it is required whenever the Dialog rail is enabled -- there is no
 	// "unset means allow everything" here, because that is precisely how a
 	// documented security control becomes decoration. `0.0.0.0/0,::/0` is the
 	// explicit, visible opt-out for local development.
-	DialogWebhookCIDRs string `mapstructure:"dialog_webhook_cidrs"`
+	DialogPayWebhookCIDRs string `mapstructure:"dialog_pay_webhook_cidrs"`
 
 	EnableMock        bool   `mapstructure:"payment_enable_mock"`
 	MockWebhookSecret string `mapstructure:"mock_webhook_secret"`
@@ -138,9 +149,9 @@ func ApplyDefaults(v *viper.Viper) {
 	v.SetDefault("stripe_webhook_tolerance", 5*time.Minute)
 	v.SetDefault("stripe_strict_api_version", false)
 	v.SetDefault("payhere_base_url", "https://sandbox.payhere.lk")
-	v.SetDefault("dialog_base_url", "https://api.ideamart.io")
-	v.SetDefault("dialog_webhook_tolerance", 5*time.Minute)
-	v.SetDefault("dialog_allow_unsigned_webhooks", false)
+	v.SetDefault("dialog_pay_base_url", "https://api.ideamart.io")
+	v.SetDefault("dialog_pay_webhook_tolerance", 5*time.Minute)
+	v.SetDefault("dialog_pay_allow_unsigned_webhooks", false)
 
 	v.SetDefault("payment_enable_mock", false)
 	v.SetDefault("mock_auto_succeed", false)
@@ -182,8 +193,8 @@ func ApplyDefaults(v *viper.Viper) {
 		"stripe_secret_key", "stripe_webhook_secret", "stripe_webhook_tolerance", "stripe_strict_api_version",
 		"payhere_merchant_id", "payhere_merchant_secret", "payhere_app_id", "payhere_app_secret",
 		"payhere_base_url", "payhere_notify_url", "payhere_return_url", "payhere_cancel_url",
-		"dialog_application_id", "dialog_password", "dialog_base_url", "dialog_webhook_secret",
-		"dialog_allow_unsigned_webhooks", "dialog_webhook_tolerance", "dialog_webhook_cidrs",
+		"dialog_pay_application_id", "dialog_pay_password", "dialog_pay_base_url", "dialog_pay_webhook_secret",
+		"dialog_pay_allow_unsigned_webhooks", "dialog_pay_webhook_tolerance", "dialog_pay_webhook_cidrs",
 		"payment_enable_mock", "mock_webhook_secret", "mock_auto_succeed", "mock_fee_bps",
 		"commission_rules", "commission_cache_ttl", "commission_fallback_bps", "commission_fallback_fee_bps",
 		"payout_schedule", "payout_hold_period", "payout_provider", "payout_max_doctors_per_run",
@@ -268,30 +279,30 @@ func (s Settings) Validate() error {
 // This fails at boot rather than at the till, which is the whole point of
 // having a Validate.
 func (s Settings) validateDialog() error {
-	if strings.TrimSpace(s.DialogApplicationID) == "" {
+	if strings.TrimSpace(s.DialogPayApplicationID) == "" {
 		return nil // the rail is not enabled; nothing to protect
 	}
-	if len(s.DialogCIDRs()) == 0 {
+	if len(s.DialogPayCIDRs()) == 0 {
 		return fmt.Errorf("config: DIALOG_WEBHOOK_CIDRS must list the carrier's egress ranges when " +
 			"DIALOG_APPLICATION_ID is set. Ideamart signs nothing natively, so the network is the " +
 			"compensating control the design depends on; set it to 0.0.0.0/0,::/0 to opt out explicitly " +
 			"in development")
 	}
-	if s.DialogAllowUnsigned && s.IsProd() {
+	if s.DialogPayAllowUnsigned && s.IsProd() {
 		return fmt.Errorf("config: DIALOG_ALLOW_UNSIGNED_WEBHOOKS must never be set in production; " +
 			"an unsigned carrier callback marks a consultation paid on the strength of a reference the " +
 			"patient was already given")
 	}
-	if s.DialogAllowUnsigned && strings.TrimSpace(s.DialogWebhookSecret) != "" {
+	if s.DialogPayAllowUnsigned && strings.TrimSpace(s.DialogPayWebhookSecret) != "" {
 		return fmt.Errorf("config: DIALOG_ALLOW_UNSIGNED_WEBHOOKS is set while DIALOG_WEBHOOK_SECRET is " +
 			"configured; a configured secret is always required, so unset one of them")
 	}
 	return nil
 }
 
-// DialogCIDRs splits the carrier egress allowlist.
-func (s Settings) DialogCIDRs() []string {
-	return splitCIDRs(s.DialogWebhookCIDRs)
+// DialogPayCIDRs splits the carrier egress allowlist.
+func (s Settings) DialogPayCIDRs() []string {
+	return splitCIDRs(s.DialogPayWebhookCIDRs)
 }
 
 // ProxyCIDRs splits the trusted-proxy list.

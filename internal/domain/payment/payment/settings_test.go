@@ -224,10 +224,10 @@ func TestDialogRailRefusesToBootWithoutACompensatingControl(t *testing.T) {
 			if tc.env != "" {
 				s.Env = tc.env
 			}
-			s.DialogApplicationID = tc.appID
-			s.DialogWebhookSecret = tc.secret
-			s.DialogAllowUnsigned = tc.unsigned
-			s.DialogWebhookCIDRs = tc.cidrs
+			s.DialogPayApplicationID = tc.appID
+			s.DialogPayWebhookSecret = tc.secret
+			s.DialogPayAllowUnsigned = tc.unsigned
+			s.DialogPayWebhookCIDRs = tc.cidrs
 
 			err := s.Validate()
 			if tc.wantErr == "" {
@@ -244,11 +244,11 @@ func TestDialogCIDRsSplitsAndTrims(t *testing.T) {
 	t.Parallel()
 
 	s := baseSettings()
-	s.DialogWebhookCIDRs = " 203.94.64.0/18 , 2402:4000::/32 ,, "
-	assert.Equal(t, []string{"203.94.64.0/18", "2402:4000::/32"}, s.DialogCIDRs())
+	s.DialogPayWebhookCIDRs = " 203.94.64.0/18 , 2402:4000::/32 ,, "
+	assert.Equal(t, []string{"203.94.64.0/18", "2402:4000::/32"}, s.DialogPayCIDRs())
 
-	s.DialogWebhookCIDRs = ""
-	assert.Empty(t, s.DialogCIDRs())
+	s.DialogPayWebhookCIDRs = ""
+	assert.Empty(t, s.DialogPayCIDRs())
 }
 
 // TestPayoutLeaseTTLMustOutliveARun: a lease that expires mid-run readmits a

@@ -75,26 +75,26 @@ func buildRegistry(cfg payment.Settings, log zerolog.Logger) (*payment.Registry,
 		log.Warn().Msg("PAYHERE_MERCHANT_ID is unset; the PayHere rail is not available")
 	}
 
-	if cfg.DialogApplicationID != "" {
+	if cfg.DialogPayApplicationID != "" {
 		p, err := dialogprovider.New(dialogprovider.Config{
-			ApplicationID: cfg.DialogApplicationID,
-			Password:      cfg.DialogPassword,
-			BaseURL:       cfg.DialogBaseURL,
-			WebhookSecret: cfg.DialogWebhookSecret,
-			Tolerance:     cfg.DialogTolerance,
-			AllowUnsigned: cfg.DialogAllowUnsigned,
+			ApplicationID: cfg.DialogPayApplicationID,
+			Password:      cfg.DialogPayPassword,
+			BaseURL:       cfg.DialogPayBaseURL,
+			WebhookSecret: cfg.DialogPayWebhookSecret,
+			Tolerance:     cfg.DialogPayTolerance,
+			AllowUnsigned: cfg.DialogPayAllowUnsigned,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("configure dialog: %w", err)
 		}
 		reg.Register(p)
-		if cfg.DialogAllowUnsigned {
+		if cfg.DialogPayAllowUnsigned {
 			// The claim in this line used to be false: there was no IP
 			// allowlist anywhere in this service. It is true now -- Settings.
 			// Validate refuses to boot the rail without DIALOG_WEBHOOK_CIDRS,
 			// and /webhooks/dialog fails closed on it -- so the count is
 			// logged to make the size of the trusted surface visible.
-			log.Warn().Int("allowlisted_cidrs", len(cfg.DialogCIDRs())).
+			log.Warn().Int("allowlisted_cidrs", len(cfg.DialogPayCIDRs())).
 				Msg("DIALOG_ALLOW_UNSIGNED_WEBHOOKS is set; Dialog callbacks are protected only by IP allowlisting")
 		}
 	} else {

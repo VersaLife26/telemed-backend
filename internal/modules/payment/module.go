@@ -135,7 +135,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 
 	handler := payment.NewHandler(svc, payouts, invoices, log)
-	webhooks := payment.NewWebhookHandler(svc, log).WithDialogAllowlist(cfg.DialogCIDRs())
+	webhooks := payment.NewWebhookHandler(svc, log).WithDialogAllowlist(cfg.DialogPayCIDRs())
 
 	// --- background workers ----------------------------------------------
 	relay := events.NewRelay(pool, deps.Broker, log,
