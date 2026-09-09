@@ -21,6 +21,7 @@ import (
 	tc "github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/repopath"
 )
@@ -122,6 +123,17 @@ func AppRoleDSN(ctx context.Context, t *testing.T, ownerPool *pgxpool.Pool) stri
 		t.Fatalf("testutil: current_database: %v", err)
 	}
 	cfg := ownerPool.Config().ConnConfig
-	return fmt.Sprintf("postgres://telemed_admin_app:changeme_in_deployment_secret_manager@%s:%d/%s?sslmode=disable",
-		cfg.Host, cfg.Port, db)
+	// search_path, like every other connection on the platform. The app role
+	// connects to the same database as the owner and must resolve unqualified
+	// names in svc_admin -- without it the tables are simply invisible and the
+	// privilege assertions below fail as "relation does not exist" rather than
+	// as the permission denial they are checking for.
+	dsn, err := database.WithSearchPath(
+		fmt.Sprintf("postgres://telemed_admin_app:changeme_in_deployment_secret_manager@%s:%d/%s?sslmode=disable",
+			cfg.Host, cfg.Port, db),
+		database.SearchPathFor("admin"))
+	if err != nil {
+		t.Fatalf("testutil: build app-role dsn: %v", err)
+	}
+	return dsn
 }

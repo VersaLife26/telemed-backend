@@ -49,6 +49,26 @@ BEGIN
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO telemed_admin_app', current_database());
 END
 $$;
+-- USAGE on the schema this migration is running INTO, not only public.
+--
+-- Consolidation moved these tables out of public and into svc_admin. A role
+-- without USAGE on a schema cannot see its tables at all: Postgres answers
+-- "relation audit_logs does not exist", which reads like a missing migration
+-- rather than a missing grant, and sent this exact investigation the wrong way
+-- once already.
+--
+-- current_schema() rather than a literal, for the same reason current_database()
+-- is used above: the migration has to work unmodified against an ephemeral
+-- testcontainers database, and against public for anyone still on the old
+-- single-schema layout.
+DO $$
+BEGIN
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO telemed_admin_app', current_schema());
+END
+$$;
+
+-- public as well, and separately: pgcrypto lives there (one copy per database),
+-- and audit_row_hash calls public.digest().
 GRANT USAGE ON SCHEMA public TO telemed_admin_app;
 
 -- ---------------------------------------------------------------------------
@@ -152,9 +172,23 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
     )::text;
 $$;
 
+-- digest() is SCHEMA-QUALIFIED, and it has to be.
+--
+-- pgcrypto lives in public (one copy for the whole database; an extension is a
+-- database-global object). This function is called from
+-- audit_logs_chain_trigger, which is SECURITY DEFINER and therefore pins its
+-- own search_path to `pg_catalog, svc_admin` -- deliberately, so a caller
+-- cannot prepend a schema of their own. That pin is in force for everything
+-- the trigger calls, so an unqualified digest() resolves against a path that
+-- does not contain public and fails with "function digest(text, unknown) does
+-- not exist" on every audit insert.
+--
+-- Qualifying here is the tighter of the two fixes: the alternative is adding
+-- public to the definer's pinned path, which widens the trusted search path of
+-- the one function in the schema that most needs it narrow.
 CREATE OR REPLACE FUNCTION audit_row_hash(p_prev_hash TEXT, p_canonical TEXT) RETURNS TEXT
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-    SELECT encode(digest(p_prev_hash || p_canonical, 'sha256'), 'hex');
+    SELECT encode(public.digest(p_prev_hash || p_canonical, 'sha256'), 'hex');
 $$;
 
 CREATE OR REPLACE FUNCTION audit_logs_chain_trigger() RETURNS TRIGGER
