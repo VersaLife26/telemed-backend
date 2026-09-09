@@ -154,7 +154,11 @@ func freshSchema(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool := startPostgres(t)
 	ctx := context.Background()
-	_, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`)
+	// The DOMAIN schema, not public. Consolidation moved these tables into
+	// svc_payment, and dropping public instead cleared nothing -- every test
+	// then saw the previous one's rows, which showed up as balances that
+	// accumulated across cases rather than as an obvious "reset failed".
+	_, err := pool.Exec(ctx, `DROP SCHEMA IF EXISTS svc_payment CASCADE; CREATE SCHEMA svc_payment;`)
 	require.NoError(t, err)
 	applyMigrations(t, pool, ".up.sql")
 	return pool
@@ -166,7 +170,11 @@ func TestIntegrationMigrationsRoundTrip(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 
-	_, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`)
+	// The DOMAIN schema, not public. Consolidation moved these tables into
+	// svc_payment, and dropping public instead cleared nothing -- every test
+	// then saw the previous one's rows, which showed up as balances that
+	// accumulated across cases rather than as an obvious "reset failed".
+	_, err := pool.Exec(ctx, `DROP SCHEMA IF EXISTS svc_payment CASCADE; CREATE SCHEMA svc_payment;`)
 	require.NoError(t, err)
 
 	applyMigrations(t, pool, ".up.sql")
