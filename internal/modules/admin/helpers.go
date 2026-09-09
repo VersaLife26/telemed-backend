@@ -26,7 +26,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"telemed/internal/domain/admin/adminusers"
-	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/servicetoken"
 )
 
@@ -57,23 +56,6 @@ func splitCSV(raw string) []string {
 		}
 	}
 	return out
-}
-
-// buildTrustedProxies parses TRUSTED_PROXIES. Returning nil hands server.New
-// the platform default (private ranges only), which is the right answer for a
-// docker-compose or single-ingress deployment. A malformed entry is logged and
-// skipped rather than fatal -- one typo in a config map must not stop a pod
-// starting -- but it is never treated as a wildcard, because on this service
-// the resolved address gates the admin IP allowlist.
-func buildTrustedProxies(cidrs []string, log zerolog.Logger) *middleware.TrustedProxies {
-	if len(cidrs) == 0 {
-		return nil
-	}
-	tp, malformed := middleware.NewTrustedProxies(cidrs)
-	for _, m := range malformed {
-		log.Error().Str("cidr", m).Msg("ignoring malformed TRUSTED_PROXIES entry")
-	}
-	return tp
 }
 
 // buildIdentityProvider connects the Keycloak admin client used to create and

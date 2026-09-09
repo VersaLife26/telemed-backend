@@ -80,5 +80,5 @@ func WithSearchPath(dsn, searchPath string) (string, error) {
 
 // SearchPathFor is the search_path a domain's connections should carry.
 func SearchPathFor(domain string) string {
-	return strings.Join([]string{Schema(domain), "public"}, ", ")
+	return Schema(domain) + ", public"
 }

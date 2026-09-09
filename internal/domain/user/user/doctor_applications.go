@@ -98,7 +98,11 @@ func (c *HTTPDoctorApplications) Attach(ctx context.Context, applicationID, user
 }
 
 func (c *HTTPDoctorApplications) getJSON(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	// The target is the operator-configured address of another domain on this
+	// platform, never anything derived from a request, so there is no
+	// user-controlled taint here for G704 to follow.
+	//nolint:gosec // G704: mesh address from config, not from a request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -106,6 +110,10 @@ func (c *HTTPDoctorApplications) getJSON(ctx context.Context, path string, out a
 }
 
 func (c *HTTPDoctorApplications) postJSON(ctx context.Context, path string, body []byte, out any) error {
+	// The target is the operator-configured address of another domain on this
+	// platform, never anything derived from a request, so there is no
+	// user-controlled taint here for G704 to follow.
+	//nolint:gosec // G704: mesh address from config, not from a request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -121,11 +129,15 @@ func (c *HTTPDoctorApplications) doJSON(ctx context.Context, req *http.Request, 
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 
+	// The target is the operator-configured address of another domain on this
+	// platform, never anything derived from a request, so there is no
+	// user-controlled taint here for G704 to follow.
+	//nolint:gosec // G704: mesh address from config, not from a request
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("user: doctor-service call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return fmt.Errorf("user: read doctor-service response: %w", err)

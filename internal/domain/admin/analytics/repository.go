@@ -289,7 +289,12 @@ func (r *Repository) ActiveUsers(ctx context.Context, dr DateRange) (int64, erro
 		UNION
 		SELECT doctor_id AS id FROM appointments_projection%s AND doctor_id IS NOT NULL
 	) t`, where1, where2)
-	args := append(args1, args2...)
+	// A fresh slice rather than append(args1, ...): args1 may share a backing
+	// array with a caller's slice, and appending into it would scribble on
+	// theirs the moment it has spare capacity.
+	args := make([]any, 0, len(args1)+len(args2))
+	args = append(args, args1...)
+	args = append(args, args2...)
 	// When the range is unbounded the WHERE is empty and "AND ..." is invalid.
 	if where1 == "" {
 		q = `SELECT COUNT(*) FROM (

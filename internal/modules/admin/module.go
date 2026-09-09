@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
 	"telemed/internal/domain/admin/adminusers"
 	"telemed/internal/domain/admin/analytics"
 	"telemed/internal/domain/admin/appointments"
@@ -32,6 +33,7 @@ import (
 	"telemed/internal/platform/storage"
 
 	"github.com/rs/zerolog"
+
 	userv1 "telemed/internal/pb/user/v1"
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/modular"
@@ -86,16 +88,18 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	log := deps.Log.With().Str("domain", Domain).Logger()
 
 	m := &modular.Module{Name: Domain}
-	fail := func(err error) (*modular.Module, error) {
+	// fail releases whatever this module has already opened and hands the error
+	// back. It returns only the error: the module is always nil on this path,
+	// and saying so twice invited a caller to return a half-built one.
+	fail := func(err error) error {
 		for i := len(m.Closers) - 1; i >= 0; i-- {
 			m.Closers[i]()
 		}
 		if m.Pool != nil {
 			m.Pool.Close()
 		}
-		return nil, err
+		return err
 	}
-	_ = fail
 
 	// --- this domain's own pool, as this domain's own role ----------------
 	dsn, err := deps.DSN(Domain)
@@ -132,7 +136,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// same NOT_FOUND mapping.
 	userDirectory, err := userDirectoryFor(cfg, deps, log)
 	if err != nil {
-		return fail(fmt.Errorf("admin: init user directory: %w", err))
+		return nil, fail(fmt.Errorf("admin: init user directory: %w", err))
 	}
 	m.Closers = append(m.Closers, func() { _ = userDirectory.Close() })
 
@@ -160,7 +164,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// HTTP, which is a different integration with its own token requirement.
 	meshCreds, err := buildMeshCredentials(cfg, log)
 	if err != nil {
-		return fail(fmt.Errorf("admin: init mesh credentials: %w", err))
+		return nil, fail(fmt.Errorf("admin: init mesh credentials: %w", err))
 	}
 
 	credRepo := credentialing.NewRepository(pool)

@@ -213,7 +213,7 @@ func run() error {
 		Registry:    modular.NewRegistry(),
 		DSN:         dsnResolver(base.DatabaseURL),
 		ExposeGRPC:  v.GetBool("expose_grpc"),
-		MaxConns:    int32(v.GetInt("db_max_conns_per_domain")),
+		MaxConns:    poolSize(v.GetInt("db_max_conns_per_domain")),
 		MinConns:    1,
 		MaxConnLife: base.DatabaseMaxConnLife,
 	}
@@ -534,6 +534,22 @@ func buildTrustedProxies(cidrs []string, log zerolog.Logger) *platmw.TrustedProx
 		log.Error().Str("cidr", bad).Msg("ignoring malformed TRUSTED_PROXIES entry")
 	}
 	return parsed
+}
+
+// poolSize clamps the per-domain connection ceiling into an int32.
+//
+// Not a cast: a negative or absurd value from the environment would wrap, and
+// pgxpool would then either refuse to start or open a pool far larger than the
+// database's own connection limit -- with eight domains multiplying it.
+func poolSize(n int) int32 {
+	const maxPerDomain = 1000
+	if n < 1 {
+		return 1
+	}
+	if n > maxPerDomain {
+		return maxPerDomain
+	}
+	return int32(n)
 }
 
 func contains(xs []string, s string) bool {

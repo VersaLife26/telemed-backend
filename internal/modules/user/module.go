@@ -71,14 +71,17 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	log := deps.Log.With().Str("domain", Domain).Logger()
 
 	m := &modular.Module{Name: Domain}
-	fail := func(err error) (*modular.Module, error) {
+	// fail releases whatever this module has already opened and hands the error
+	// back. It returns only the error: the module is always nil on this path,
+	// and saying so twice invited a caller to return a half-built one.
+	fail := func(err error) error {
 		for i := len(m.Closers) - 1; i >= 0; i-- {
 			m.Closers[i]()
 		}
 		if m.Pool != nil {
 			m.Pool.Close()
 		}
-		return nil, err
+		return err
 	}
 
 	// --- this domain's own pool, as this domain's own role ----------------
@@ -107,17 +110,17 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	jwtPEM := cfg.JWTPrivateKeyPEM
 	if jwtPEM == "" {
 		if cfg.IsProd() {
-			return fail(fmt.Errorf("user: JWT_PRIVATE_KEY_PEM is required in %s", cfg.Env))
+			return nil, fail(fmt.Errorf("user: JWT_PRIVATE_KEY_PEM is required in %s", cfg.Env))
 		}
 		log.Warn().Msg("no JWT_PRIVATE_KEY_PEM configured; generating an ephemeral RSA key for this process (dev only -- tokens will not verify after a restart)")
 		jwtPEM, err = user.GenerateEphemeralKeyPEM()
 		if err != nil {
-			return fail(fmt.Errorf("user: generate ephemeral signing key: %w", err))
+			return nil, fail(fmt.Errorf("user: generate ephemeral signing key: %w", err))
 		}
 	}
 	tokens, err := user.NewTokenIssuer(jwtPEM, cfg.JWTKeyID, cfg.JWTIssuer, cfg.JWTAudience)
 	if err != nil {
-		return fail(fmt.Errorf("user: init token issuer: %w", err))
+		return nil, fail(fmt.Errorf("user: init token issuer: %w", err))
 	}
 
 	// --- NIC pepper --------------------------------------------------------
@@ -128,21 +131,21 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	nicPepper := cfg.NICHashPepper
 	if nicPepper == "" {
 		if cfg.IsProd() {
-			return fail(fmt.Errorf("user: NIC_HASH_PEPPER is required in %s (at least %d bytes)", cfg.Env, user.NICPepperMinBytes))
+			return nil, fail(fmt.Errorf("user: NIC_HASH_PEPPER is required in %s (at least %d bytes)", cfg.Env, user.NICPepperMinBytes))
 		}
 		log.Warn().Msg("no NIC_HASH_PEPPER configured; generating an ephemeral pepper for this process (dev only -- stored NIC hashes will not match after a restart)")
 		nicPepper, err = user.GenerateEphemeralNICPepper()
 		if err != nil {
-			return fail(fmt.Errorf("user: %w", err))
+			return nil, fail(fmt.Errorf("user: %w", err))
 		}
 	}
 	previousPeppers, err := parseNICPepperPrevious(cfg.NICHashPepperPrevious)
 	if err != nil {
-		return fail(fmt.Errorf("user: %w", err))
+		return nil, fail(fmt.Errorf("user: %w", err))
 	}
 	nicHasher, err := user.NewVersionedNICHasher(cfg.NICHashPepperVersion, nicPepper, previousPeppers)
 	if err != nil {
-		return fail(fmt.Errorf("user: %w", err))
+		return nil, fail(fmt.Errorf("user: %w", err))
 	}
 	// Log the version, never the pepper. During a rotation this line is the
 	// only way to confirm from the outside which generation a replica is
@@ -156,7 +159,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// --- SMS provider ------------------------------------------------------
 	sms, err := buildSMSProvider(cfg, log)
 	if err != nil {
-		return fail(fmt.Errorf("user: %w", err))
+		return nil, fail(fmt.Errorf("user: %w", err))
 	}
 
 	// --- keycloak identity mirror (degrades, never blocks boot) ------------
@@ -221,6 +224,11 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// any kind, and a NetworkPolicy is a network accident, not an access
 	// control. The interceptor fails CLOSED and exempts no method.
 	if cfg.GRPCPort > 0 && deps.ExposeGRPC {
+		// contextcheck: the stream interceptor uses the STREAM\'s context, which
+		// is the only correct one -- there is no request context at registration
+		// time, and inheriting one would tie every stream to whichever request
+		// happened to construct the server.
+		//nolint:contextcheck
 		grpcServer := grpc.NewServer(user.GRPCServerOptions(buildGRPCAuthenticator(ctx, cfg, log))...)
 		userv1.RegisterUserServiceServer(grpcServer, grpcImpl)
 
@@ -230,7 +238,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		var lc net.ListenConfig
 		grpcLis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 		if err != nil {
-			return fail(fmt.Errorf("user: listen grpc: %w", err))
+			return nil, fail(fmt.Errorf("user: listen grpc: %w", err))
 		}
 		m.Workers = append(m.Workers, modular.Worker{
 			Name: "user-grpc",

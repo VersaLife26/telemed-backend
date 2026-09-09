@@ -92,22 +92,6 @@ type serviceConfig struct {
 	MeshTokenURL     string `mapstructure:"mesh_token_url"`
 }
 
-// buildTrustedProxies parses TRUSTED_PROXIES. Returning nil hands
-// server.New the platform default (private ranges only), which is the right
-// answer for a docker-compose or single-ingress deployment. A malformed entry
-// is logged and skipped rather than fatal -- one typo in a config map must not
-// stop a pod starting -- but it is never treated as a wildcard.
-func buildTrustedProxies(cidrs []string, log zerolog.Logger) *middleware.TrustedProxies {
-	if len(cidrs) == 0 {
-		return nil
-	}
-	tp, malformed := middleware.NewTrustedProxies(cidrs)
-	for _, m := range malformed {
-		log.Error().Str("cidr", m).Msg("ignoring malformed TRUSTED_PROXIES entry")
-	}
-	return tp
-}
-
 // buildGRPCAuthenticator builds the verifier the gRPC interceptor uses, and
 // deliberately returns nil rather than an error when it cannot.
 //

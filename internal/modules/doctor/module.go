@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/go-chi/chi/v5"
+
 	"telemed/internal/domain/doctor/analytics"
 	"telemed/internal/domain/doctor/availability"
 	"telemed/internal/domain/doctor/doctor"
@@ -60,16 +61,18 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	log := deps.Log.With().Str("domain", Domain).Logger()
 
 	m := &modular.Module{Name: Domain}
-	fail := func(err error) (*modular.Module, error) {
+	// fail releases whatever this module has already opened and hands the error
+	// back. It returns only the error: the module is always nil on this path,
+	// and saying so twice invited a caller to return a half-built one.
+	fail := func(err error) error {
 		for i := len(m.Closers) - 1; i >= 0; i-- {
 			m.Closers[i]()
 		}
 		if m.Pool != nil {
 			m.Pool.Close()
 		}
-		return nil, err
+		return err
 	}
-	_ = fail
 
 	// --- this domain's own pool, as this domain's own role ----------------
 	dsn, err := deps.DSN(Domain)
@@ -178,6 +181,11 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		// a signature becomes a principal. RoleService is required, so a
 		// patient or doctor token cannot drive the internal mesh even though
 		// this domain accepts those tokens on its HTTP surface.
+		// contextcheck: the stream interceptor uses the STREAM\'s context, which
+		// is the only correct one -- there is no request context at registration
+		// time, and inheriting one would tie every stream to whichever request
+		// happened to construct the server.
+		//nolint:contextcheck
 		grpcServer := grpc.NewServer(doctor.GRPCServerOptions(deps.Auth)...)
 		doctorv1.RegisterDoctorServiceServer(grpcServer, doctor.NewGRPCServer(doctorRepo, log))
 
@@ -187,7 +195,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		var lc net.ListenConfig
 		grpcLis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 		if err != nil {
-			return fail(fmt.Errorf("doctor: listen grpc: %w", err))
+			return nil, fail(fmt.Errorf("doctor: listen grpc: %w", err))
 		}
 		m.Workers = append(m.Workers, modular.Worker{
 			Name: "doctor-grpc",

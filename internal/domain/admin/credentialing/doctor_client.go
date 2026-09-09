@@ -57,17 +57,25 @@ func (c *HTTPApplicationVerifier) VerifyApplication(ctx context.Context, applica
 		return fmt.Errorf("credentialing: mesh token: %w", err)
 	}
 	url := c.baseURL + "/api/v1/internal/doctors/applications/" + applicationID.String() + "/verify"
+	// The target is the operator-configured address of another domain on this
+	// platform, never anything derived from a request, so there is no
+	// user-controlled taint here for G704 to follow.
+	//nolint:gosec // G704: mesh address from config, not from a request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
+	// The target is the operator-configured address of another domain on this
+	// platform, never anything derived from a request, so there is no
+	// user-controlled taint here for G704 to follow.
+	//nolint:gosec // G704: mesh address from config, not from a request
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("credentialing: doctor-service verify: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrApplicationNotFound

@@ -59,6 +59,32 @@ linters:
       # Tests may ignore errors on cleanup and use weak randomness for fixtures.
       - path: _test\.go
         linters: [errcheck, gosec, prealloc, unparam]
+
+      # PER-DOMAIN EXCLUSIONS CARRIED OVER FROM THE SOURCE REPOSITORIES.
+      #
+      # Seven of the nine services shared one .golangci.yml; two did not, and
+      # both differences were deliberate and documented where they were made.
+      # Consolidation adopted the majority config, which silently revoked them
+      # and turned working code into a failing lint job. They are restored here
+      # scoped to the domain that made the decision, so neither the original
+      # judgement nor the stricter default is lost.
+
+      # scheduling: a test helper that seeds a fixture row legitimately owns its
+      # own context.Background() -- there is no inbound request to inherit from
+      # -- and the ephemeral Postgres harness in main_test.go must outlive any
+      # single test's context, which is why it is started with exec.Command and
+      # reaped by Pdeathsig rather than by ctx cancellation. Both linters stay
+      # ON for that domain's production code, where they catch what they exist
+      # for.
+      - path: internal/(modules|domain)/scheduling/.*_test\.go
+        linters: [contextcheck, noctx]
+
+      # payment: gocritic's performance tags fire constantly on in-memory test
+      # fakes that range over maps of value structs. Copying 300 bytes per
+      # iteration in a test that runs in microseconds is not a finding, and
+      # silencing it keeps the real gocritic output readable.
+      - path: internal/(modules|domain)/payment/.*_test\.go
+        linters: [gocritic]
       # Migrations and generated protobuf are not hand-maintained.
       - path: (internal/pb|\.pb\.go)
         linters: [revive, gocritic, unparam, gosec]

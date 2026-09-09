@@ -60,14 +60,17 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 
 	m := &modular.Module{Name: Domain}
-	fail := func(err error) (*modular.Module, error) {
+	// fail releases whatever this module has already opened and hands the error
+	// back. It returns only the error: the module is always nil on this path,
+	// and saying so twice invited a caller to return a half-built one.
+	fail := func(err error) error {
 		for i := len(m.Closers) - 1; i >= 0; i-- {
 			m.Closers[i]()
 		}
 		if m.Pool != nil {
 			m.Pool.Close()
 		}
-		return nil, err
+		return err
 	}
 
 	// --- this domain's own pool, as this domain's own role ----------------
@@ -131,7 +134,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	if cfg.SchedulerEnabled {
 		sched := scheduling.NewScheduler(svc, loc, log)
 		if err := sched.Register(ctx); err != nil {
-			return fail(fmt.Errorf("scheduling: register scheduler: %w", err))
+			return nil, fail(fmt.Errorf("scheduling: register scheduler: %w", err))
 		}
 		sched.Start(ctx)
 
@@ -171,6 +174,11 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 			Authenticator: deps.Auth,
 			RequiredRole:  middleware.RoleService,
 		}
+		// contextcheck: the stream interceptor uses the STREAM\'s context, which
+		// is the only correct one -- there is no request context at registration
+		// time, and inheriting one would tie every stream to whichever request
+		// happened to construct the server.
+		//nolint:contextcheck
 		grpcSrv := grpc.NewServer(
 			grpc.ChainUnaryInterceptor(middleware.UnaryServiceAuth(grpcAuth)),
 			grpc.ChainStreamInterceptor(middleware.StreamServiceAuth(grpcAuth)),
@@ -199,7 +207,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		var lc net.ListenConfig
 		grpcLn, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 		if err != nil {
-			return fail(fmt.Errorf("scheduling: listen grpc: %w", err))
+			return nil, fail(fmt.Errorf("scheduling: listen grpc: %w", err))
 		}
 		m.Workers = append(m.Workers, modular.Worker{
 			Name: "scheduling-grpc",

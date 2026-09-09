@@ -16,12 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/spf13/viper"
 
 	"telemed/internal/domain/consultation/consultation"
 	"telemed/internal/platform/config"
-	"telemed/internal/platform/middleware"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=$(git describe)".
@@ -109,22 +107,6 @@ func registerConsultationDefaults(v *viper.Viper) {
 	} {
 		_ = v.BindEnv(key)
 	}
-}
-
-// buildTrustedProxies parses TRUSTED_PROXIES. Returning nil hands
-// server.New the platform default (private ranges only), which is the right
-// answer for a docker-compose or single-ingress deployment. A malformed entry
-// is logged and skipped rather than fatal -- one typo in a config map must not
-// stop a pod starting -- but it is never treated as a wildcard.
-func buildTrustedProxies(cidrs []string, log zerolog.Logger) *middleware.TrustedProxies {
-	if len(cidrs) == 0 {
-		return nil
-	}
-	tp, malformed := middleware.NewTrustedProxies(cidrs)
-	for _, m := range malformed {
-		log.Error().Str("cidr", m).Msg("ignoring malformed TRUSTED_PROXIES entry")
-	}
-	return tp
 }
 
 // validateVideoConfig fails boot rather than at the first join request when

@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"telemed/internal/platform/httpx"
 	"telemed/internal/platform/observability"
@@ -120,9 +119,3 @@ func (s *statusRecorder) Flush() {
 }
 
 var _ http.Flusher = (*statusRecorder)(nil)
-
-// inProcessTiming seeds the timing the breaker reporting reads, for handlers
-// reached without going through the proxying path's context decoration.
-func inProcessTiming(ctx context.Context, state BreakerState) context.Context {
-	return withProxyTiming(ctx, state, time.Now())
-}

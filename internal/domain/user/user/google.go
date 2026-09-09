@@ -11,7 +11,9 @@ import (
 	"time"
 )
 
-const googleTokenInfoURL = "https://oauth2.googleapis.com/tokeninfo"
+// Google's public tokeninfo endpoint. Named *TokenInfo*, which is why gosec
+// reads it as a credential; it is a URL and carries no secret.
+const googleTokenInfoURL = "https://oauth2.googleapis.com/tokeninfo" //nolint:gosec // G101: a public URL, not a credential
 
 // googleHTTPDoer is the slice of http.Client we need, so tests can stub the
 // tokeninfo round trip without standing up Google.
@@ -65,7 +67,7 @@ func (v *GoogleTokenInfoVerifier) Verify(ctx context.Context, idToken string) (G
 	q.Set("id_token", idToken)
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
 	if err != nil {
 		return GoogleIdentity{}, fmt.Errorf("user: google tokeninfo request: %w", err)
 	}
@@ -73,7 +75,7 @@ func (v *GoogleTokenInfoVerifier) Verify(ctx context.Context, idToken string) (G
 	if err != nil {
 		return GoogleIdentity{}, fmt.Errorf("user: google tokeninfo: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return GoogleIdentity{}, fmt.Errorf("user: google tokeninfo read: %w", err)

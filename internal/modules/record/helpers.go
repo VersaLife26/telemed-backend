@@ -17,9 +17,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rs/zerolog"
-
-	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/storage"
 )
 
@@ -54,20 +51,4 @@ func buildStorage(ctx context.Context, cfg Config) (storage.Storage, func(contex
 		}
 		return minioStore, minioStore.Ping, nil
 	}
-}
-
-// buildTrustedProxies parses TRUSTED_PROXIES. Returning nil hands
-// server.New the platform default (private ranges only), which is the right
-// answer for a docker-compose or single-ingress deployment. A malformed entry
-// is logged and skipped rather than fatal -- one typo in a config map must not
-// stop a pod starting -- but it is never treated as a wildcard.
-func buildTrustedProxies(cidrs []string, log zerolog.Logger) *middleware.TrustedProxies {
-	if len(cidrs) == 0 {
-		return nil
-	}
-	tp, malformed := middleware.NewTrustedProxies(cidrs)
-	for _, m := range malformed {
-		log.Error().Str("cidr", m).Msg("ignoring malformed TRUSTED_PROXIES entry")
-	}
-	return tp
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
 	"telemed/internal/domain/consultation/consultation"
 	"telemed/internal/platform/config"
 	"telemed/internal/platform/events"
@@ -45,16 +46,6 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	log := deps.Log.With().Str("domain", Domain).Logger()
 
 	m := &modular.Module{Name: Domain}
-	fail := func(err error) (*modular.Module, error) {
-		for i := len(m.Closers) - 1; i >= 0; i-- {
-			m.Closers[i]()
-		}
-		if m.Pool != nil {
-			m.Pool.Close()
-		}
-		return nil, err
-	}
-	_ = fail
 
 	// --- this domain's own pool, as this domain's own role ----------------
 	dsn, err := deps.DSN(Domain)
