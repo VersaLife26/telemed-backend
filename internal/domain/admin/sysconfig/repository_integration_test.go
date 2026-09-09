@@ -17,28 +17,46 @@ import (
 	"telemed/internal/platform/middleware"
 )
 
+// seededVersions reports how many versions a key already has.
+//
+// migrations/admin/000011 seeds a version 1 for every key the console exposes,
+// which is correct production behaviour -- a fresh deployment must not present
+// an empty settings page. system_configs is append-only (a trigger refuses
+// DELETE), so a test cannot clear that away and must not try. These tests
+// therefore assert version numbers RELATIVE to whatever is already there,
+// which is the property that actually matters -- "a Put never mutates the
+// previous version" is true regardless of how many precede it -- and does not
+// break again the next time a default is seeded.
+func seededVersions(t *testing.T, repo *sysconfig.Repository, key string) int {
+	t.Helper()
+	history, err := repo.History(context.Background(), key)
+	require.NoError(t, err)
+	return len(history)
+}
+
 func TestSysConfig_PutNeverMutatesPreviousVersion(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.StartPostgres(t)
 	repo := sysconfig.NewRepository(pool)
+	base := seededVersions(t, repo, "commission_rules")
 
 	v1, err := repo.Put(ctx, "commission_rules", []byte(`{"gp_percent":20}`), uuid.Nil, time.Time{})
 	require.NoError(t, err)
-	require.Equal(t, 1, v1.Version)
+	require.Equal(t, base+1, v1.Version)
 
 	v2, err := repo.Put(ctx, "commission_rules", []byte(`{"gp_percent":25}`), uuid.Nil, time.Time{})
 	require.NoError(t, err)
-	require.Equal(t, 2, v2.Version)
+	require.Equal(t, base+2, v2.Version)
 
 	history, err := repo.History(ctx, "commission_rules")
 	require.NoError(t, err)
-	require.Len(t, history, 2, "both versions must exist side by side")
+	require.Len(t, history, base+2, "both new versions must exist alongside whatever preceded them")
 	require.JSONEq(t, `{"gp_percent":20}`, string(history[1].Value), "version 1's content must be untouched by the version 2 write")
 	require.JSONEq(t, `{"gp_percent":25}`, string(history[0].Value))
 
 	current, err := repo.Current(ctx, "commission_rules", time.Time{})
 	require.NoError(t, err)
-	require.Equal(t, 2, current.Version, "current must be the latest version")
+	require.Equal(t, base+2, current.Version, "current must be the latest version")
 }
 
 func TestSysConfig_AppendOnly_RejectsDirectUpdate(t *testing.T) {
@@ -66,7 +84,11 @@ func TestSysConfig_EffectiveFromScheduling(t *testing.T) {
 	pool := testutil.StartPostgres(t)
 	repo := sysconfig.NewRepository(pool)
 
-	now := time.Now().UTC()
+	// Both versions are dated AFTER the seeded default. Current() orders by
+	// effective_from DESC, and the seed's effective_from is NOW() as of the
+	// migration -- so a version dated an hour ago would lose to it and the
+	// test would be asserting against the seed rather than its own data.
+	now := time.Now().UTC().Add(24 * time.Hour)
 	_, err := repo.Put(ctx, "cancellation_policy", []byte(`{"hours_before":24}`), uuid.Nil, now.Add(-time.Hour))
 	require.NoError(t, err)
 
