@@ -9,6 +9,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +49,8 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// --- configuration -------------------------------------------------
 	v := config.New(serviceName)
 	v.SetDefault("admin_ip_allowlist", "")
+	v.SetDefault("storage_backend", "minio")
+	v.SetDefault("filesystem_storage_dir", "./data/objects")
 	v.SetDefault("minio_endpoint", "localhost:9000")
 	v.SetDefault("minio_access_key", "minioadmin")
 	v.SetDefault("minio_secret_key", "minioadmin")
@@ -64,7 +67,9 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	v.SetDefault("user_service_grpc_addr", "localhost:9091")
 	v.SetDefault("user_lookup_timeout_seconds", 3)
 	for _, k := range []string{
-		"admin_ip_allowlist", "minio_endpoint", "minio_access_key", "minio_secret_key",
+		"admin_ip_allowlist", "storage_backend", "filesystem_storage_dir",
+		"filesystem_presign_secret", "public_api_base_url",
+		"minio_endpoint", "minio_access_key", "minio_secret_key",
 		"minio_use_ssl", "minio_doctor_docs_bucket", "doc_presign_ttl",
 		"user_service_grpc_addr", "user_lookup_timeout_seconds", "trusted_proxies",
 		"user_service_grpc_tls", "user_service_grpc_ca_file",
@@ -119,11 +124,23 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 	m.Pool = pool
 
-	objectStore, err := storage.New(storage.Config{
-		Endpoint:  cfg.MinIOEndpoint,
-		AccessKey: cfg.MinIOAccessKey,
-		SecretKey: cfg.MinIOSecretKey,
-		Secure:    cfg.MinIOUseSSL,
+	// STORAGE_BACKEND is honoured here for the same reason it is in the record
+	// domain: the two read the same objects. This used to call storage.New
+	// unconditionally, so a filesystem deployment built a MinIO client against
+	// an empty endpoint and the process died at boot.
+	//
+	// EnsureBuckets is not passed: the record domain owns bucket creation, and
+	// admin holds a deliberately narrow view of this store (credentialing
+	// takes a one-method DocumentStore that can only presign a GET).
+	objectStore, _, err := storage.Build(ctx, storage.BuildOptions{
+		Backend:           cfg.StorageBackend,
+		FilesystemDir:     cfg.FilesystemStorageDir,
+		FilesystemBaseURL: strings.TrimSuffix(cfg.PublicAPIBaseURL, "/") + "/api/v1/files",
+		FilesystemSecret:  []byte(cfg.FilesystemPresignSecret),
+		MinIOEndpoint:     cfg.MinIOEndpoint,
+		MinIOAccessKey:    cfg.MinIOAccessKey,
+		MinIOSecretKey:    cfg.MinIOSecretKey,
+		MinIOSecure:       cfg.MinIOUseSSL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init object storage: %w", err)
@@ -154,6 +171,14 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	adminUsersRepo := adminusers.NewRepository(pool)
 	adminUsersSvc := adminusers.NewService(adminUsersRepo, buildIdentityProvider(ctx, cfg, log), log)
 	adminUsersHandler := adminusers.NewHandler(adminUsersSvc)
+
+	// The role resolver for administrators whose identity provider mints no
+	// roles. Provided rather than installed: the authenticator is shared by
+	// every domain and is built by the composer, which attaches this once all
+	// domains exist. Bound to the admin issuer so it can never widen a token
+	// from any other one.
+	deps.Registry.Provide(modular.KeyAdminDirectory,
+		adminusers.NewDirectory(adminUsersRepo, cfg.AdminTokenIssuer(), 0, log))
 
 	configRepo := sysconfig.NewRepository(pool)
 	configSvc := sysconfig.NewService(configRepo)
@@ -273,7 +298,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	m.Health = []server.HealthCheck{
 		{Name: "postgres", Critical: true, Check: pool.Ping},
 		{Name: "minio", Critical: false, Check: func(c context.Context) error {
-			return objectStore.PingBucket(c, cfg.MinIODoctorDocsBucket)
+			return storage.BucketProbe(objectStore, cfg.MinIODoctorDocsBucket)(c)
 		}},
 	}
 	return m, nil

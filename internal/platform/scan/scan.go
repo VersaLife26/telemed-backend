@@ -1,8 +1,9 @@
 // Package scan defines the virus-scanning contract for uploaded files and its
-// two implementations: a pass-through default (so the service runs with no
-// ClamAV sidecar) and a real ClamAV client speaking the clamd INSTREAM
-// protocol directly over TCP -- no third-party client library, so there is
-// nothing here to licence-audit.
+// pass-through default, which drains the stream and reports "skipped".
+//
+// No scanner ships with this deployment. The interface remains because the
+// alternative -- calling a vendor SDK from records.Service -- is what makes
+// adding one later a rewrite rather than a new file.
 package scan
 
 import (
@@ -26,10 +27,10 @@ const (
 var ErrInfected = errors.New("scan: file matched a virus signature")
 
 // VirusScanner inspects a byte stream before it is trusted enough to store.
-// Business code depends on this interface, never on a ClamAV client
-// directly (AGENT-BRIEF §0.6): a deployment with no ClamAV sidecar still
-// runs correctly with PassthroughScanner, and swapping in a cloud AV vendor
-// later is a new file behind the same interface.
+// Business code depends on this interface, never on a scanner client
+// directly: a deployment with no scanner still runs correctly with
+// PassthroughScanner, and adding one later is a new file behind the same
+// interface.
 type VirusScanner interface {
 	// Scan reads r to completion (at most sizeHint bytes) and returns a
 	// verdict. It never returns VerdictInfected with a nil error -- an
@@ -39,9 +40,8 @@ type VirusScanner interface {
 }
 
 // PassthroughScanner is the default VirusScanner: it consumes the stream (so
-// callers can always assume Scan drains r) and reports VerdictSkipped. This
-// is what "optional ClamAV scanning" means in practice -- the platform never
-// silently claims a file is clean when nothing looked at it.
+// callers can always assume Scan drains r) and reports VerdictSkipped. The
+// platform never silently claims a file is clean when nothing looked at it.
 type PassthroughScanner struct{}
 
 var _ VirusScanner = PassthroughScanner{}

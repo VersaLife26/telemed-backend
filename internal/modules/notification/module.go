@@ -91,7 +91,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// --- domain wiring ----------------------------------------------------
 	repo := notification.NewRepository(pool)
 
-	providerRegistry, err := buildProviderRegistry(ctx, cfg, log)
+	providerRegistry, err := buildProviderRegistry(ctx, cfg, log, deps.Outbox)
 	if err != nil {
 		return fail(fmt.Errorf("notification: build provider registry: %w", err))
 	}
@@ -222,13 +222,14 @@ func buildMeshCredentials(cfg notification.Config, log zerolog.Logger) (credenti
 		TokenURL:     tokenURL,
 		ClientID:     cfg.MeshClientID,
 		ClientSecret: cfg.MeshClientSecret,
+		StaticToken:  cfg.MeshStaticToken,
 		RequireTLS:   cfg.UserServiceGRPCTLS,
 	})
 	if errors.Is(err, servicetoken.ErrNotConfigured) {
 		if cfg.IsProd() {
-			return nil, fmt.Errorf("MESH_CLIENT_ID/MESH_CLIENT_SECRET and KEYCLOAK_BASE_URL are "+
-				"required in production: user-service authenticates every gRPC method, so "+
-				"without a service token no recipient can be resolved: %w", err)
+			return nil, fmt.Errorf("MESH_STATIC_TOKEN, or MESH_CLIENT_ID/MESH_CLIENT_SECRET with "+
+				"KEYCLOAK_BASE_URL, is required in production: user-service authenticates every "+
+				"gRPC method, so without a service token no recipient can be resolved: %w", err)
 		}
 		log.Warn().Msg("mesh service token not configured; recipient lookups will be " +
 			"refused by user-service")
@@ -237,6 +238,10 @@ func buildMeshCredentials(cfg notification.Config, log zerolog.Logger) (credenti
 	if err != nil {
 		return nil, err
 	}
-	log.Info().Str("client_id", cfg.MeshClientID).Msg("mesh service token source ready")
+	if cfg.MeshStaticToken != "" {
+		log.Info().Msg("mesh service token source ready (static)")
+	} else {
+		log.Info().Str("client_id", cfg.MeshClientID).Msg("mesh service token source ready")
+	}
 	return src, nil
 }

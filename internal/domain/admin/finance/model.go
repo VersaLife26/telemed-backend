@@ -40,21 +40,6 @@ type LedgerFilter struct {
 	PerPage  int
 }
 
-// PayoutBatchCommand is published as admin.payout_batch_requested.
-type PayoutBatchCommand struct {
-	From    time.Time `json:"from"`
-	To      time.Time `json:"to"`
-	AdminID uuid.UUID `json:"admin_id"`
-}
-
-// RefundApprovalCommand is published as admin.refund_approved.
-type RefundApprovalCommand struct {
-	PaymentID   uuid.UUID `json:"payment_id"`
-	AmountCents int64     `json:"amount_cents"`
-	Reason      string    `json:"reason"`
-	AdminID     uuid.UUID `json:"admin_id"`
-}
-
 // CommissionRule is the JSON shape stored under system_configs key
 // "commission_rules": a specialty -> percentage map plus a default, matching
 // the SDD's own example ({specialty: GP, commission: 20}).

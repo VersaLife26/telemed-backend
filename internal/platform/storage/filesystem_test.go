@@ -13,7 +13,7 @@ import (
 
 func newTestFS(t *testing.T) *FilesystemStorage {
 	t.Helper()
-	fs, err := NewFilesystem(t.TempDir(), "http://localhost/__fs")
+	fs, err := NewFilesystem(t.TempDir(), "http://localhost/__fs", nil)
 	if err != nil {
 		t.Fatalf("NewFilesystem: %v", err)
 	}

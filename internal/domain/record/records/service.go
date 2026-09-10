@@ -183,19 +183,7 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (Document, error) 
 		}
 		doc = created
 
-		// events.RecordUploaded is the canonical payload, shared with every
-		// consumer. It carries the document TYPE but never the contents or
-		// the filename: this event fans out to notification, analytics and
-		// audit consumers, and the contents of a medical record are exactly
-		// the kind of PHI that must be fetched deliberately, with an
-		// access-log entry, rather than broadcast.
-		payload := events.RecordUploaded{
-			DocumentID: doc.ID, OwnerUserID: doc.OwnerUserID, UploadedBy: doc.UploadedBy,
-			DocumentType: string(doc.DocumentType),
-			SizeBytes:    doc.SizeBytes,
-			UploadedAt:   doc.CreatedAt,
-		}
-		return s.outbox.Enqueue(ctx, tx, events.SubjectRecordUploaded, doc.ID.String(), payload)
+		return nil
 	})
 	if err != nil {
 		// The object is already durably stored; leaving it orphaned on a

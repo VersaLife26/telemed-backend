@@ -15,7 +15,7 @@ package record
 
 import (
 	"context"
-	"fmt"
+	"strings"
 
 	"telemed/internal/platform/storage"
 )
@@ -30,25 +30,29 @@ const serviceName = "telemed-record-service"
 // (AGENT-BRIEF: private, SSE-S3 AES-256, versioning on) before the server
 // starts accepting traffic. It also returns a health-check probe when the
 // backend supports one.
+// Where PresignHandler lives, spelled twice because the two spellings differ
+// and getting that wrong is silent: Module.API is mounted at /api/v1, so the
+// route registered inside it is relative, while the URL handed to a browser
+// must be absolute. Declaring both here keeps them one edit apart.
+const (
+	// filesRoute is the path registered on the module's own router.
+	filesRoute = "/files"
+	// filesPublicPath is the same endpoint as seen from outside, and is the
+	// suffix appended to PUBLIC_API_BASE_URL when building presigned URLs.
+	filesPublicPath = "/api/v1" + filesRoute
+)
+
 func buildStorage(ctx context.Context, cfg Config) (storage.Storage, func(context.Context) error, error) {
-	switch cfg.StorageBackend {
-	case "filesystem":
-		fsStore, err := storage.NewFilesystem(cfg.FilesystemStorageDir, "")
-		if err != nil {
-			return nil, nil, err
-		}
-		return fsStore, fsStore.Ping, nil
-	default: // "minio", enforced by Config.Validate
-		minioStore, err := storage.New(storage.Config{
-			Endpoint: cfg.MinIOEndpoint, AccessKey: cfg.MinIOAccessKey, SecretKey: cfg.MinIOSecretKey,
-			Secure: cfg.MinIOSecure, Region: cfg.MinIORegion,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := minioStore.EnsureBuckets(ctx, storage.AllBuckets, cfg.MinIORegion); err != nil {
-			return nil, nil, fmt.Errorf("ensure buckets: %w", err)
-		}
-		return minioStore, minioStore.Ping, nil
-	}
+	return storage.Build(ctx, storage.BuildOptions{
+		Backend:           cfg.StorageBackend,
+		FilesystemDir:     cfg.FilesystemStorageDir,
+		FilesystemBaseURL: strings.TrimSuffix(cfg.PublicAPIBaseURL, "/") + filesPublicPath,
+		FilesystemSecret:  []byte(cfg.FilesystemPresignSecret),
+		MinIOEndpoint:     cfg.MinIOEndpoint,
+		MinIOAccessKey:    cfg.MinIOAccessKey,
+		MinIOSecretKey:    cfg.MinIOSecretKey,
+		MinIOSecure:       cfg.MinIOSecure,
+		MinIORegion:       cfg.MinIORegion,
+		EnsureBuckets:     storage.AllBuckets,
+	})
 }

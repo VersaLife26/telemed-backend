@@ -1309,6 +1309,102 @@
       "timeout_class": "fast",
       "rate_limit": "generous",
       "description": "ICD-10 reference search. A published classification, no patient data, so authenticated but not role-gated -- same treatment as /drugs."
+    },
+    {
+      "name": "test-status",
+      "pattern": "/api/v1/test/status",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "the test surface's own capability report"
+    },
+    {
+      "name": "test-outbox-list",
+      "pattern": "/api/v1/test/outbox",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "captured OTP and email messages, newest first"
+    },
+    {
+      "name": "test-outbox-latest",
+      "pattern": "/api/v1/test/outbox/latest",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "the most recent captured message for one recipient"
+    },
+    {
+      "name": "test-outbox-clear",
+      "pattern": "/api/v1/test/outbox",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "drop everything captured so far"
+    },
+    {
+      "name": "test-room-create",
+      "pattern": "/api/v1/test/rooms",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "mint a signalling room token for a browser"
+    },
+    {
+      "name": "test-room-get",
+      "pattern": "/api/v1/test/rooms/{room}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "local peer count for a signalling room"
+    },
+    {
+      "name": "test-room-close",
+      "pattern": "/api/v1/test/rooms/{room}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "evict both peers from a signalling room"
+    },
+    {
+      "name": "test-ice-servers",
+      "pattern": "/api/v1/test/ice-servers",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "testkit-service",
+      "auth": "public",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "the STUN/TURN configuration handed to browsers"
     }
   ]
 }

@@ -124,7 +124,7 @@ func (s *Service) SetCommissionRule(ctx context.Context, caller middleware.Princ
 // publish payout.sent per doctor.
 func (s *Service) TriggerPayoutBatch(ctx context.Context, adminID uuid.UUID, from, to time.Time) error {
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminPayoutBatchRequested, "", PayoutBatchCommand{
+		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminPayoutBatchRequested, "", events.AdminPayoutBatchRequested{
 			From: from, To: to, AdminID: adminID,
 		})
 	})
@@ -143,7 +143,7 @@ func (s *Service) TriggerPayoutBatch(ctx context.Context, adminID uuid.UUID, fro
 // publish payment.refunded.
 func (s *Service) ApproveRefund(ctx context.Context, adminID, paymentID uuid.UUID, amountCents int64, reason string) error {
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminRefundApproved, paymentID.String(), RefundApprovalCommand{
+		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminRefundApproved, paymentID.String(), events.AdminRefundApproved{
 			PaymentID: paymentID, AmountCents: amountCents, Reason: reason, AdminID: adminID,
 		})
 	})

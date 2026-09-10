@@ -36,6 +36,8 @@ type Config struct {
 	// tokens. UserIssuer is the literal "iss" claim user-service mints (its
 	// JWT_ISSUER), not a URL.
 	KeycloakIssuer   string
+	AdminIssuer      string
+	AdminJWKSURL     string
 	KeycloakAudience string
 	KeycloakJWKSURL  string
 	UserIssuer       string
@@ -48,7 +50,6 @@ type Config struct {
 	// limit bucket key on: a forgeable client IP makes both decorative.
 	TrustedProxies []string
 
-	OTLPEndpoint  string
 	TraceSampling float64
 
 	ShutdownGrace  time.Duration
@@ -135,7 +136,7 @@ func (c Config) Validate() error {
 			missing = append(missing, "ADMIN_IP_ALLOWLIST (required in prod: an empty allowlist admits every source address)")
 		}
 		if len(c.AdminTokenIssuers()) == 0 {
-			missing = append(missing, "KEYCLOAK_ISSUER (required in prod: without it any trusted issuer may assert an admin role)")
+			missing = append(missing, "ADMIN_ISSUER (or KEYCLOAK_ISSUER) (required in prod: without it any trusted issuer may assert an admin role)")
 		}
 	}
 	if len(missing) > 0 {
@@ -193,6 +194,12 @@ func (c Config) IsProd() bool { return c.Env == "prod" || c.Env == "production" 
 // see RequireTokenIssuer for why an unbound admin surface is a 2FA bypass and
 // not merely a role question.
 func (c Config) AdminTokenIssuers() []string {
+	// ADMIN_ISSUER wins: it names the administrator identity provider
+	// directly, and a deployment that has moved off Keycloak must not keep
+	// trusting a stale KEYCLOAK_ISSUER for admin roles.
+	if iss := strings.TrimSpace(c.AdminIssuer); iss != "" {
+		return []string{iss}
+	}
 	if iss := strings.TrimSpace(c.KeycloakIssuer); iss != "" {
 		return []string{iss}
 	}
@@ -205,7 +212,7 @@ func (c Config) AdminTokenIssuers() []string {
 // here rather than inherited.
 func (c Config) JWKSURLs() []string {
 	var out []string
-	for _, u := range []string{c.UserJWKSURL, c.KeycloakJWKSURL} {
+	for _, u := range []string{c.UserJWKSURL, c.KeycloakJWKSURL, c.AdminJWKSURL} {
 		if strings.TrimSpace(u) != "" {
 			out = append(out, u)
 		}
@@ -226,6 +233,9 @@ func (c Config) IssuerKeys() map[string]string {
 	if c.KeycloakIssuer != "" && c.KeycloakJWKSURL != "" {
 		out[c.KeycloakIssuer] = c.KeycloakJWKSURL
 	}
+	if c.AdminIssuer != "" && c.AdminJWKSURL != "" {
+		out[c.AdminIssuer] = c.AdminJWKSURL
+	}
 	return out
 }
 
@@ -235,7 +245,7 @@ func (c Config) IssuerKeys() map[string]string {
 // token, since the gateway trusts both key sets.
 func (c Config) TrustedIssuers() []string {
 	var out []string
-	for _, i := range []string{c.UserIssuer, c.KeycloakIssuer} {
+	for _, i := range []string{c.UserIssuer, c.KeycloakIssuer, c.AdminIssuer} {
 		if strings.TrimSpace(i) != "" {
 			out = append(out, i)
 		}
@@ -314,12 +324,13 @@ func Load(v *viper.Viper) (Config, error) {
 	c.RedisDB = v.GetInt("redis_db")
 
 	c.KeycloakIssuer = v.GetString("keycloak_issuer")
+	c.AdminIssuer = v.GetString("admin_issuer")
+	c.AdminJWKSURL = v.GetString("admin_jwks_url")
 	c.KeycloakAudience = v.GetString("keycloak_audience")
 	c.KeycloakJWKSURL = v.GetString("keycloak_jwks_url")
 	c.UserIssuer = v.GetString("user_issuer")
 	c.UserJWKSURL = v.GetString("user_jwks_url")
 
-	c.OTLPEndpoint = v.GetString("otlp_endpoint")
 	c.TraceSampling = v.GetFloat64("trace_sampling")
 
 	c.ShutdownGrace = v.GetDuration("shutdown_grace")

@@ -50,6 +50,10 @@ func (c *Consumers) Subjects() []events.Subject {
 		events.SubjectDoctorUpdated,
 		events.SubjectPaymentSucceeded,
 		events.SubjectPaymentFailed,
+		// Administrator commands. This service owns the appointment lifecycle,
+		// so it is the only place that can carry them out.
+		events.SubjectAdminAppointmentForceCancel,
+		events.SubjectAdminDoubleBookingResolveRequested,
 	}
 }
 
@@ -71,6 +75,10 @@ func (c *Consumers) Handle(ctx context.Context, env events.Envelope) error {
 		err = c.handlePaymentSucceeded(ctx, env)
 	case events.SubjectPaymentFailed:
 		err = c.handlePaymentFailed(ctx, env)
+	case events.SubjectAdminAppointmentForceCancel:
+		err = c.handleAdminForceCancel(ctx, env)
+	case events.SubjectAdminDoubleBookingResolveRequested:
+		err = c.handleAdminResolveDoubleBooking(ctx, env)
 	default:
 		// Subscribing to a subject we do not handle is a wiring bug, but
 		// nak-ing forever would wedge the consumer. Ack and complain.
@@ -523,4 +531,93 @@ func parseClock(s string) (int, error) {
 		return 0, fmt.Errorf("scheduling: %q has an invalid minute", s)
 	}
 	return hh*60 + mm, nil
+}
+
+// --- administrator commands -------------------------------------------------
+//
+// Both handlers below carry out a decision an administrator already made and
+// that the admin service already wrote to its audit log. They are deliberately
+// NOT guarded by consumed_events: CancelAppointment takes a row lock and
+// refuses anything that is not pending_payment or confirmed, so a redelivery
+// finds the appointment already cancelled and returns
+// ErrAppointmentNotCancellable. Adding a consumed_events row would put the
+// idempotency marker in a different transaction from the effect -- committing
+// the marker for a cancellation that then failed is how an administrator's
+// force-cancel silently does nothing.
+
+// forceCancel applies one administrator-authorised cancellation.
+//
+// Force is true: the whole reason this command exists is to cancel an
+// appointment whose slot has already started, which is what an operator needs
+// when a consultation is stuck.
+func (c *Consumers) forceCancel(ctx context.Context, appointmentID, adminID uuid.UUID, reason string, env events.Envelope) error {
+	_, err := c.svc.CancelAppointment(ctx, CancelInput{
+		AppointmentID: appointmentID,
+		ActorID:       adminID,
+		ActorRole:     "admin",
+		Reason:        reason,
+		Force:         true,
+	})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrAppointmentNotCancellable):
+		// Already cancelled or already completed. Redelivery cannot change
+		// that, and either way the administrator's intent now holds.
+		c.log.Info().Str("appointment_id", maskID(appointmentID)).
+			Str("event_id", env.ID.String()).
+			Msg("admin cancellation: appointment was no longer cancellable")
+		return nil
+	case errors.Is(err, ErrAppointmentNotFound):
+		c.log.Error().Str("appointment_id", maskID(appointmentID)).
+			Str("event_id", env.ID.String()).
+			Msg("admin cancellation for an unknown appointment")
+		return nil
+	default:
+		return err
+	}
+}
+
+// handleAdminForceCancel cancels one appointment on an administrator's
+// authority.
+func (c *Consumers) handleAdminForceCancel(ctx context.Context, env events.Envelope) error {
+	var cmd events.AdminAppointmentForceCancelRequested
+	if err := env.Decode(&cmd); err != nil {
+		c.log.Error().Err(err).Str("event_id", env.ID.String()).
+			Msg("dropping unparseable admin.appointment_force_cancel_requested")
+		return nil
+	}
+	if cmd.AppointmentID == uuid.Nil {
+		c.log.Error().Str("event_id", env.ID.String()).
+			Msg("admin.appointment_force_cancel_requested without an appointment_id")
+		return nil
+	}
+	return c.forceCancel(ctx, cmd.AppointmentID, cmd.AdminID, cmd.Reason, env)
+}
+
+// handleAdminResolveDoubleBooking cancels the losing half of a double booking.
+//
+// Only the cancelled side is touched. The kept appointment needs no change --
+// it is already in the state the administrator chose -- and writing to it
+// anyway would bump its version under whoever is looking at it.
+func (c *Consumers) handleAdminResolveDoubleBooking(ctx context.Context, env events.Envelope) error {
+	var cmd events.AdminDoubleBookingResolveRequested
+	if err := env.Decode(&cmd); err != nil {
+		c.log.Error().Err(err).Str("event_id", env.ID.String()).
+			Msg("dropping unparseable admin.double_booking_resolve_requested")
+		return nil
+	}
+	if cmd.CancelAppointmentID == uuid.Nil {
+		c.log.Error().Str("event_id", env.ID.String()).
+			Msg("admin.double_booking_resolve_requested without a cancel_appointment_id")
+		return nil
+	}
+	if cmd.CancelAppointmentID == cmd.KeepAppointmentID {
+		// Cancelling the appointment being kept would resolve the conflict by
+		// destroying both sides of it.
+		c.log.Error().Str("event_id", env.ID.String()).
+			Msg("admin.double_booking_resolve_requested names the same appointment twice")
+		return nil
+	}
+	return c.forceCancel(ctx, cmd.CancelAppointmentID, cmd.AdminID, cmd.Reason, env)
 }

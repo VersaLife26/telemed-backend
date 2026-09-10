@@ -35,20 +35,3 @@ type ListFilter struct {
 	Page      int
 	PerPage   int
 }
-
-// ForceCancelCommand is published as admin.appointment_force_cancel_requested.
-type ForceCancelCommand struct {
-	AppointmentID uuid.UUID `json:"appointment_id"`
-	Reason        string    `json:"reason"`
-	AdminID       uuid.UUID `json:"admin_id"`
-}
-
-// ResolveDoubleBookingCommand is published as
-// admin.double_booking_resolve_requested: keep one appointment, cancel the
-// conflicting other.
-type ResolveDoubleBookingCommand struct {
-	KeepAppointmentID   uuid.UUID `json:"keep_appointment_id"`
-	CancelAppointmentID uuid.UUID `json:"cancel_appointment_id"`
-	Reason              string    `json:"reason"`
-	AdminID             uuid.UUID `json:"admin_id"`
-}

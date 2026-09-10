@@ -394,15 +394,6 @@ type AppointmentReminderDue struct {
 
 // ─── waitlist ────────────────────────────────────────────────────────────────
 
-// WaitlistJoined announces a patient joining a doctor's waitlist.
-type WaitlistJoined struct {
-	WaitlistID    uuid.UUID `json:"waitlist_id"`
-	PatientID     uuid.UUID `json:"patient_id"`
-	DoctorID      uuid.UUID `json:"doctor_id"`
-	PreferredDate string    `json:"preferred_date"` // YYYY-MM-DD
-	JoinedAt      time.Time `json:"joined_at"`
-}
-
 // WaitlistSlotOffered announces a time-boxed reservation for a waiting patient.
 type WaitlistSlotOffered struct {
 	WaitlistID uuid.UUID `json:"waitlist_id"`
@@ -511,40 +502,56 @@ type PrescriptionIssued struct {
 	IssuedAt       time.Time `json:"issued_at"`
 }
 
-// RecordUploaded announces a new document in a patient's vault. Same rule: the
-// document type is fine to broadcast, the contents are not.
-type RecordUploaded struct {
-	DocumentID   uuid.UUID `json:"document_id"`
-	OwnerUserID  uuid.UUID `json:"owner_user_id"`
-	UploadedBy   uuid.UUID `json:"uploaded_by"`
-	DocumentType string    `json:"document_type"`
-	SizeBytes    int64     `json:"size_bytes"`
-	UploadedAt   time.Time `json:"uploaded_at"`
-}
-
 // ─── notification ────────────────────────────────────────────────────────────
 
-// NotificationRequested asks the notification service to deliver a template.
-// Data is deliberately a loose map: it is template-specific, and constraining
-// it here would mean editing the platform package for every new template.
-type NotificationRequested struct {
-	UserID      uuid.UUID      `json:"user_id"`
-	TemplateKey string         `json:"template_key"`
-	Locale      string         `json:"locale,omitempty"`
-	Channels    []string       `json:"channels,omitempty"`
-	DedupeKey   string         `json:"dedupe_key"`
-	Data        map[string]any `json:"data,omitempty"`
+// ─── admin commands ──────────────────────────────────────────────────────────
+//
+// These four are COMMANDS, not statements of fact: the admin domain decides
+// something should happen and another domain is what makes it happen. They are
+// declared here, with every other canonical payload, for the ordinary reason --
+// a consumer in payment or scheduling must not import the admin domain to
+// learn the shape of a message.
+//
+// Each one is named for the request, not the outcome. admin.refund_approved
+// means an administrator approved a refund; whether the rail accepted it is
+// payment.refunded's job to say.
+
+// AdminAppointmentForceCancelRequested asks scheduling to cancel an
+// appointment on an administrator's authority, including one whose slot has
+// already started.
+type AdminAppointmentForceCancelRequested struct {
+	AppointmentID uuid.UUID `json:"appointment_id"`
+	Reason        string    `json:"reason"`
+	AdminID       uuid.UUID `json:"admin_id"`
 }
 
-// ClinicalNoteFinalised announces a signed consultation note. Like
-// PrescriptionIssued it carries identifiers and counts only -- never the SOAP
-// text or the diagnosis codes. A clinical note is the most sensitive content
-// on the platform, and this event fans out to every consumer.
-type ClinicalNoteFinalised struct {
-	NoteID         uuid.UUID `json:"note_id"`
-	AppointmentID  uuid.UUID `json:"appointment_id"`
-	PatientID      uuid.UUID `json:"patient_id"`
-	DoctorID       uuid.UUID `json:"doctor_id"`
-	DiagnosisCount int       `json:"diagnosis_count"`
-	FinalisedAt    time.Time `json:"finalised_at"`
+// AdminDoubleBookingResolveRequested asks scheduling to keep one appointment
+// and cancel the conflicting other.
+type AdminDoubleBookingResolveRequested struct {
+	KeepAppointmentID   uuid.UUID `json:"keep_appointment_id"`
+	CancelAppointmentID uuid.UUID `json:"cancel_appointment_id"`
+	Reason              string    `json:"reason"`
+	AdminID             uuid.UUID `json:"admin_id"`
+}
+
+// AdminPayoutBatchRequested asks payment to run a settlement pass.
+//
+// From and To describe the window the administrator was looking at when they
+// pressed the button. PayoutRunner settles everything that is due rather than
+// a window, so they are carried for the audit trail and not as instructions.
+type AdminPayoutBatchRequested struct {
+	From    time.Time `json:"from"`
+	To      time.Time `json:"to"`
+	AdminID uuid.UUID `json:"admin_id"`
+}
+
+// AdminRefundApproved asks payment to return money for a specific payment.
+//
+// AmountCents is an explicit override decided by a human, so it bypasses the
+// cancellation policy -- that is the entire point of an approved refund.
+type AdminRefundApproved struct {
+	PaymentID   uuid.UUID `json:"payment_id"`
+	AmountCents int64     `json:"amount_cents"`
+	Reason      string    `json:"reason"`
+	AdminID     uuid.UUID `json:"admin_id"`
 }

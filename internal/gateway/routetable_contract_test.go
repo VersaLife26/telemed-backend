@@ -362,6 +362,27 @@ func TestRouteTable_ConsultationSurfaceIsReachable(t *testing.T) {
 	}
 }
 
+// TestRouteTable_DoesNotRouteTheSignallingSocket asserts an ABSENCE, which is
+// unusual enough to explain.
+//
+// /ws/consultation is served raw, from a bare mux ahead of the router,
+// because a websocket upgrade hijacks the connection. Adding it to this table
+// would send the upgrade through the gateway's in-process proxy, whose
+// statusRecorder implements http.Flusher but NOT http.Hijacker -- so
+// Upgrade() fails with "response does not implement http.Hijacker" and every
+// consultation stops connecting.
+//
+// Even through the reverse proxy it would break differently: the table
+// assigns each route a timeout class, and the shortest is five seconds.
+func TestRouteTable_DoesNotRouteTheSignallingSocket(t *testing.T) {
+	for _, r := range loadTestRoutes(t) {
+		if strings.Contains(r.Pattern, "/ws/") {
+			t.Errorf("route %q (%s) puts a websocket path in the gateway route table; "+
+				"it must be served raw -- see modular.Module.Raw", r.Pattern, r.Name)
+		}
+	}
+}
+
 // TestRouteTable_DoctorPrefixOwnership guards the one genuinely ambiguous
 // prefix on the platform. /api/v1/doctors is doctor-service's, except for
 // /slots, which is scheduling-service's -- and chi resolves the more specific

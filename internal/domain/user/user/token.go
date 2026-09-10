@@ -14,6 +14,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
+	"telemed/internal/platform/middleware"
 )
 
 // AccessTokenTTL and RefreshTokenTTL are the platform's session lifetimes
@@ -128,6 +130,58 @@ func (t *TokenIssuer) IssueAccessToken(u User) (string, time.Time, error) {
 	signed, err := tok.SignedString(t.privateKey)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("user: sign access token: %w", err)
+	}
+	return signed, expiresAt, nil
+}
+
+// IssueServiceToken mints a long-lived token for a peer SERVICE, not a person.
+//
+// It exists so a deployment with no OAuth identity provider on the mesh path
+// can still authenticate service-to-service calls without weakening the
+// receiving end: the token is signed by this service's own key, carries the
+// platform issuer, and asserts exactly one role -- "service". user-service's
+// gRPC interceptor keeps requiring RoleService and keeps verifying the
+// signature against the key set BOUND to this issuer, so nothing about what
+// the server accepts changes.
+//
+// Two things are deliberately different from an access token:
+//
+//   - There is no subject user. The subject is the service name, so an audit
+//     trail says "notification-service" and not a UUID that resolves to
+//     nobody.
+//   - The TTL is the caller's choice and is expected to be months. That is
+//     the cost of having no refresh path: rotating this token means changing
+//     it in both services and restarting them. It is written down here
+//     because a reader will otherwise assume AccessTokenTTL applies.
+func (t *TokenIssuer) IssueServiceToken(serviceName string, ttl time.Duration) (string, time.Time, error) {
+	if serviceName == "" {
+		return "", time.Time{}, fmt.Errorf("user: service token needs a service name")
+	}
+	if ttl <= 0 {
+		return "", time.Time{}, fmt.Errorf("user: service token needs a positive ttl")
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+
+	c := claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   serviceName,
+			Issuer:    t.issuer,
+			Audience:  jwt.ClaimStrings{t.audience},
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ID:        uuid.NewString(),
+		},
+		PreferredUsername: serviceName,
+	}
+	c.RealmAccess.Roles = []string{string(middleware.RoleService)}
+
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, c)
+	tok.Header["kid"] = t.keyID
+
+	signed, err := tok.SignedString(t.privateKey)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("user: sign service token: %w", err)
 	}
 	return signed, expiresAt, nil
 }

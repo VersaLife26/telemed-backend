@@ -146,7 +146,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// Calling it inline here meant srv.Run below was never reached, so the
 	// service bound no HTTP port at all and every webhook was unreachable --
 	// while the logs looked completely healthy.
-	consumer := payment.NewConsumer(svc, deps.Broker, log)
+	consumer := payment.NewConsumer(svc, deps.Broker, payouts, log)
 	go func() {
 		if err := consumer.Start(ctx); err != nil && ctx.Err() == nil {
 			log.Error().Err(err).Msg("payment event consumer stopped")

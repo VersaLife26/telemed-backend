@@ -63,11 +63,24 @@ type store interface {
 // Options configures Service. Every duration has a sane default applied by
 // NewService so a service booted with a bare-minimum .env still runs.
 type Options struct {
-	LiveKitURL              string
+	LiveKitURL string
+	// SignalURL is the ABSOLUTE ws(s):// address of this deployment's
+	// signalling socket, e.g. wss://rtc.example.lk/ws/consultation. Absolute
+	// rather than a path because the browser connects to it directly: a Next
+	// route handler cannot proxy a websocket upgrade.
+	SignalURL               string
 	TokenTTL                time.Duration
 	EmptyRoomTimeoutSeconds uint32
 	RecordingBucket         string
-	ICEServers              []ICEServer
+
+	// ICEServers is called per join rather than stored, so a deployment
+	// minting short-lived TURN credentials returns fresh ones each time.
+	// Mirrors signal.HubOptions.ICEServers.
+	//
+	// Before this was a function it was a stored slice that no module ever
+	// set, so JoinResult.ICEServers was unconditionally empty in production
+	// and every call was STUN-only without anything saying so.
+	ICEServers func(ctx context.Context, identity string) []ICEServer
 
 	// DefaultConsultationDuration is the wait estimate used only until a
 	// doctor has enough completed consultations for a real rolling average.
@@ -107,7 +120,10 @@ func NewService(st store, video VideoProvider, c cache.Cache, pool database.Pool
 		opts.DefaultConsultationDuration = 15 * time.Minute
 	}
 	if opts.ICEServers == nil {
-		opts.ICEServers = []ICEServer{}
+		// Never nil, so Join can call it unconditionally. An empty list is
+		// also what the handler contract promises: ice_servers is always an
+		// array, never null.
+		opts.ICEServers = func(context.Context, string) []ICEServer { return []ICEServer{} }
 	}
 	return &Service{store: st, video: video, cache: c, pool: pool, outbox: outbox, log: log, opts: opts}
 }
@@ -127,6 +143,21 @@ func authorizeParty(p middleware.Principal, c *Consultation) (ParticipantRole, b
 }
 
 func waitingRoomKey(doctorID uuid.UUID) string { return "waiting_room:doctor:" + doctorID.String() }
+
+// waitingRoomTTL bounds the sorted set behind a doctor's waiting room.
+//
+// Members are removed explicitly on admit, end and cancel, but a patient who
+// joins and is never admitted leaves one behind forever: the stale sweeper
+// only considers consultations with a started_at, and Admit is what sets it.
+// Redis runs with maxmemory-policy noeviction on this deployment -- correct,
+// because the other things in this Redis are OTP attempt counters and the
+// suspension denylist, which must never be evicted -- so an unbounded key here
+// eventually refuses writes for all of them.
+//
+// A day is far longer than any waiting room legitimately lives, so the TTL
+// only ever collects abandoned sets. It is refreshed on every join, so a
+// doctor with a continuously busy queue never loses one in use.
+const waitingRoomTTL = 24 * time.Hour
 
 func roomNameFor(appointmentID uuid.UUID) string { return "consultation-" + appointmentID.String() }
 
@@ -233,6 +264,9 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 			// the patient's place, which the CountWaitingAhead fallback covers.
 			s.log.Warn().Err(err).Str("doctor_id", c.DoctorID.String()).
 				Msg("waiting room redis mirror failed, postgres remains authoritative")
+		} else if err := s.cache.Expire(ctx, key, waitingRoomTTL); err != nil {
+			s.log.Warn().Err(err).Str("doctor_id", c.DoctorID.String()).
+				Msg("waiting room ttl not set")
 		}
 	}
 
@@ -244,8 +278,13 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 		Token:          token,
 		TokenExpiresAt: tokenExpiresAt,
 		RoomName:       c.RoomName,
+		Provider:       s.video.Name(),
 		LiveKitURL:     s.opts.LiveKitURL,
-		ICEServers:     s.opts.ICEServers,
+		SignalURL:      s.opts.SignalURL,
+		RecordingMode:  recordingModeFor(s.video.Name()),
+		// Minted per join, and scoped to the identity that will present it:
+		// a REST-style TURN credential is traceable only if it names someone.
+		ICEServers: s.opts.ICEServers(ctx, identity),
 	}, nil
 }
 
@@ -510,6 +549,27 @@ func (s *Service) maybeStartRecording(ctx context.Context, c *Consultation) erro
 		Bucket:    s.opts.RecordingBucket,
 		OutputKey: c.AppointmentID.String() + ".mp4",
 	})
+	if errors.Is(err, ErrRecordingUnsupported) {
+		// Both parties consented and this deployment has no server-side
+		// recorder. RecordingStatus deliberately stays RecordingNone: it is
+		// what wasRecorded() reads, and claiming otherwise would put
+		// recorded=true on consultation.ended and tell record-service a
+		// recording exists that nothing will ever produce.
+		//
+		// The consent is not wasted. It is what authorises the doctor's
+		// client-side MediaRecorder, whose output lives and dies with that
+		// browser tab -- a materially weaker guarantee than an SFU writing to
+		// object storage, and the direct cost of not running one.
+		s.log.Warn().Str("consultation_id", c.ID.String()).
+			Msg("both parties consented to recording; this provider has no server-side media path")
+		return database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			return s.store.RecordEvent(ctx, tx, Event{
+				ConsultationID: c.ID, Type: EventRecordingUnavailable,
+				Metadata:   map[string]any{"provider": s.video.Name()},
+				OccurredAt: time.Now().UTC(),
+			})
+		})
+	}
 	if err != nil {
 		return fmt.Errorf("consultation: start recording: %w", err)
 	}
@@ -984,5 +1044,50 @@ func wasRecorded(c *Consultation) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// --- signalling hooks -------------------------------------------------------
+//
+// These two exist because dropping the SFU dropped its webhooks with it. Under
+// LiveKit, participant_joined/participant_left and room_finished arrived as
+// signed HTTP callbacks; with a peer-to-peer provider there is no external
+// system to send them, so the hub calls in directly.
+//
+// Both are best-effort and log rather than return: they are invoked from the
+// signalling hub, on a path that is servicing a live websocket, and a database
+// hiccup must not take a call down. Everything they write is bookkeeping the
+// stale sweeper can reconstruct more crudely.
+
+// NotePeerChange records a participant arriving at or leaving a room.
+//
+// Without it consultation_participants.left_at is never written by anything
+// and every ended consultation reports all participants still joined, forever.
+func (s *Service) NotePeerChange(ctx context.Context, roomName, identity string, joined bool) {
+	c, err := s.store.GetConsultationByRoomName(ctx, s.pool, roomName)
+	if errors.Is(err, ErrNotFound) {
+		// A signalling room with no consultation behind it: the developer test
+		// surface creates those deliberately.
+		return
+	}
+	if err != nil {
+		s.log.Warn().Err(err).Str("room", roomName).Msg("consultation: peer change lookup failed")
+		return
+	}
+
+	now := time.Now().UTC()
+	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if !joined {
+			return s.store.MarkParticipantLeft(ctx, tx, c.ID, identity, now)
+		}
+		role := RolePatient
+		if identity == c.DoctorID.String() {
+			role = RoleDoctor
+		}
+		return s.store.UpsertParticipantJoin(ctx, tx, c.ID, identity, role, now)
+	})
+	if err != nil {
+		s.log.Warn().Err(err).Str("consultation_id", c.ID.String()).
+			Bool("joined", joined).Msg("consultation: could not record peer change")
 	}
 }

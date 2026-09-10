@@ -88,6 +88,17 @@ func TestOpenAPI_DocumentsEveryRoutedOperation(t *testing.T) {
 			// because the source docs name no concrete paths behind it.
 			continue
 		}
+		if isTestSurface(r) {
+			// Deliberately undocumented. openapi.yaml is the contract the
+			// patient, doctor and admin clients are generated from and the
+			// document published to anyone integrating with the platform; the
+			// test surface is neither. Documenting an unauthenticated endpoint
+			// that returns plaintext OTP codes would advertise it to every
+			// consumer of the spec and invite a generated client to call it,
+			// while the surface itself does not exist in any environment those
+			// clients talk to.
+			continue
+		}
 		methods := r.Methods
 		if len(methods) == 0 {
 			methods = []string{"GET"}

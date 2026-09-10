@@ -87,15 +87,21 @@ func (q Quality) valid() bool {
 
 // Event types recorded on the append-only consultation_events timeline.
 const (
-	EventJoined                    = "joined"
-	EventLeft                      = "left"
-	EventAdmitted                  = "admitted"
-	EventQualitySample             = "quality_sample"
-	EventQualityDegraded           = "quality_degraded"
-	EventConsentRecorded           = "consent_recorded"
-	EventRecordingStarted          = "recording_started"
-	EventRecordingCompleted        = "recording_completed"
-	EventRecordingFailed           = "recording_failed"
+	EventJoined             = "joined"
+	EventLeft               = "left"
+	EventAdmitted           = "admitted"
+	EventQualitySample      = "quality_sample"
+	EventQualityDegraded    = "quality_degraded"
+	EventConsentRecorded    = "consent_recorded"
+	EventRecordingStarted   = "recording_started"
+	EventRecordingCompleted = "recording_completed"
+	EventRecordingFailed    = "recording_failed"
+	// EventRecordingUnavailable records that both parties consented and the
+	// configured provider has no server-side recorder. Distinct from
+	// recording_failed, which means one was attempted and did not work: this
+	// is a capability the deployment does not have, and a clinician reading
+	// the timeline is entitled to see which of the two happened.
+	EventRecordingUnavailable      = "recording_unavailable"
 	EventEnded                     = "ended"
 	EventAbandoned                 = "abandoned"
 	EventCancellationIgnoredActive = "cancellation_ignored_active"
@@ -217,11 +223,59 @@ type JoinResult struct {
 	Status         Status    `json:"status"`
 	Role           string    `json:"role"` // patient | doctor
 
-	Token          string      `json:"token"`
-	TokenExpiresAt time.Time   `json:"token_expires_at"`
-	RoomName       string      `json:"room_name"`
-	LiveKitURL     string      `json:"livekit_url"`
-	ICEServers     []ICEServer `json:"ice_servers"`
+	Token          string    `json:"token"`
+	TokenExpiresAt time.Time `json:"token_expires_at"`
+	RoomName       string    `json:"room_name"`
+
+	// Provider is VideoProvider.Name(): "inhouse" | "livekit" | "mock". The
+	// client branches on this, NOT on which URL happens to be non-empty.
+	Provider string `json:"provider"`
+
+	// LiveKitURL is empty for every non-LiveKit provider.
+	//
+	// It is deliberately not reused to carry the signalling address. A client
+	// that read livekit_url and handed it to livekit-client would open a
+	// socket speaking an entirely different protocol and hang rather than
+	// fail, and every log line and symbol named "livekit" would become a lie
+	// while LiveKit is still the supported rollback.
+	LiveKitURL string `json:"livekit_url,omitempty"`
+
+	// SignalURL is the platform's own signalling websocket, absolute. The
+	// client appends ?token=<Token>.
+	SignalURL string `json:"signal_url,omitempty"`
+
+	// RecordingMode tells the client where a recording would actually live:
+	// "server" (an SFU writes to object storage), "client" (the browser
+	// records locally and it dies with the tab), or "none".
+	//
+	// The consent dialog's wording depends on it. A patient consenting to a
+	// recording is entitled to know whether it is being kept by the platform
+	// or by the doctor's laptop.
+	RecordingMode string `json:"recording_mode"`
+
+	ICEServers []ICEServer `json:"ice_servers"`
+}
+
+// Recording modes reported by JoinResult.
+const (
+	RecordingModeServer = "server"
+	RecordingModeClient = "client"
+	RecordingModeNone   = "none"
+)
+
+// recordingModeFor maps a provider onto where its recordings live.
+func recordingModeFor(provider string) string {
+	switch provider {
+	case "livekit":
+		return RecordingModeServer
+	case "inhouse":
+		// peer.ts runs a MediaRecorder in the doctor's tab. That is a real
+		// recording and a materially weaker guarantee than an SFU writing to
+		// object storage -- a crash or a closed laptop loses it.
+		return RecordingModeClient
+	default:
+		return RecordingModeNone
+	}
 }
 
 // WaitingRoomStatusResult is the response to GET /consultations/{id}/waiting-room.

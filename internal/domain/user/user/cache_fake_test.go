@@ -114,6 +114,10 @@ func (f *fakeCache) ZRank(_ context.Context, _, _ string) (int64, error)        
 func (f *fakeCache) ZRange(_ context.Context, _ string, _, _ int64) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeCache) ZCard(_ context.Context, _ string) (int64, error) { return 0, nil }
-func (f *fakeCache) Ping(_ context.Context) error                     { return nil }
-func (f *fakeCache) Close() error                                     { return nil }
+
+// Expire records the TTL. The fakes do not evict on it -- no test here
+// depends on expiry happening, only on the call being made.
+func (f *fakeCache) Expire(_ context.Context, _ string, _ time.Duration) error { return nil }
+func (f *fakeCache) ZCard(_ context.Context, _ string) (int64, error)          { return 0, nil }
+func (f *fakeCache) Ping(_ context.Context) error                              { return nil }
+func (f *fakeCache) Close() error                                              { return nil }

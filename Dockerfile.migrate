@@ -1,0 +1,35 @@
+# The migration runner.
+#
+# A separate image from the server because the server image is FROM scratch: it
+# has no shell, no migrate CLI and no migrations/ directory, and giving it all
+# three to run a one-shot would put a schema-mutating tool inside every
+# long-running container on the box.
+#
+# This image is short-lived. Compose runs it to completion before any
+# application container starts, and it exits.
+
+FROM golang:1.26-alpine AS builder
+
+# Pinned, not @latest. golang-migrate's dirty-state semantics have changed
+# across minor versions, and "whatever was newest on the day CI ran" is not a
+# property you want in the tool that migrates a medical records database.
+RUN go install -tags 'postgres' \
+      github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+
+FROM alpine:3.20
+
+# bash for scripts/migrate.sh (it uses BASH_SOURCE and arrays), psql for the
+# operator who has to inspect a dirty version by hand.
+RUN apk add --no-cache bash postgresql16-client ca-certificates \
+ && adduser -D -u 65532 migrator
+
+COPY --from=builder /go/bin/migrate /usr/local/bin/migrate
+COPY migrations/ /app/migrations/
+COPY scripts/migrate.sh /app/scripts/migrate.sh
+
+WORKDIR /app
+USER 65532:65532
+
+# No arguments runs bootstrap and then all eight domains, which is what one
+# process owning the whole schema wants. Pass domain names to narrow it.
+ENTRYPOINT ["/app/scripts/migrate.sh"]

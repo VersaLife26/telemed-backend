@@ -44,6 +44,12 @@ type Cache interface {
 	ZRange(ctx context.Context, key string, start, stop int64) ([]string, error)
 	ZCard(ctx context.Context, key string) (int64, error)
 
+	// Expire sets a TTL on an existing key. It exists for sorted sets, which
+	// have no per-member expiry: a member is only ever removed explicitly, so
+	// a set whose members are removed on some paths and not others grows
+	// without bound. Setting the TTL on the set as a whole bounds it.
+	Expire(ctx context.Context, key string, ttl time.Duration) error
+
 	Ping(ctx context.Context) error
 	Close() error
 }

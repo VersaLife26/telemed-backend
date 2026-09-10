@@ -60,9 +60,16 @@ func (e *echoUpstream) reset() {
 }
 
 // allUpstreamNames mirrors buildUpstreams in cmd/server/main.go.
+//
+// testSurfaceUpstream is included because the router tests mount the FULL
+// table, and the composer only ever omits the test routes together with the
+// upstream that serves them. Mounting the table with the routes present and
+// the upstream missing is a state the composer cannot produce, so failing
+// every router test on it would be testing an impossible configuration.
 var allUpstreamNames = []string{
 	"user-service", "doctor-service", "scheduling-service", "consultation-service",
 	"payment-service", "notification-service", "record-service", "admin-service",
+	testSurfaceUpstream,
 }
 
 func testConfig() Config {

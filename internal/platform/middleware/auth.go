@@ -138,7 +138,44 @@ type Authenticator struct {
 	byIssuer map[string]keyfunc.Keyfunc
 	issuers  []string
 	audience string
+
+	// roles resolves the roles of a principal whose token carries none.
+	//
+	// An external identity provider authenticates a person; it does not know
+	// what this platform lets them do. Cloudflare Access, in particular, mints
+	// a token with a verified "sub" and "email" and no roles at all -- so
+	// without this the admin surface would authenticate an administrator
+	// perfectly and then 403 every request.
+	//
+	// Nil disables the lookup, which is correct for every issuer that does
+	// carry roles. See RequireAuth for why it runs there and not in Verify.
+	roles RoleResolver
 }
+
+// RoleResolver maps a verified external identity onto this platform's roles.
+//
+// The token is proof of WHO; this is the answer to WHAT THEY MAY DO, and the
+// two deliberately come from different places. Roles live in the admin_users
+// table so that removing an administrator is a change an operator makes here,
+// not one that has to be made in an identity provider and then waited for.
+type RoleResolver interface {
+	// RolesForSubject returns the roles held by the given verified identity.
+	// An unknown subject is not an error: it is a person who authenticated
+	// successfully and holds no roles on this platform, and must receive a
+	// 403 rather than a 500.
+	RolesForSubject(ctx context.Context, issuer, subject, email string) ([]Role, error)
+}
+
+// WithRoleResolver attaches a resolver. It is set by the composer rather than
+// passed to New because the domain that owns the roles is built after the
+// authenticator every other domain shares.
+func (a *Authenticator) WithRoleResolver(r RoleResolver) *Authenticator {
+	a.roles = r
+	return a
+}
+
+// ResolvesRoles reports whether a resolver is attached.
+func (a *Authenticator) ResolvesRoles() bool { return a.roles != nil }
 
 // AuthConfig configures the authenticator.
 //
@@ -318,6 +355,25 @@ func RequireAuth(a *Authenticator) func(http.Handler) http.Handler {
 				httpx.Error(w, r, httpx.ErrUnauthorized.WithCause(err))
 				return
 			}
+
+			// Role resolution happens HERE and not inside Verify, for two
+			// reasons: Verify is a pure function over a string that many
+			// tests call directly, and a lookup needs the request context so
+			// a slow directory cannot outlive the request that triggered it.
+			//
+			// Only tokens that arrive with no roles are resolved. A token
+			// that carries its own roles is authoritative for them, and
+			// re-resolving would let a directory silently widen what a
+			// user-service token already asserted.
+			if a.roles != nil && len(p.Roles) == 0 {
+				resolved, err := a.roles.RolesForSubject(r.Context(), p.Issuer, p.Subject, p.Email)
+				if err != nil {
+					httpx.Error(w, r, httpx.ErrInternal.WithCause(err))
+					return
+				}
+				p.Roles = resolved
+			}
+
 			ctx := WithPrincipal(r.Context(), p)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

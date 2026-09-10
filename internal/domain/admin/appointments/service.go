@@ -41,7 +41,7 @@ func (s *Service) ForceCancel(ctx context.Context, appointmentID, adminID uuid.U
 		return err
 	}
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminAppointmentForceCancel, appointmentID.String(), ForceCancelCommand{
+		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminAppointmentForceCancel, appointmentID.String(), events.AdminAppointmentForceCancelRequested{
 			AppointmentID: appointmentID, Reason: reason, AdminID: adminID,
 		})
 	})
@@ -64,7 +64,7 @@ func (s *Service) ResolveDoubleBooking(ctx context.Context, keep, cancel, adminI
 		return err
 	}
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminDoubleBookingResolveRequested, keep.String(), ResolveDoubleBookingCommand{
+		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminDoubleBookingResolveRequested, keep.String(), events.AdminDoubleBookingResolveRequested{
 			KeepAppointmentID: keep, CancelAppointmentID: cancel, Reason: reason, AdminID: adminID,
 		})
 	})

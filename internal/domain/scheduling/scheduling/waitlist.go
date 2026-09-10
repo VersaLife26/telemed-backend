@@ -39,17 +39,7 @@ func (s *Service) JoinWaitlist(ctx context.Context, patientID, doctorID uuid.UUI
 			}
 			return err
 		}
-		return s.outbox.Enqueue(ctx, tx, events.SubjectWaitlistJoined, entry.ID.String(), events.WaitlistJoined{
-			WaitlistID: entry.ID,
-			PatientID:  patientID,
-			DoctorID:   doctorID,
-			// YYYY-MM-DD in the business timezone. Position is deliberately
-			// absent from the canonical payload: it is stale the instant it is
-			// published, because the entry ahead may cancel a millisecond
-			// later. A consumer that needs it asks.
-			PreferredDate: date.String(),
-			JoinedAt:      entry.QueuedAt,
-		})
+		return nil
 	})
 	if err != nil {
 		return WaitlistEntry{}, err

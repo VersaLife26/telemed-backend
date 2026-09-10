@@ -161,6 +161,13 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	if err != nil {
 		return nil, fail(fmt.Errorf("user: %w", err))
 	}
+	// Test mode swaps delivery for capture. The real provider is still built
+	// first, so a misconfiguration that would fail boot in production still
+	// fails boot here rather than being masked until test mode is turned off.
+	if deps.Outbox != nil {
+		log.Warn().Msg("TEST MODE: OTP SMS is captured to the test outbox and NOT delivered")
+		sms = newCapturingSMS(deps.Outbox, cfg.SMSProvider)
+	}
 
 	// --- keycloak identity mirror (degrades, never blocks boot) ------------
 	kc := buildKeycloakClient(ctx, cfg, log)

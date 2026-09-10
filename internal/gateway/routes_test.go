@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	platmw "telemed/internal/platform/middleware"
@@ -69,6 +70,29 @@ var wantPublicRoutes = map[string]struct{}{
 	"webhook-livekit":                {},
 }
 
+// testSurfacePrefix is the path prefix owned by the developer test surface.
+//
+// Its routes are public, and they are NOT listed in wantPublicRoutes, because
+// enumerating them there would put them on the same footing as OTP verify --
+// a considered, permanent exception to authentication. They are not that.
+// They are a surface that must not exist at all in production, and the control
+// that keeps them out of it is config.Base.TestModeEnabled (which a
+// production ENV overrides regardless of TELEMED_TEST_MODE), plus the
+// composer dropping every one of these rules when the module was not built.
+//
+// What the tests below assert instead is the containment: every public route
+// outside the reviewed allowlist must live under this prefix and point at this
+// upstream. That is a stronger check than a list of eight names -- a new
+// public route anywhere else still fails, and a test route that quietly grew a
+// pattern outside /api/v1/test/ fails too.
+const (
+	testSurfacePrefix   = "/api/v1/test/"
+	testSurfaceUpstream = "testkit-service"
+)
+
+// isTestSurface reports whether r belongs to the developer test surface.
+func isTestSurface(r RouteRule) bool { return r.Upstream == testSurfaceUpstream }
+
 func loadTestRoutes(t *testing.T) []RouteRule {
 	t.Helper()
 	rules, err := LoadRoutes("")
@@ -91,11 +115,50 @@ func TestRouteTable_PublicAllowlistIsExact(t *testing.T) {
 			t.Errorf("route %q should be public per AGENT-BRIEF but is not", name)
 		}
 	}
-	for name := range got {
-		if _, ok := wantPublicRoutes[name]; !ok {
-			t.Errorf("route %q is public but is NOT on the AGENT-BRIEF allowlist -- "+
-				"an authenticated route may have been accidentally made public", name)
+	for _, r := range PublicRoutes(rules) {
+		if _, ok := wantPublicRoutes[r.Name]; ok {
+			continue
 		}
+		if isTestSurface(r) {
+			continue // asserted separately by TestRouteTable_TestSurfaceIsContained
+		}
+		t.Errorf("route %q is public but is NOT on the AGENT-BRIEF allowlist -- "+
+			"an authenticated route may have been accidentally made public", r.Name)
+	}
+}
+
+// TestRouteTable_TestSurfaceIsContained is what stands in for an allowlist
+// entry per test route.
+//
+// The test surface is unauthenticated and hands back plaintext OTP codes, so
+// the thing worth asserting is not "these eight names are expected" -- it is
+// that the surface cannot spread. Every rule pointing at the test upstream
+// must sit under /api/v1/test/, and nothing under /api/v1/test/ may point
+// anywhere else. A test route that grew a pattern reaching into another
+// domain, or a real route that acquired the test upstream, fails here.
+func TestRouteTable_TestSurfaceIsContained(t *testing.T) {
+	rules := loadTestRoutes(t)
+
+	var seen int
+	for _, r := range rules {
+		underPrefix := strings.HasPrefix(r.Pattern, testSurfacePrefix)
+		switch {
+		case isTestSurface(r) && !underPrefix:
+			t.Errorf("route %q is on the test upstream but its pattern %q is outside %s",
+				r.Name, r.Pattern, testSurfacePrefix)
+		case underPrefix && !isTestSurface(r):
+			t.Errorf("route %q is under %s but points at upstream %q, not %q",
+				r.Name, testSurfacePrefix, r.Upstream, testSurfaceUpstream)
+		case isTestSurface(r):
+			seen++
+			if r.Auth != AuthPublic {
+				t.Errorf("route %q is on the test surface but has auth %q; the surface exists to need no login",
+					r.Name, r.Auth)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Error("no test-surface routes in the table; the containment check is asserting nothing")
 	}
 }
 
@@ -106,6 +169,9 @@ func TestRouteTable_EveryNonPublicRouteRequiresAuth(t *testing.T) {
 	rules := loadTestRoutes(t)
 	for _, r := range rules {
 		if _, isPublic := wantPublicRoutes[r.Name]; isPublic {
+			continue
+		}
+		if isTestSurface(r) {
 			continue
 		}
 		if r.Auth != AuthAuthenticated && r.Auth != AuthAdmin {
@@ -206,6 +272,10 @@ func TestRouteTable_UpstreamsAreInThePortTable(t *testing.T) {
 		"user-service": {}, "doctor-service": {}, "scheduling-service": {},
 		"consultation-service": {}, "payment-service": {}, "notification-service": {},
 		"record-service": {}, "admin-service": {},
+		// Not in the brief's port table because it is not a backend service:
+		// it is the developer test surface, which exists only in a process
+		// that built it and is dropped from the table entirely otherwise.
+		testSurfaceUpstream: {},
 	}
 	rules := loadTestRoutes(t)
 	for _, r := range rules {

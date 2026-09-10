@@ -48,6 +48,22 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 
+	// StaticToken is a pre-minted bearer token used INSTEAD of the client
+	// credentials flow. When set, TokenURL/ClientID/ClientSecret are ignored
+	// and Token returns this value unchanged.
+	//
+	// It exists for a deployment with no OAuth identity provider on the mesh
+	// path. The token is expected to be a long-lived JWT signed by one of the
+	// platform's own issuers and carrying the "service" role, so the RECEIVING
+	// side is unchanged: it still verifies a signature against a bound key set
+	// and still requires RoleService. Nothing about the server's trust model
+	// is relaxed -- only where the client gets its token from.
+	//
+	// The trade is real and worth stating: a static token cannot be rotated by
+	// waiting for it to expire. Rotating it means changing it in both services
+	// and restarting them.
+	StaticToken string
+
 	// RequireTLS reports whether the credential may only travel over a
 	// secured connection. It defaults to true and should only be false for
 	// local development: a bearer token on a plaintext link is readable by
@@ -89,7 +105,7 @@ type Source struct {
 // Keycloak: a service must be able to start while its identity provider is
 // briefly unavailable, and the first call will surface any real problem.
 func New(cfg Config) (*Source, error) {
-	if cfg.TokenURL == "" || cfg.ClientID == "" {
+	if cfg.StaticToken == "" && (cfg.TokenURL == "" || cfg.ClientID == "") {
 		return nil, ErrNotConfigured
 	}
 	client := cfg.HTTPClient
@@ -106,6 +122,12 @@ func New(cfg Config) (*Source, error) {
 // Token returns a valid access token, fetching a new one when the cached token
 // is missing or within refreshMargin of expiry.
 func (s *Source) Token(ctx context.Context) (string, error) {
+	// A static token has no expiry this side can observe and nothing to
+	// refresh, so it short-circuits before the mutex and the HTTP client.
+	if s.cfg.StaticToken != "" {
+		return s.cfg.StaticToken, nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

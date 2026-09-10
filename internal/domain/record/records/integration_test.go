@@ -28,7 +28,7 @@ func newIntegrationService(t *testing.T) (*Service, *access.Service, *access.Rep
 	pool := dbtest.NewPostgres(t)
 	log := zerolog.Nop()
 
-	store, err := storage.NewFilesystem(t.TempDir(), "")
+	store, err := storage.NewFilesystem(t.TempDir(), "", nil)
 	if err != nil {
 		t.Fatalf("NewFilesystem: %v", err)
 	}

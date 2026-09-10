@@ -36,7 +36,16 @@ type appConfig struct {
 
 	config.Base `mapstructure:",squash"`
 
-	AdminIPAllowlist      string        `mapstructure:"admin_ip_allowlist"`
+	AdminIPAllowlist string `mapstructure:"admin_ip_allowlist"`
+	// StorageBackend selects the Storage implementation, matching the record
+	// domain's key. Both domains read the same objects, so a deployment that
+	// sets one and not the other has two services disagreeing about where the
+	// platform's documents live.
+	StorageBackend          string `mapstructure:"storage_backend"`
+	FilesystemStorageDir    string `mapstructure:"filesystem_storage_dir"`
+	FilesystemPresignSecret string `mapstructure:"filesystem_presign_secret"`
+	PublicAPIBaseURL        string `mapstructure:"public_api_base_url"`
+
 	MinIOEndpoint         string        `mapstructure:"minio_endpoint"`
 	MinIOAccessKey        string        `mapstructure:"minio_access_key"`
 	MinIOSecretKey        string        `mapstructure:"minio_secret_key"`

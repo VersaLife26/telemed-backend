@@ -26,10 +26,8 @@ type Metrics struct {
 	HTTPInFlight prometheus.Gauge
 
 	// Business counters. Services register their own on top of these via
-	// Registry(); these three exist everywhere because every runbook uses them.
-	EventsPublished *prometheus.CounterVec
-	EventsConsumed  *prometheus.CounterVec
-	OutboxBacklog   prometheus.Gauge
+	// Registry(); this one exists everywhere because every runbook uses it.
+	EventsConsumed *prometheus.CounterVec
 
 	DependencyUp       *prometheus.GaugeVec
 	DependencyDuration *prometheus.HistogramVec
@@ -62,18 +60,10 @@ func NewMetrics(service string) *Metrics {
 			Name: "telemed_http_in_flight_requests", ConstLabels: labels,
 			Help: "HTTP requests currently being served.",
 		}),
-		EventsPublished: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "telemed_events_published_total", ConstLabels: labels,
-			Help: "Domain events relayed from the outbox to NATS.",
-		}, []string{"subject", "result"}),
 		EventsConsumed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "telemed_events_consumed_total", ConstLabels: labels,
 			Help: "Domain events processed by this service's subscribers.",
 		}, []string{"subject", "result"}),
-		OutboxBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "telemed_outbox_backlog", ConstLabels: labels,
-			Help: "Unpublished rows in outbox_events. Sustained growth means the relay is stuck.",
-		}),
 		DependencyUp: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "telemed_dependency_up", ConstLabels: labels,
 			Help: "1 when a downstream dependency answered its last health probe.",
@@ -87,7 +77,7 @@ func NewMetrics(service string) *Metrics {
 
 	reg.MustRegister(
 		m.HTTPRequests, m.HTTPDuration, m.HTTPInFlight,
-		m.EventsPublished, m.EventsConsumed, m.OutboxBacklog,
+		m.EventsConsumed,
 		m.DependencyUp, m.DependencyDuration,
 	)
 	return m

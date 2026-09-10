@@ -19,6 +19,16 @@ var (
 	// ErrWebhookUnverified is returned by VerifyWebhook when the signature,
 	// checksum, or auth header does not check out.
 	ErrWebhookUnverified = errors.New("consultation: webhook could not be verified")
+
+	// ErrRecordingUnsupported is returned by StartRecording/StopRecording by a
+	// provider with no server-side media path.
+	//
+	// It is NOT a failure. It is the provider stating a capability it does not
+	// have, so callers can degrade deliberately -- and visibly -- instead of
+	// logging an error every time both parties consent to a recording that was
+	// never going to happen. A peer-to-peer call has no server in the media
+	// path to record from; that is the trade made by not running an SFU.
+	ErrRecordingUnsupported = errors.New("consultation: video provider cannot record server-side")
 )
 
 // RoomSpec describes the room CreateRoom should ensure exists. CreateRoom is

@@ -49,9 +49,24 @@ type Options struct {
 	Logger         zerolog.Logger
 	Metrics        *observability.Metrics
 	RequestTimeout time.Duration
-	ShutdownGrace  time.Duration
-	CORSOrigins    []string
-	HealthChecks   []HealthCheck
+
+	// RawHandlers maps a path prefix to a handler served AHEAD of the router
+	// and its middleware, for endpoints that hijack the connection.
+	//
+	// The chain below is built for requests that finish: chimw.Timeout
+	// cancels the context after RequestTimeout, chimw.Compress and the metrics
+	// middleware replace the ResponseWriter, and the latency histogram assumes
+	// a response. A websocket satisfies none of that, so it is routed around
+	// the chain rather than exempted inside it -- an exemption is a condition
+	// somebody later gets wrong, a separate door is not.
+	//
+	// A raw handler therefore has no request id, no access log, no metrics and
+	// no timeout, and is responsible for its own. Longest matching prefix
+	// wins; everything unmatched goes to the router as before.
+	RawHandlers   map[string]http.Handler
+	ShutdownGrace time.Duration
+	CORSOrigins   []string
+	HealthChecks  []HealthCheck
 	// TrustedProxies are the networks whose X-Forwarded-For we believe. nil
 	// means the private ranges only -- never the public internet.
 	TrustedProxies *middleware.TrustedProxies
@@ -120,6 +135,30 @@ func New(o Options) *Server {
 
 	s.mountOperational()
 	return s
+}
+
+// handler returns what the http.Server actually serves: the raw handlers in
+// front of the router, or just the router when there are none.
+//
+// http.ServeMux rather than a chi middleware doing the same job, because a
+// middleware would still sit inside the chain it exists to escape.
+func (s *Server) handler() http.Handler {
+	if len(s.opts.RawHandlers) == 0 {
+		return s.Router
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/", s.Router)
+	for prefix, h := range s.opts.RawHandlers {
+		// Registered as an exact path, not a subtree: a raw handler is one
+		// endpoint, and a trailing-slash subtree pattern would take every path
+		// beneath it out of the router -- and out of its access log, metrics
+		// and timeout -- which is the opposite of a narrow exception.
+		mux.Handle(prefix, h)
+		s.opts.Logger.Warn().
+			Str("path", prefix).
+			Msg("raw handler mounted ahead of the middleware chain: no request timeout, log or metrics on this path")
+	}
+	return mux
 }
 
 // mountOperational installs /health, /health/live, /health/ready and /metrics.
@@ -242,7 +281,7 @@ func (s *Server) AddHealthCheck(c HealthCheck) {
 func (s *Server) Run(ctx context.Context) error {
 	s.http = &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.opts.Port),
-		Handler:           s.Router,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		// Long enough for a slow 3G client in Sri Lanka to receive a PDF, short

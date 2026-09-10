@@ -2,6 +2,9 @@
 bin/
 dist/
 *.exe
+# `go build` with no -o drops the binary here, named after the module. 85 MB of
+# it, which git would keep forever.
+/telemed
 
 # local configuration and secrets -- never committed
 .env
@@ -9,6 +12,9 @@ dist/
 *.pem
 *.key
 !testdata/*.key
+
+# local object storage (STORAGE_BACKEND=filesystem)
+data/
 
 # test artefacts
 coverage.out

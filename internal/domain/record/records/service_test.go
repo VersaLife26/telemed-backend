@@ -36,7 +36,7 @@ func (fakeInfectedScanner) Scan(_ context.Context, r io.Reader, _ int64) (scan.V
 // that is covered by the //go:build integration suite instead.
 func newTestService(t *testing.T, scanner scan.VirusScanner) (*Service, middleware.Principal) {
 	t.Helper()
-	store, err := storage.NewFilesystem(t.TempDir(), "")
+	store, err := storage.NewFilesystem(t.TempDir(), "", nil)
 	if err != nil {
 		t.Fatalf("NewFilesystem: %v", err)
 	}

@@ -201,6 +201,13 @@ func (r *RedisCache) ZAdd(ctx context.Context, key string, score float64, member
 	return nil
 }
 
+// Expire sets a TTL on an existing key. A missing key is not an error: the
+// caller's intent is "do not let this outlive the TTL", and a key that is
+// already gone satisfies that.
+func (r *RedisCache) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	return r.client.Expire(ctx, key, ttl).Err()
+}
+
 func (r *RedisCache) ZRem(ctx context.Context, key string, members ...string) error {
 	if len(members) == 0 {
 		return nil

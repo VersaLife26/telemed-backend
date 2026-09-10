@@ -154,6 +154,10 @@ func (f *fakeCache) ZRem(_ context.Context, key string, members ...string) error
 	return nil
 }
 
+// Expire records the TTL. The fakes do not evict on it -- no test here
+// depends on expiry happening, only on the call being made.
+func (f *fakeCache) Expire(_ context.Context, _ string, _ time.Duration) error { return nil }
+
 func (f *fakeCache) ZRank(_ context.Context, key, member string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

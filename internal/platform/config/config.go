@@ -38,13 +38,28 @@ type Base struct {
 	OutboxBatchSize   int    `mapstructure:"outbox_batch_size"`
 
 	// The platform has two token issuers -- telemed-user-service for patients
-	// and doctors, Keycloak for admins. Every service accepts both; see
-	// middleware.Authenticator for why.
+	// and doctors, and a separate one for administrators. Every service
+	// accepts both; see middleware.Authenticator for why they are bound to
+	// their key sets rather than merged.
 	KeycloakIssuer   string `mapstructure:"keycloak_issuer"`
 	KeycloakAudience string `mapstructure:"keycloak_audience"`
 	KeycloakJWKSURL  string `mapstructure:"keycloak_jwks_url"`
 	UserIssuer       string `mapstructure:"user_issuer"`
 	UserJWKSURL      string `mapstructure:"user_jwks_url"`
+
+	// AdminIssuer and AdminJWKSURL name the administrator identity provider
+	// when it is not Keycloak -- Cloudflare Access, in this deployment.
+	//
+	// They exist as their own keys rather than as different values for
+	// KEYCLOAK_ISSUER because the admin issuer is load-bearing on its own:
+	// middleware.SetAdminIssuer binds admin ROLE checks to it, and an
+	// operator reading KEYCLOAK_ISSUER=https://x.cloudflareaccess.com would
+	// reasonably conclude the platform runs Keycloak at that address.
+	//
+	// Empty falls back to KeycloakIssuer, which is what a deployment still
+	// running Keycloak wants and what every existing test asserts.
+	AdminIssuer  string `mapstructure:"admin_issuer"`
+	AdminJWKSURL string `mapstructure:"admin_jwks_url"`
 
 	// TrustedProxies are the networks whose X-Forwarded-For this service
 	// believes. Every service needed this, so it belongs here rather than
@@ -61,6 +76,12 @@ type Base struct {
 	// Sri Lanka does not observe DST, but we never hardcode a fixed offset:
 	// tzdata is the only correct source over a 50-year horizon.
 	Timezone string `mapstructure:"timezone"`
+
+	// TestMode opts this process into the developer test surface: the
+	// unauthenticated /api/v1/test/* routes, the captured-message outbox that
+	// hands back plaintext OTP codes, and the loopback signalling rooms the
+	// /test page drives. Read it through TestModeEnabled, never directly.
+	TestMode bool `mapstructure:"telemed_test_mode"`
 }
 
 // Validate returns an error if a required key is missing. Fail fast at boot
@@ -102,12 +123,28 @@ func (b Base) IsProd() bool {
 	return false
 }
 
+// TestModeEnabled reports whether the developer test surface may be mounted.
+//
+// TELEMED_TEST_MODE defaults to true, because every environment that is not
+// production is one where a developer wants it. Production is not a matter of
+// setting it to false: the environment overrides the flag outright.
+//
+// That asymmetry is the whole point. The test surface is unauthenticated by
+// design -- it hands back the plaintext OTP for any phone number anyone asks
+// about, which is a complete account takeover of every account on the
+// platform. A default-on flag WILL eventually be inherited by a prod
+// deployment through a copied .env, a Helm values file nobody re-read, or an
+// image promoted from staging. When that happens this returns false anyway.
+// IsProd is spelling- and case-tolerant for the same reason (ENV=Production,
+// ENV=live), so the override cannot be lost to a capital letter.
+func (b Base) TestModeEnabled() bool { return b.TestMode && !b.IsProd() }
+
 // JWKSURLs returns every key set this service should trust, skipping any that
 // are unconfigured. A service that only ever sees admin traffic can leave
 // USER_JWKS_URL empty, and vice versa.
 func (b Base) JWKSURLs() []string {
 	var out []string
-	for _, u := range []string{b.UserJWKSURL, b.KeycloakJWKSURL} {
+	for _, u := range []string{b.UserJWKSURL, b.KeycloakJWKSURL, b.AdminJWKSURL} {
 		if u != "" {
 			out = append(out, u)
 		}
@@ -121,20 +158,37 @@ func (b Base) JWKSURLs() []string {
 // "iss" claim lets either issuer sign for the other, because the merged set
 // matches on "kid" alone and "iss" is chosen by whoever signs.
 func (b Base) IssuerKeys() map[string]string {
-	out := make(map[string]string, 2)
+	out := make(map[string]string, 3)
 	if b.UserIssuer != "" && b.UserJWKSURL != "" {
 		out[b.UserIssuer] = b.UserJWKSURL
 	}
 	if b.KeycloakIssuer != "" && b.KeycloakJWKSURL != "" {
 		out[b.KeycloakIssuer] = b.KeycloakJWKSURL
 	}
+	if b.AdminIssuer != "" && b.AdminJWKSURL != "" {
+		out[b.AdminIssuer] = b.AdminJWKSURL
+	}
 	return out
+}
+
+// AdminTokenIssuer is the issuer whose tokens may assert an administrator
+// role. Everything else may authenticate; only this may be an admin.
+//
+// ADMIN_ISSUER wins over KEYCLOAK_ISSUER so that moving the admin surface to
+// a new identity provider is one key, and so that a deployment which still
+// has KEYCLOAK_ISSUER set for some other reason does not silently keep
+// trusting it for admin roles.
+func (b Base) AdminTokenIssuer() string {
+	if iss := strings.TrimSpace(b.AdminIssuer); iss != "" {
+		return iss
+	}
+	return strings.TrimSpace(b.KeycloakIssuer)
 }
 
 // TrustedIssuers returns the allowlist of acceptable "iss" claims.
 func (b Base) TrustedIssuers() []string {
 	var out []string
-	for _, i := range []string{b.UserIssuer, b.KeycloakIssuer} {
+	for _, i := range []string{b.UserIssuer, b.KeycloakIssuer, b.AdminIssuer} {
 		if i != "" {
 			out = append(out, i)
 		}
@@ -179,6 +233,7 @@ func New(serviceName string) *viper.Viper {
 	v.SetDefault("shutdown_grace", 20*time.Second)
 	v.SetDefault("request_timeout", 30*time.Second)
 	v.SetDefault("timezone", "Asia/Colombo")
+	v.SetDefault("telemed_test_mode", true)
 
 	// viper's AutomaticEnv does not discover keys that only exist in the
 	// environment, so every key we intend to read must be bound explicitly.
@@ -189,8 +244,10 @@ func New(serviceName string) *viper.Viper {
 		"nats_url", "nats_stream", "nats_credentials", "nats_max_bytes",
 		"outbox_poll_seconds", "outbox_batch_size",
 		"keycloak_issuer", "keycloak_audience", "keycloak_jwks_url",
+		"admin_issuer", "admin_jwks_url",
 		"user_issuer", "user_jwks_url", "trusted_proxies",
 		"otlp_endpoint", "trace_sampling", "shutdown_grace", "request_timeout", "timezone",
+		"telemed_test_mode",
 	} {
 		_ = v.BindEnv(k)
 	}

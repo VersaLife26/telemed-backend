@@ -19,7 +19,9 @@ import (
 	"github.com/spf13/viper"
 
 	"telemed/internal/domain/consultation/consultation"
+	"telemed/internal/domain/consultation/signal"
 	"telemed/internal/platform/config"
+	"telemed/internal/platform/modular"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=$(git describe)".
@@ -113,6 +115,7 @@ func registerConsultationDefaults(v *viper.Viper) {
 // VIDEO_PROVIDER=livekit is set without credentials to back it.
 func validateVideoConfig(cfg Config) error {
 	switch strings.ToLower(strings.TrimSpace(cfg.VideoProvider)) {
+	case "inhouse":
 	case "", "mock":
 		// The mock provider verifies its webhook with a bearer token compared
 		// against LIVEKIT_API_SECRET, whose default is published in
@@ -133,7 +136,7 @@ func validateVideoConfig(cfg Config) error {
 		}
 	case "livekit":
 	default:
-		return fmt.Errorf("config: VIDEO_PROVIDER must be \"livekit\" or \"mock\", got %q", cfg.VideoProvider)
+		return fmt.Errorf("config: VIDEO_PROVIDER must be \"inhouse\", \"livekit\" or \"mock\", got %q", cfg.VideoProvider)
 	}
 	if strings.EqualFold(cfg.VideoProvider, "livekit") {
 		if cfg.LiveKitURL == "" || cfg.LiveKitAPIKey == "" || cfg.LiveKitAPISecret == "" {
@@ -146,6 +149,39 @@ func validateVideoConfig(cfg Config) error {
 	if cfg.LiveKitEmptyRoomTimeout < 0 || cfg.LiveKitEmptyRoomTimeout > maxEmptyRoomTimeoutSeconds {
 		return fmt.Errorf("config: LIVEKIT_EMPTY_ROOM_TIMEOUT must be between 0 and %d seconds, got %d",
 			maxEmptyRoomTimeoutSeconds, cfg.LiveKitEmptyRoomTimeout)
+	}
+	return nil
+}
+
+// validateInHouseConfig refuses the three ways an in-house deployment fails
+// silently rather than loudly.
+//
+// Each of these produces a platform that works perfectly in development, on
+// one machine, and on the test page -- and then fails for real consultations
+// in a way whose symptom points nowhere near the cause. That is exactly the
+// class of problem a boot refusal is for.
+func validateInHouseConfig(cfg Config, sig modular.SignalConfig) error {
+	if !cfg.IsProd() {
+		return nil
+	}
+	if len(sig.Secret) == 0 {
+		return fmt.Errorf("config: VIDEO_PROVIDER=inhouse requires SIGNAL_SECRET in %s: "+
+			"an unset secret is generated per process, so a room token minted by one replica "+
+			"fails verification in another and roughly half of all calls never connect", cfg.Env)
+	}
+	if strings.TrimSpace(sig.PublicURL) == "" {
+		return fmt.Errorf("config: VIDEO_PROVIDER=inhouse requires SIGNAL_PUBLIC_URL in %s: "+
+			"the browser connects to the signalling socket directly and has nothing to resolve "+
+			"a relative path against", cfg.Env)
+	}
+	if !strings.HasPrefix(sig.PublicURL, "wss://") {
+		return fmt.Errorf("config: SIGNAL_PUBLIC_URL must be wss:// in %s, got %q: "+
+			"the room token travels in the query string", cfg.Env, sig.PublicURL)
+	}
+	if len(sig.AllowedOrigins) == 0 {
+		return fmt.Errorf("config: VIDEO_PROVIDER=inhouse requires SIGNAL_ALLOWED_ORIGINS "+
+			"(or CORS_PATIENT_ORIGINS and CORS_DOCTOR_ORIGINS) in %s: CORS does not apply to a "+
+			"websocket upgrade, so the Origin check is the only origin control it has", cfg.Env)
 	}
 	return nil
 }
@@ -173,8 +209,17 @@ func emptyRoomTimeoutSeconds(seconds int) uint32 {
 	return uint32(seconds)
 }
 
-func buildVideoProvider(cfg Config) (consultation.VideoProvider, error) {
+func buildVideoProvider(cfg Config, deps modular.Deps, hub *signal.Hub, bus *signal.Bus) (consultation.VideoProvider, error) {
 	switch strings.ToLower(cfg.VideoProvider) {
+	case "inhouse":
+		return consultation.NewInHouseProvider(consultation.InHouseOptions{
+			Hub:       hub,
+			Bus:       bus,
+			Secret:    deps.Signal.Secret,
+			TokenTTL:  deps.Signal.TokenTTL,
+			SignalURL: deps.Signal.PublicURL,
+			Log:       deps.Log,
+		})
 	case "", "mock":
 		return consultation.NewMockProvider(cfg.LiveKitAPISecret), nil
 	case "livekit":
@@ -229,4 +274,62 @@ func validateLiveKitURL(raw, env string) error {
 		return fmt.Errorf(
 			"config: LIVEKIT_URL must be a ws:// or wss:// URL, got scheme %q", u.Scheme)
 	}
+}
+
+// signalRoute is the path the websocket is registered on, relative to the
+// module's Raw mount (which is served from the server root, not /api/v1).
+const signalRoute = "/ws/consultation"
+
+// SignalPath is where the signalling websocket lives.
+//
+// Exported so the composer can log it and so routetable_contract_test can
+// assert it is ABSENT from the gateway route table: it is served raw, ahead of
+// the router, and a route-table entry for it would send the upgrade through
+// the in-process proxy, whose ResponseWriter cannot be hijacked.
+func SignalPath() string { return signalRoute }
+
+// liveKitURLFor returns the LiveKit URL only when LiveKit is the provider.
+//
+// Empty otherwise, so a client cannot read a stale livekit_url and connect a
+// LiveKit SDK to a socket speaking the signalling protocol -- which hangs
+// rather than failing, and is much harder to diagnose than an empty field.
+func liveKitURLFor(cfg Config) string {
+	if strings.EqualFold(strings.TrimSpace(cfg.VideoProvider), "livekit") {
+		return cfg.LiveKitURL
+	}
+	return ""
+}
+
+// tokenTTLFor picks the token lifetime for the configured provider.
+//
+// The two are genuinely different. A LiveKit access token is spent once at
+// room.connect(); a signalling room token is re-presented on EVERY websocket
+// reconnect, so LIVEKIT_TOKEN_TTL's five minutes would strand any client that
+// changed network mid-call. JoinResult.TokenExpiresAt is computed from this,
+// so it must be the value actually used or the client is told the wrong thing.
+func tokenTTLFor(cfg Config, sig modular.SignalConfig) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(cfg.VideoProvider), "inhouse") {
+		if sig.TokenTTL > 0 {
+			return sig.TokenTTL
+		}
+		return consultation.DefaultRoomTokenTTL
+	}
+	return cfg.LiveKitTokenTTL
+}
+
+// toDomainICE converts between two field-identical types.
+//
+// They are separate on purpose: consultation would otherwise import signal for
+// a struct, which is the wrong direction for a domain that is meant to depend
+// only on its VideoProvider port. The module is the right place for the seam.
+func toDomainICE(in []signal.ICEServer) []consultation.ICEServer {
+	out := make([]consultation.ICEServer, 0, len(in))
+	for _, s := range in {
+		out = append(out, consultation.ICEServer{
+			URLs:       s.URLs,
+			Username:   s.Username,
+			Credential: s.Credential,
+		})
+	}
+	return out
 }

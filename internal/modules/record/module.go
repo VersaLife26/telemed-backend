@@ -21,6 +21,7 @@ import (
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/scan"
+	"telemed/internal/platform/storage"
 
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/modular"
@@ -71,13 +72,10 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 
 	// --- virus scanner -----------------------------------------------------
+	// No scanner ships with this deployment, so every upload is stored with
+	// scan_status "skipped" rather than a claim nothing verified. The
+	// VirusScanner interface stays so a vendor can be dropped in behind it.
 	var scanner scan.VirusScanner = scan.PassthroughScanner{}
-	if cfg.ClamAVAddr != "" {
-		scanner = scan.NewClamAV(cfg.ClamAVAddr, cfg.ClamAVTimeout)
-		log.Info().Str("clamav_addr", cfg.ClamAVAddr).Msg("virus scanning enabled")
-	} else {
-		log.Warn().Msg("CLAMAV_ADDR not set: uploads will be stored with scan_status=skipped")
-	}
 
 	// --- FHIR client ------------------------------------------------------
 	var fhirClient fhir.Client
@@ -169,6 +167,27 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 			}, log))
 			r.Mount("/verify/prescriptions", prescriptionsHandler.VerifyRoutes())
 		})
+
+		// The filesystem backend's presigned URLs are only URLs if something
+		// answers them. Mounted unauthenticated on purpose: the HMAC in the
+		// query string IS the authorisation, exactly as it is for an S3
+		// presigned URL, and the handler that minted it already made and
+		// logged the access decision.
+		//
+		// Absent entirely under STORAGE_BACKEND=minio, where the object store
+		// serves its own URLs and this route would be a second, weaker door
+		// to the same objects.
+		if fsStore, ok := objStore.(*storage.FilesystemStorage); ok {
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.NoStore)
+				r.Use(middleware.RateLimit(deps.Redis, middleware.RateLimitConfig{
+					Requests: 120,
+					Window:   time.Minute,
+					Name:     "presigned_object",
+				}, log))
+				r.Handle(filesRoute, storage.PresignHandler(fsStore))
+			})
+		}
 	}
 
 	m.Health = healthChecks

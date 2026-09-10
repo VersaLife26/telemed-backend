@@ -286,16 +286,7 @@ func (s *Service) Finalise(ctx context.Context, in FinaliseInput) (Note, error) 
 		revisionNo = rev.Revision
 		out = finalised
 
-		// Identifiers and a count. No SOAP text, and no ICD-10 codes: a code
-		// IS a diagnosis, and this event fans out to every consumer on the
-		// bus. Anything that needs the content fetches it over the API and
-		// takes the access-log entry that comes with it.
-		return s.outbox.Enqueue(ctx, tx, events.SubjectClinicalNoteFinalised, finalised.ID.String(),
-			events.ClinicalNoteFinalised{
-				NoteID: finalised.ID, AppointmentID: finalised.AppointmentID,
-				PatientID: finalised.PatientID, DoctorID: finalised.DoctorID,
-				DiagnosisCount: len(diagnoses), FinalisedAt: at,
-			})
+		return nil
 	})
 	if err != nil {
 		return Note{}, s.translate(err, in.AppointmentID, conflictVersion)

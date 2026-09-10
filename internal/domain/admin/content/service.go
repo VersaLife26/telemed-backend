@@ -42,7 +42,7 @@ func (s *Service) SaveSpecialty(ctx context.Context, id uuid.UUID, sp Specialty,
 		if err != nil {
 			return err
 		}
-		return s.outbox.Enqueue(ctx, tx, events.SubjectContentSpecialtyUpdated, result.ID.String(), result)
+		return nil
 	})
 	if err != nil {
 		return Specialty{}, err
@@ -67,7 +67,7 @@ func (s *Service) SaveSymptom(ctx context.Context, id uuid.UUID, sy Symptom, ver
 		if err != nil {
 			return err
 		}
-		return s.outbox.Enqueue(ctx, tx, events.SubjectContentSymptomUpdated, result.ID.String(), result)
+		return nil
 	})
 	if err != nil {
 		return Symptom{}, err
@@ -92,7 +92,7 @@ func (s *Service) SaveDrug(ctx context.Context, id uuid.UUID, d Drug, version in
 		if err != nil {
 			return err
 		}
-		return s.outbox.Enqueue(ctx, tx, events.SubjectContentDrugUpdated, result.ID.String(), result)
+		return nil
 	})
 	if err != nil {
 		return Drug{}, err

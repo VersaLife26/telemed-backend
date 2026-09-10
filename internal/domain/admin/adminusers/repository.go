@@ -144,3 +144,25 @@ func (r *Repository) DeleteHard(ctx context.Context, id uuid.UUID) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM admin_users WHERE id = $1`, id)
 	return err
 }
+
+// GetByEmail resolves an administrator by email, case-insensitively.
+//
+// Email rather than keycloak_subject because it is the one identifier that
+// survives changing identity provider: the subject is minted by whoever
+// authenticates, and re-keying every row is not something an operator should
+// have to do to move from one IdP to another. idx_admin_users_email already
+// enforces uniqueness on lower(email) among live rows.
+//
+// Returns ErrNotFound for an unknown or soft-deleted account.
+func (r *Repository) GetByEmail(ctx context.Context, email string) (AdminUser, error) {
+	const q = `
+		SELECT id, keycloak_subject, email, display_name, role, ip_allowlist, active, last_login_at, created_at, updated_at, version
+		FROM admin_users
+		WHERE lower(email) = lower($1) AND deleted_at IS NULL`
+
+	u, err := scanOne(r.pool.QueryRow(ctx, q, email))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUser{}, ErrNotFound
+	}
+	return u, err
+}

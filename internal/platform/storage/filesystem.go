@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,12 +18,24 @@ import (
 	"time"
 )
 
-// FilesystemStorage is a Storage implementation backed by the local disk. It
-// exists so the test suite -- and any developer running the service without
-// Docker -- never needs a real MinIO server. Its presigned URLs are not
-// usable by an external HTTP client; they are addresses this same process
-// resolves via Resolve, which is enough to unit test the upload/download flow
-// end to end.
+// FilesystemStorage is a Storage implementation backed by the local disk.
+//
+// It started as a test double and is now also the production backend for a
+// single-host deployment with no object store. Two things had to become real
+// for that, and both are worth knowing about:
+//
+//   - The presign secret is supplied by the caller, not generated per process.
+//     A generated one means every URL issued before a restart stops verifying
+//     after it, and that two processes sharing a volume cannot verify each
+//     other's URLs at all. Neither failure is visible until a patient clicks a
+//     link.
+//   - baseURL must point at a mounted PresignHandler. Without it the URLs are
+//     query strings with no host, which is what "not usable by an external
+//     client" used to mean.
+//
+// What it still does NOT do is serve bytes without going through the process:
+// every download occupies a Go handler for its duration, where S3 would hand
+// the client off to the object store. That is the trade a single box makes.
 type FilesystemStorage struct {
 	root     string
 	secret   []byte
@@ -33,23 +46,31 @@ type FilesystemStorage struct {
 
 var _ Storage = (*FilesystemStorage)(nil)
 
-// NewFilesystem creates a filesystem-backed store rooted at dir. baseURL, if
-// set, prefixes generated presigned URLs (e.g. "http://localhost:8087/__fs");
-// it is only meaningful when the test harness also mounts Resolve behind that
-// prefix.
-func NewFilesystem(dir, baseURL string) (*FilesystemStorage, error) {
+// NewFilesystem creates a filesystem-backed store rooted at dir.
+//
+// baseURL prefixes generated presigned URLs and must be the absolute, publicly
+// reachable address of a mounted PresignHandler -- e.g.
+// "https://api.example.lk/api/v1/files". Empty is allowed and produces
+// host-relative URLs, which is fine for tests and wrong in production.
+//
+// secret keys the HMAC over every presigned URL. Pass a stable value from
+// configuration; nil generates a random one, which is correct ONLY for a test
+// or a single-process developer stack. See the type comment.
+func NewFilesystem(dir, baseURL string, secret []byte) (*FilesystemStorage, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("storage: create root %s: %w", dir, err)
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("storage: generate presign secret: %w", err)
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return nil, fmt.Errorf("storage: generate presign secret: %w", err)
+		}
 	}
 	return &FilesystemStorage{
 		root:     dir,
-		secret:   secret,
+		secret:   append([]byte(nil), secret...),
 		metadata: map[string]ObjectInfo{},
-		baseURL:  baseURL,
+		baseURL:  strings.TrimSuffix(baseURL, "/"),
 	}, nil
 }
 
@@ -160,7 +181,16 @@ func (f *FilesystemStorage) Stat(_ context.Context, bucket, key string) (ObjectI
 	info, ok := f.metadata[f.metaKey(bucket, key)]
 	f.mu.RUnlock()
 	if !ok {
-		info = ObjectInfo{Bucket: bucket, Key: key, Size: fi.Size(), LastModified: fi.ModTime()}
+		// The map is a cache, not the record: it is empty after a restart
+		// while the bytes on disk are not. Everything except the content type
+		// comes back from the file itself, and the content type is recovered
+		// from the extension rather than left blank -- a download served with
+		// no Content-Type is one the browser guesses at, and for a PDF that
+		// means offering to download a file the user asked to view.
+		info = ObjectInfo{
+			Bucket: bucket, Key: key, Size: fi.Size(), LastModified: fi.ModTime(),
+			ContentType: contentTypeFor(key),
+		}
 	}
 	return info, nil
 }
@@ -220,6 +250,15 @@ func (f *FilesystemStorage) VerifyPresigned(rawQuery string) (bucket, key, op st
 		return "", "", "", errors.New("storage: presigned url signature invalid")
 	}
 	return bucket, key, op, nil
+}
+
+// contentTypeFor guesses a content type from the key's extension, falling back
+// to the same octet-stream a bare S3 object would carry.
+func contentTypeFor(key string) string {
+	if ct := mime.TypeByExtension(filepath.Ext(key)); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
 }
 
 // Ping always succeeds: the filesystem is local, so there is nothing to

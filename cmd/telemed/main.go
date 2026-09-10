@@ -30,11 +30,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -42,6 +45,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
+	"github.com/spf13/viper"
 
 	"telemed/internal/gateway"
 	"telemed/internal/platform/cache"
@@ -54,6 +58,10 @@ import (
 	"telemed/internal/platform/observability"
 	"telemed/internal/platform/server"
 
+	consultationdomain "telemed/internal/domain/consultation/consultation"
+	websignal "telemed/internal/domain/consultation/signal"
+	"telemed/internal/platform/testkit"
+
 	adminmod "telemed/internal/modules/admin"
 	consultationmod "telemed/internal/modules/consultation"
 	doctormod "telemed/internal/modules/doctor"
@@ -61,6 +69,7 @@ import (
 	paymentmod "telemed/internal/modules/payment"
 	recordmod "telemed/internal/modules/record"
 	schedulingmod "telemed/internal/modules/scheduling"
+	testkitmod "telemed/internal/modules/testkit"
 	usermod "telemed/internal/modules/user"
 )
 
@@ -91,6 +100,12 @@ var builders = []struct {
 }
 
 func main() {
+	// Subcommands are handled before any config is read: `healthcheck` runs in
+	// a container whose environment is the server's, and must not fail because
+	// the server's own config is momentarily invalid.
+	if code, handled := runSubcommand(os.Args); handled {
+		os.Exit(code)
+	}
 	if err := run(); err != nil {
 		// stderr rather than the structured logger: a failure here may well be
 		// the logger itself, or config that never loaded.
@@ -110,7 +125,19 @@ func run() error {
 	v.SetDefault("telemed_domains", "all")
 	v.SetDefault("expose_grpc", false)
 	v.SetDefault("db_max_conns_per_domain", 8)
-	for _, k := range []string{"telemed_domains", "expose_grpc", "db_max_conns_per_domain", "routes_file"} {
+	v.SetDefault("ice_stun_urls", []string{"stun:stun.l.google.com:19302"})
+	v.SetDefault("ice_turn_ttl", websignal.DefaultTURNTTL)
+	v.SetDefault("ice_turn_mode", "static")
+	v.SetDefault("signal_token_ttl", consultationdomain.DefaultRoomTokenTTL)
+	for _, k := range []string{
+		"telemed_domains", "expose_grpc", "db_max_conns_per_domain", "routes_file",
+		"signal_secret",
+		"ice_stun_urls", "ice_turn_urls", "ice_turn_username", "ice_turn_credential",
+		"ice_turn_secret", "ice_turn_ttl", "ice_turn_mode",
+		"signal_public_url", "signal_token_ttl", "signal_allowed_origins",
+		"cloudflare_turn_key_id", "cloudflare_turn_api_token",
+		"cors_patient_origins", "cors_doctor_origins",
+	} {
 		_ = v.BindEnv(k)
 	}
 	var base config.Base
@@ -138,7 +165,7 @@ func run() error {
 	// adminIssuer is "", checkAdminIssuer short-circuits to nil, and every
 	// admin-role check in this process honours that token. Set once, for every
 	// domain, which is one of the things one process makes easier to get right.
-	platmw.SetAdminIssuer(base.KeycloakIssuer)
+	platmw.SetAdminIssuer(base.AdminTokenIssuer())
 
 	// --- observability -----------------------------------------------------
 	metrics := observability.NewMetrics(serviceName)
@@ -218,6 +245,39 @@ func run() error {
 		MaxConnLife: base.DatabaseMaxConnLife,
 	}
 
+	// The signalling configuration, built ONCE for the process.
+	//
+	// Not per module, and not inside the test-mode block it used to live in:
+	// SIGNAL_SECRET falls back to a generated key, so two readers would each
+	// generate their own and a token minted by one would not verify in the
+	// other. The consultation domain needs it whether or not the test surface
+	// is mounted.
+	deps.Signal = modular.SignalConfig{
+		Secret:         signalSecret(v.GetString("signal_secret"), log),
+		ICE:            buildICEProvider(v, log),
+		AllowedOrigins: signalOrigins(v, log),
+		PublicURL:      v.GetString("signal_public_url"),
+		TokenTTL:       v.GetDuration("signal_token_ttl"),
+	}
+
+	// Built BEFORE any domain, because the domains read it while wiring their
+	// providers: user swaps its SMS provider for the capturing one and
+	// notification does the same per channel. Created after them it would be
+	// nil at exactly the moment it is consulted, and every OTP would go out
+	// over a real SMS gateway with the test page reporting an empty outbox.
+	if base.TestModeEnabled() {
+		deps.Outbox = testkit.NewOutbox(testkit.DefaultCapacity)
+		log.Warn().
+			Msg("TELEMED_TEST_MODE is on: OTP and email are captured instead of delivered, " +
+				"and /api/v1/test/* is served without authentication")
+	} else if v.GetBool("telemed_test_mode") {
+		// Set, but overridden. Said out loud, because the operator who set it
+		// is expecting the test surface and would otherwise spend the morning
+		// wondering why /test 404s.
+		log.Warn().
+			Msg("TELEMED_TEST_MODE is set but ENV is production-like: the test surface stays off")
+	}
+
 	var (
 		mods   []*modular.Module
 		checks []server.HealthCheck
@@ -253,6 +313,56 @@ func run() error {
 		}
 		log.Info().Str("domain", mod.Name).Int("workers", len(mod.Workers)).Msg("domain ready")
 	}
+
+	// Attach the administrator role resolver, if the admin domain is in this
+	// process to provide one.
+	//
+	// After the loop, not inside it: the authenticator is built before any
+	// domain (they all need it) and the table the resolver reads belongs to a
+	// domain that may not be enabled here. A process running without the admin
+	// domain simply has no resolver, and an Access token arrives with no roles
+	// -- which is the correct answer, because nothing in that process could
+	// have told it otherwise.
+	if v, ok := deps.Registry.Lookup(modular.KeyAdminDirectory); ok {
+		resolver, ok := v.(platmw.RoleResolver)
+		if !ok {
+			return fmt.Errorf("registry: %s does not implement middleware.RoleResolver", modular.KeyAdminDirectory)
+		}
+		auth.WithRoleResolver(resolver)
+		log.Info().Str("admin_issuer", base.AdminTokenIssuer()).
+			Msg("administrator roles resolve from admin_users")
+	}
+	if deps.Outbox != nil {
+		// The consultation domain's hub, when it is loaded here, so the test
+		// page drives the stack that actually carries consultations.
+		var sharedHub *websignal.Hub
+		if hv, ok := deps.Registry.Lookup(modular.KeySignalHub); ok {
+			sharedHub, _ = hv.(*websignal.Hub)
+		}
+
+		tk, err := testkitmod.New(ctx, deps, testkitmod.Options{
+			Outbox: deps.Outbox,
+			// deps.Signal, not a second read of the environment. SIGNAL_SECRET
+			// falls back to a generated key, so reading it twice would produce
+			// two different secrets and a token minted by the consultation
+			// domain would not verify on the test socket.
+			SignalSecret: deps.Signal.Secret,
+			ICE:          deps.Signal.ICE,
+			Hub:          sharedHub,
+			// Any origin: the test page is opened from a laptop, a phone on
+			// the LAN and whatever host:port `next dev` picked, and an origin
+			// allowlist there only makes the tool harder to use without
+			// protecting anything the room token does not already.
+			AllowedOrigins: nil,
+			Env:            base.Env,
+			Version:        Version,
+		})
+		if err != nil {
+			return fmt.Errorf("build test surface: %w", err)
+		}
+		mods = append(mods, tk)
+	}
+
 	checks = append(checks, server.HealthCheck{Name: "redis", Critical: true, Check: redis.Ping})
 
 	// --- http ------------------------------------------------------------------
@@ -263,8 +373,16 @@ func run() error {
 	corsOrigins := append(append(append([]string{},
 		gwCfg.CORSPatientOrigins...), gwCfg.CORSDoctorOrigins...), gwCfg.CORSAdminOrigins...)
 
+	raw := map[string]http.Handler{}
+	for _, mod := range mods {
+		for path, h := range mod.Raw {
+			raw[path] = h
+		}
+	}
+
 	srv := server.New(server.Options{
 		TrustedProxies: buildTrustedProxies(base.TrustedProxies, log),
+		RawHandlers:    raw,
 		ServiceName:    serviceName,
 		Version:        Version,
 		Env:            base.Env,
@@ -294,7 +412,24 @@ func run() error {
 	}
 
 	if wantEdge {
-		edgeChecks, err := mountEdge(srv.Router, gwCfg, domainHandlers, deps, gwMetrics, redis, log)
+		// The route table only knows /api/v1. A domain's Root routes -- user's
+		// JWKS document, the provider webhooks -- were served by the standalone
+		// service on its own port, which in one process is this port. Without
+		// this the process cannot fetch its own signing key, and every token
+		// it mints is rejected as unverifiable.
+		//
+		// Each domain's Root goes on a router of its own rather than onto the
+		// edge directly: notification and consultation both claim /webhooks as
+		// a subtree, and chi refuses to mount the same path twice.
+		var roots []*chi.Mux
+		for _, mod := range mods {
+			if mod.Root != nil {
+				rr := chi.NewRouter()
+				mod.Root(rr)
+				roots = append(roots, rr)
+			}
+		}
+		edgeChecks, err := mountEdge(srv.Router, gwCfg, domainHandlers, roots, deps, gwMetrics, redis, log)
 		if err != nil {
 			return err
 		}
@@ -352,9 +487,10 @@ func run() error {
 // difference is what the last inch does: a domain in this process is called,
 // not dialled.
 func mountEdge(
-	r chi.Router,
+	r *chi.Mux,
 	cfg gateway.Config,
 	domains map[string]chi.Router,
+	roots []*chi.Mux,
 	deps modular.Deps,
 	gwMetrics *gateway.GatewayMetrics,
 	redis *cache.RedisCache,
@@ -363,6 +499,18 @@ func mountEdge(
 	routes, err := gateway.LoadRoutes(cfg.RoutesFile)
 	if err != nil {
 		return nil, fmt.Errorf("load route table: %w", err)
+	}
+	// The test surface's routes ship in the table so the contract test can see
+	// them and assert what they are, but they are dropped outright unless the
+	// module was actually built. Dropping them here rather than letting Mount
+	// fail on a missing upstream is deliberate: a table entry naming an
+	// upstream that does not exist must still be a boot failure for every
+	// OTHER route, because that is a typo, and only this one name is
+	// legitimately absent half the time.
+	if _, ok := domains[testkitmod.Domain]; !ok {
+		routes = slices.DeleteFunc(routes, func(r gateway.RouteRule) bool {
+			return r.Upstream == testkitmod.Domain+"-service"
+		})
 	}
 	log.Info().Int("routes", len(routes)).Str("routes_file", cfg.RoutesFile).Msg("route table loaded")
 
@@ -376,6 +524,13 @@ func mountEdge(
 		{"notification-service", cfg.UpstreamNotificationURL},
 		{"record-service", cfg.UpstreamRecordURL},
 		{"admin-service", cfg.UpstreamAdminURL},
+	}
+	// The test surface is an upstream only when it was actually built. Its
+	// routes are in the table unconditionally, so without this entry a
+	// non-test process would fail Mount with "unknown upstream" -- which is
+	// the right failure to have made impossible rather than to have handled.
+	if _, ok := domains[testkitmod.Domain]; ok {
+		specs = append(specs, struct{ name, url string }{testkitmod.Domain + "-service", ""})
 	}
 
 	// Per-domain share of the process's in-flight budget. The gateway's global
@@ -440,9 +595,53 @@ func mountEdge(
 		return nil, fmt.Errorf("mount routes: %w", err)
 	}
 
+	// Root-level paths the table does not know fall through to the domains'
+	// own root routers. Only outside /api/v1: the route table stays the sole
+	// authority for the API surface, so a domain handler that is not in the
+	// table remains unreachable through the edge.
+	tableNotFound := r.NotFoundHandler()
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		if !strings.HasPrefix(req.URL.Path, "/api/") {
+			for _, root := range roots {
+				if root.Match(chi.NewRouteContext(), req.Method, req.URL.Path) {
+					root.ServeHTTP(w, req)
+					return
+				}
+			}
+		}
+		tableNotFound(w, req)
+	})
+
 	r.Get("/openapi.yaml", gateway.ServeOpenAPI)
 	r.Get("/docs", gateway.ServeDocsUI)
 	return checks, nil
+}
+
+// signalSecret resolves the key that signs signalling room tokens.
+//
+// An unset SIGNAL_SECRET generates a random one per process rather than
+// falling back to a constant. A constant would be published in this repository
+// and therefore forgeable by anyone who read it, and the alternative -- failing
+// boot -- would make the test surface something you configure before you can
+// use it, which is the opposite of its purpose. The cost of a per-process key
+// is that tokens do not survive a restart, which for a 30-minute test token is
+// not a cost at all.
+//
+// Set it explicitly when more than one replica serves the test surface: two
+// processes with two random keys cannot verify each other's tokens.
+func signalSecret(configured string, log zerolog.Logger) []byte {
+	if configured != "" {
+		return []byte(configured)
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand failing means the OS entropy source is gone, and every
+		// token, session and OTP this process would go on to mint is
+		// unsafe. There is nothing to degrade to.
+		panic(fmt.Sprintf("generate signal secret: %v", err))
+	}
+	log.Info().Msg("SIGNAL_SECRET unset: generated a per-process key (room tokens will not survive a restart)")
+	return buf
 }
 
 // selectDomains parses TELEMED_DOMAINS.
@@ -559,4 +758,55 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// buildICEProvider selects how TURN credentials are minted.
+//
+// Two modes, because the two services do genuinely different things: coturn
+// verifies an HMAC it never issued, so minting is local arithmetic; Cloudflare
+// issues credentials over an authenticated API, so minting is a network call
+// that can fail and must be cached.
+func buildICEProvider(v *viper.Viper, log zerolog.Logger) websignal.ICEProvider {
+	stun := v.GetStringSlice("ice_stun_urls")
+	switch strings.ToLower(strings.TrimSpace(v.GetString("ice_turn_mode"))) {
+	case "cloudflare":
+		return websignal.NewCloudflareTURN(
+			v.GetString("cloudflare_turn_key_id"),
+			v.GetString("cloudflare_turn_api_token"),
+			v.GetDuration("ice_turn_ttl"),
+			stun,
+			log,
+		)
+	default:
+		return websignal.ICEConfig{
+			STUNURLs:       stun,
+			TURNURLs:       v.GetStringSlice("ice_turn_urls"),
+			TURNUsername:   v.GetString("ice_turn_username"),
+			TURNCredential: v.GetString("ice_turn_credential"),
+			TURNSecret:     v.GetString("ice_turn_secret"),
+			TURNTTL:        v.GetDuration("ice_turn_ttl"),
+		}
+	}
+}
+
+// signalOrigins is the websocket upgrade's origin allowlist.
+//
+// CORS does not apply to a websocket handshake, so Origin checking is the ONLY
+// origin control a websocket has. Defaults to the patient and doctor CORS
+// origins, because those are the two surfaces that place calls.
+//
+// An empty result means "any origin", which is what the dev test surface
+// wants and what a consultation must never have.
+func signalOrigins(v *viper.Viper, log zerolog.Logger) []string {
+	explicit := v.GetStringSlice("signal_allowed_origins")
+	if len(explicit) > 0 {
+		return explicit
+	}
+	out := append([]string{}, v.GetStringSlice("cors_patient_origins")...)
+	out = append(out, v.GetStringSlice("cors_doctor_origins")...)
+	if len(out) == 0 {
+		log.Warn().Msg("no signalling origin allowlist: the consultation websocket will accept any Origin " +
+			"(set SIGNAL_ALLOWED_ORIGINS, or CORS_PATIENT_ORIGINS and CORS_DOCTOR_ORIGINS)")
+	}
+	return out
 }

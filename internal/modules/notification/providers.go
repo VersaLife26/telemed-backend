@@ -12,6 +12,7 @@ import (
 	"telemed/internal/domain/notification/notification/providers/console"
 	"telemed/internal/domain/notification/notification/providers/direct"
 	"telemed/internal/domain/notification/notification/providers/novu"
+	"telemed/internal/platform/testkit"
 )
 
 // buildProviderRegistry is the composition root for NotificationProvider
@@ -23,12 +24,13 @@ import (
 // Per channel, cfg picks "console" (default, no credentials, what lets
 // `docker compose up` boot with nothing configured -- ADR-002), "direct"
 // (FCM/Dialog-or-Twilio/SMTP, no Novu required), or "novu".
-func buildProviderRegistry(ctx context.Context, cfg notification.Config, log zerolog.Logger) (*notification.Registry, error) {
+func buildProviderRegistry(ctx context.Context, cfg notification.Config, log zerolog.Logger, outbox *testkit.Outbox) (*notification.Registry, error) {
 	reg := notification.NewRegistry()
 	b := channelBuilder{
-		reg:  reg,
-		log:  log,
-		prod: cfg.IsProd(),
+		reg:    reg,
+		log:    log,
+		outbox: outbox,
+		prod:   cfg.IsProd(),
 		// Content is printed by the console provider only in local
 		// development. Staging is deliberately excluded along with prod: a
 		// staging environment fed from a production-shaped dataset has the
@@ -95,6 +97,21 @@ type channelBuilder struct {
 	novu   *novu.Provider
 	prod   bool
 	reveal bool
+	// outbox is non-nil only in test mode, and when it is, every channel
+	// except in_app captures instead of delivering. See capture().
+	outbox *testkit.Outbox
+}
+
+// capture wraps p so its sends land in the test outbox rather than at a
+// provider, unless test mode is off (outbox nil) or the channel is in_app,
+// whose "delivery" is the notification row the product itself reads back.
+func (b channelBuilder) capture(ch notification.Channel, p notification.NotificationProvider) notification.NotificationProvider {
+	if b.outbox == nil || ch == notification.ChannelInApp {
+		return p
+	}
+	b.log.Warn().Str("channel", string(ch)).
+		Msg("TEST MODE: this channel is captured to the test outbox and NOT delivered")
+	return newCapturingProvider(p, b.outbox, []notification.Channel{ch})
 }
 
 // register resolves one channel's provider per selection and registers it.
@@ -124,13 +141,13 @@ func (b channelBuilder) register(ch notification.Channel, selection string, buil
 		if err != nil {
 			return fmt.Errorf("build direct provider for %s: %w", ch, err)
 		}
-		b.reg.Register(p)
+		b.reg.Register(b.capture(ch, p))
 		return nil
 	case "novu":
 		if b.novu == nil {
 			return fmt.Errorf("channel %s selects novu but no novu workflow id is configured", ch)
 		}
-		b.reg.Register(b.novu)
+		b.reg.Register(b.capture(ch, b.novu))
 		return nil
 	case "", "console":
 		if b.prod {
@@ -139,7 +156,7 @@ func (b channelBuilder) register(ch notification.Channel, selection string, buil
 					"and prints message content: set it to \"direct\" or \"novu\" in this environment",
 				ch, strings.ToUpper(string(ch)), selection)
 		}
-		b.reg.Register(console.New(console.Config{Log: b.log, Reveal: b.reveal, Channels: []notification.Channel{ch}}))
+		b.reg.Register(b.capture(ch, console.New(console.Config{Log: b.log, Reveal: b.reveal, Channels: []notification.Channel{ch}})))
 		return nil
 	default:
 		if b.prod {
@@ -150,7 +167,7 @@ func (b channelBuilder) register(ch notification.Channel, selection string, buil
 		}
 		b.log.Warn().Str("channel", string(ch)).Str("value", selection).
 			Msg("unrecognised provider selection, falling back to console (dev only)")
-		b.reg.Register(console.New(console.Config{Log: b.log, Reveal: b.reveal, Channels: []notification.Channel{ch}}))
+		b.reg.Register(b.capture(ch, console.New(console.Config{Log: b.log, Reveal: b.reveal, Channels: []notification.Channel{ch}})))
 		return nil
 	}
 }

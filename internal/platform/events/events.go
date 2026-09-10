@@ -27,7 +27,6 @@ const (
 	SubjectUserRegistered   Subject = "user.registered"
 	SubjectUserSuspended    Subject = "user.suspended"
 	SubjectUserReinstated   Subject = "user.reinstated"
-	SubjectOTPRequested     Subject = "user.otp_requested"
 	SubjectDoctorRegistered Subject = "doctor.registered"
 	SubjectDoctorApproved   Subject = "doctor.approved"
 	SubjectDoctorRejected   Subject = "doctor.rejected"
@@ -61,7 +60,6 @@ const (
 	SubjectAppointmentNoShow    Subject = "appointment.no_show"
 	SubjectAppointmentReminder  Subject = "appointment.reminder_due"
 
-	SubjectWaitlistJoined    Subject = "waitlist.joined"
 	SubjectWaitlistSlotOffer Subject = "waitlist.slot_offered"
 
 	SubjectPaymentSucceeded Subject = "payment.succeeded"
@@ -72,11 +70,7 @@ const (
 	SubjectConsultationStarted Subject = "consultation.started"
 	SubjectConsultationEnded   Subject = "consultation.ended"
 
-	SubjectPrescriptionIssued    Subject = "prescription.issued"
-	SubjectRecordUploaded        Subject = "record.uploaded"
-	SubjectClinicalNoteFinalised Subject = "clinical_note.finalised"
-
-	SubjectNotificationRequested Subject = "notification.requested"
+	SubjectPrescriptionIssued Subject = "prescription.issued"
 
 	// admin.* are COMMANDS, not facts. The admin service owns no clinical or
 	// financial data, so an admin action becomes a request to the service that
@@ -89,31 +83,25 @@ const (
 	SubjectAdminDoubleBookingResolveRequested Subject = "admin.double_booking_resolve_requested"
 	SubjectAdminRefundApproved                Subject = "admin.refund_approved"
 	SubjectAdminPayoutBatchRequested          Subject = "admin.payout_batch_requested"
-
-	SubjectContentSpecialtyUpdated Subject = "content.specialty_updated"
-	SubjectContentSymptomUpdated   Subject = "content.symptom_updated"
-	SubjectContentDrugUpdated      Subject = "content.drug_updated"
 )
 
 // AllSubjects is used by the infra bootstrap to declare the JetStream stream
 // and by tests to assert no service publishes an undeclared subject.
 var AllSubjects = []Subject{
-	SubjectUserRegistered, SubjectUserSuspended, SubjectUserReinstated, SubjectOTPRequested,
+	SubjectUserRegistered, SubjectUserSuspended, SubjectUserReinstated,
 	SubjectDoctorRegistered, SubjectDoctorApproved, SubjectDoctorRejected, SubjectDoctorUpdated,
 	SubjectDoctorDocumentsUpdated,
 	SubjectDoctorApplicationSubmitted, SubjectDoctorApplicationApproved, SubjectDoctorApplicationRejected,
 	SubjectSlotsGenerated, SubjectSlotBooked, SubjectSlotReleased, SubjectSlotWithdrawn,
 	SubjectAppointmentCreated, SubjectAppointmentConfirmed, SubjectAppointmentCancelled,
 	SubjectAppointmentCompleted, SubjectAppointmentNoShow, SubjectAppointmentReminder,
-	SubjectWaitlistJoined, SubjectWaitlistSlotOffer,
+	SubjectWaitlistSlotOffer,
 	SubjectPaymentSucceeded, SubjectPaymentFailed, SubjectPaymentRefunded, SubjectPayoutSent,
 	SubjectConsultationStarted, SubjectConsultationEnded,
-	SubjectPrescriptionIssued, SubjectRecordUploaded, SubjectClinicalNoteFinalised,
-	SubjectNotificationRequested,
+	SubjectPrescriptionIssued,
 	SubjectAdminUserSuspendRequested, SubjectAdminUserReinstateRequested,
 	SubjectAdminAppointmentForceCancel, SubjectAdminDoubleBookingResolveRequested,
 	SubjectAdminRefundApproved, SubjectAdminPayoutBatchRequested,
-	SubjectContentSpecialtyUpdated, SubjectContentSymptomUpdated, SubjectContentDrugUpdated,
 }
 
 // Envelope is the wire format for every event. It is versioned from day one:

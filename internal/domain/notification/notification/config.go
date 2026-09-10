@@ -91,7 +91,11 @@ type Config struct {
 	MeshClientSecret string `mapstructure:"mesh_client_secret"`
 	// MeshTokenURL is the realm token endpoint. Derived from
 	// KeycloakBaseURL/KeycloakRealm when empty.
-	MeshTokenURL      string `mapstructure:"mesh_token_url"`
+	MeshTokenURL string `mapstructure:"mesh_token_url"`
+	// MeshStaticToken is a pre-minted service token used instead of the OAuth
+	// client-credentials flow, for a deployment with no identity provider on
+	// the mesh path. See servicetoken.Config.StaticToken.
+	MeshStaticToken   string `mapstructure:"mesh_static_token"`
 	KeycloakBaseURL   string `mapstructure:"keycloak_base_url"`
 	KeycloakRealmName string `mapstructure:"keycloak_realm"`
 
@@ -201,7 +205,7 @@ func RegisterDefaults(v *viper.Viper) {
 		"user_service_grpc_tls", "user_service_grpc_ca_file",
 		"user_service_grpc_server_name", "user_service_grpc_allow_plaintext",
 		"notification_webhook_secret",
-		"mesh_client_id", "mesh_client_secret", "mesh_token_url",
+		"mesh_client_id", "mesh_client_secret", "mesh_token_url", "mesh_static_token",
 		"keycloak_base_url", "keycloak_realm",
 		"trusted_proxies",
 	} {

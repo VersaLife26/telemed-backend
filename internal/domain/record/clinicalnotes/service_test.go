@@ -1,10 +1,8 @@
 package clinicalnotes
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +11,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"telemed/internal/platform/database"
-	"telemed/internal/platform/events"
 	"telemed/internal/platform/httpx"
 	"telemed/internal/platform/logger"
 	"telemed/internal/platform/middleware"
@@ -389,51 +386,6 @@ func TestTranslate_ConflictCarriesTheServerVersion(t *testing.T) {
 	_ = errors.As(err, &apiErr)
 	if _, present := apiErr.Fields["version"]; present {
 		t.Errorf("version must be omitted when unknown, got %v", apiErr.Fields)
-	}
-}
-
-// --- PHI containment ----------------------------------------------------
-
-// TestClinicalNoteFinalisedPayloadCannotCarryFreeText is structural, not
-// behavioural, and that is the point: it fails if anyone ever ADDS a string
-// field to the event -- the moment at which SOAP text or an ICD-10 code
-// could start travelling on the bus. Asserting on one hand-built instance
-// would not catch that; asserting on the type does.
-func TestClinicalNoteFinalisedPayloadCannotCarryFreeText(t *testing.T) {
-	typ := reflect.TypeOf(events.ClinicalNoteFinalised{})
-	for i := range typ.NumField() {
-		f := typ.Field(i)
-		switch f.Type.Kind() {
-		case reflect.String, reflect.Map, reflect.Interface:
-			t.Errorf("field %s is a %s: clinical_note.finalised carries identifiers only, "+
-				"and a free-text field is how SOAP content or an ICD-10 code starts travelling on the event bus",
-				f.Name, f.Type.Kind())
-		case reflect.Slice:
-			if f.Type.Elem().Kind() == reflect.String {
-				t.Errorf("field %s is a []string: the event must not carry codes or text", f.Name)
-			}
-		}
-	}
-}
-
-// TestFinalisedEventJSONContainsNoNoteContent builds the payload exactly as
-// Finalise does and marshals it, then looks for the note's actual sentences
-// and its diagnosis code in the bytes that would go to NATS.
-func TestFinalisedEventJSONContainsNoNoteContent(t *testing.T) {
-	payload := events.ClinicalNoteFinalised{
-		NoteID: uuid.New(), AppointmentID: uuid.New(),
-		PatientID: uuid.New(), DoctorID: uuid.New(),
-		DiagnosisCount: 2, FinalisedAt: time.Now().UTC(),
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	body := string(raw)
-	for _, forbidden := range []string{soapSubjective, soapObjective, soapAssessment, soapPlan, "Dengue", "A90", "dengue"} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("event payload contains %q: %s", forbidden, body)
-		}
 	}
 }
 
