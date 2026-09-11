@@ -9,18 +9,17 @@ package consultation
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"telemed/internal/domain/consultation/consultation"
+	"telemed/internal/domain/consultation/signal"
 	"telemed/internal/platform/config"
+	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/middleware"
-
-	"net/http"
-	"telemed/internal/domain/consultation/signal"
-	"telemed/internal/platform/database"
 	"telemed/internal/platform/modular"
 	"telemed/internal/platform/server"
 )

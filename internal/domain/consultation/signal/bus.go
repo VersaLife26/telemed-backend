@@ -233,8 +233,8 @@ func (b *Bus) touch(ctx context.Context, roomName, identity, value string) error
 // so an absent key means nobody is in the room, while an error means we do not
 // know. Callers that end consultations on an empty result depend on that
 // distinction absolutely.
-func (b *Bus) Occupants(ctx context.Context, roomName string) (map[string]string, bool, error) {
-	members, err := b.client.HGetAll(ctx, occupancyKey(roomName)).Result()
+func (b *Bus) Occupants(ctx context.Context, roomName string) (members map[string]string, exists bool, err error) {
+	members, err = b.client.HGetAll(ctx, occupancyKey(roomName)).Result()
 	if err != nil {
 		return nil, false, err
 	}

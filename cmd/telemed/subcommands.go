@@ -50,8 +50,13 @@ func healthcheck() int {
 	}
 
 	client := &http.Client{Timeout: 3 * time.Second}
+	// The host is the loopback literal and only the port comes from the
+	// environment -- and that environment is the container's own, set by the
+	// operator, not by a request. gosec's SSRF check (G704) cannot see that the
+	// destination is pinned to 127.0.0.1, so it is silenced here rather than
+	// restructured into something less clear.
 	url := "http://" + net.JoinHostPort("127.0.0.1", port) + "/health/ready"
-	resp, err := client.Get(url) //nolint:noctx // the client timeout is the deadline
+	resp, err := client.Get(url) //nolint:noctx,gosec // the client timeout is the deadline; G704: loopback only, see above
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
 		return 1

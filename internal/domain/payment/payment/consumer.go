@@ -5,9 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rs/zerolog"
-
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/logger"
