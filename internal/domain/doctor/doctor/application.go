@@ -386,8 +386,8 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 	var quals []Qualification
 	if app.QualificationsText != "" || app.MedicalSchool != "" {
 		quals = []Qualification{{
-			Degree:      clipRunes(app.QualificationsText, 200),
-			Institution: clipRunes(app.MedicalSchool, 200),
+			Degree:      clipRunes(app.QualificationsText),
+			Institution: clipRunes(app.MedicalSchool),
 			Year:        now.Year(),
 		}}
 	}
@@ -490,17 +490,13 @@ func trimStrings(in []string) []string {
 	return out
 }
 
-func clipRunes(s string, maxLen int) string {
+// clipRunes trims s to the Qualification JSON field limit (max=200).
+func clipRunes(s string) string {
+	const maxLen = 200
 	s = strings.TrimSpace(s)
-	if maxLen <= 0 {
-		return ""
-	}
 	r := []rune(s)
 	if len(r) <= maxLen {
 		return s
-	}
-	if maxLen == 1 {
-		return string(r[:1])
 	}
 	return string(r[:maxLen-1]) + "…"
 }

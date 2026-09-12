@@ -82,11 +82,11 @@ func TestDocumentType_ValidOnApply(t *testing.T) {
 
 func TestClipRunes(t *testing.T) {
 	t.Parallel()
-	if got := clipRunes("short", 200); got != "short" {
+	if got := clipRunes("short"); got != "short" {
 		t.Fatalf("got %q", got)
 	}
 	long := strings.Repeat("a", 201)
-	got := clipRunes(long, 200)
+	got := clipRunes(long)
 	if len([]rune(got)) != 200 {
 		t.Fatalf("len=%d want 200 (%q)", len([]rune(got)), got)
 	}
