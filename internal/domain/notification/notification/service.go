@@ -28,6 +28,17 @@ type ServiceOptions struct {
 	BackoffMax    time.Duration // ceiling on retry delay
 	DefaultLocale Locale
 	Now           func() time.Time // injectable clock for tests
+
+	// SMSViaEmail routes the sms channel's messages to the recipient's EMAIL
+	// address, for a deployment with no SMS rail (NOTIFICATION_SMS_PROVIDER=
+	// email). The channel keeps its identity -- templates, preferences, quiet
+	// hours and the notification rows all still say "sms", because what the
+	// product means by that channel has not changed -- but the address it
+	// resolves to, and the transport registered for it, are email.
+	//
+	// A user with a phone number and no email therefore has no reachable sms
+	// channel, exactly as a user with no phone had none before.
+	SMSViaEmail bool
 }
 
 func (o *ServiceOptions) setDefaults() {
@@ -201,7 +212,17 @@ func (s *Service) notifyChannel(ctx context.Context, req NotifyRequest, prefs Pr
 	recipient := ""
 	switch ch {
 	case ChannelSMS:
-		recipient = req.Phone
+		// The sms channel addresses itself by email when this deployment has
+		// no SMS rail. Falling back to the phone number when no email is
+		// known would queue a row that the email transport cannot deliver and
+		// that retries until it dead-letters; an empty recipient is treated
+		// as "no recipient" by decideDispatch below, which is the honest
+		// outcome and the same one an unknown phone already produced.
+		if opts := s.opts; opts.SMSViaEmail {
+			recipient = req.Email
+		} else {
+			recipient = req.Phone
+		}
 	case ChannelEmail:
 		recipient = req.Email
 	}

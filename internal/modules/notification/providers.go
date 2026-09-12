@@ -63,6 +63,12 @@ func buildProviderRegistry(ctx context.Context, cfg notification.Config, log zer
 	}
 
 	b.novu = novuProvider
+	b.buildSMTP = func() (notification.NotificationProvider, error) {
+		return direct.NewSMTP(direct.SMTPConfig{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+		})
+	}
 
 	if err := b.register(notification.ChannelSMS, cfg.SMSProvider, func() (notification.NotificationProvider, error) {
 		return buildDirectSMS(cfg)
@@ -76,12 +82,7 @@ func buildProviderRegistry(ctx context.Context, cfg notification.Config, log zer
 		return nil, err
 	}
 
-	if err := b.register(notification.ChannelEmail, cfg.EmailProvider, func() (notification.NotificationProvider, error) {
-		return direct.NewSMTP(direct.SMTPConfig{
-			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
-			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
-		})
-	}); err != nil {
+	if err := b.register(notification.ChannelEmail, cfg.EmailProvider, b.buildSMTP); err != nil {
 		return nil, err
 	}
 
@@ -100,6 +101,24 @@ type channelBuilder struct {
 	// outbox is non-nil only in test mode, and when it is, every channel
 	// except in_app captures instead of delivering. See capture().
 	outbox *testkit.Outbox
+
+	// buildSMTP builds the email transport, shared by the email channel and
+	// by the sms channel when it is routed to email.
+	buildSMTP func() (notification.NotificationProvider, error)
+}
+
+// smsOverEmail relabels an SMTP provider as serving the sms channel.
+//
+// The registry dispatches on Channels(), so without this the SMTP provider
+// would register itself for email only and the sms channel would resolve to
+// nothing. Delivery is unchanged -- it is the same provider, addressed to the
+// same kind of address -- only the channel it answers for differs.
+type smsOverEmail struct {
+	notification.NotificationProvider
+}
+
+func (smsOverEmail) Channels() []notification.Channel {
+	return []notification.Channel{notification.ChannelSMS}
 }
 
 // capture wraps p so its sends land in the test outbox rather than at a
@@ -148,6 +167,36 @@ func (b channelBuilder) register(ch notification.Channel, selection string, buil
 			return fmt.Errorf("channel %s selects novu but no novu workflow id is configured", ch)
 		}
 		b.reg.Register(b.capture(ch, b.novu))
+		return nil
+	case "disabled":
+		// An explicitly unavailable channel. This is NOT the console
+		// provider's silent drop: nothing is reported delivered, every send
+		// fails permanently and visibly, and the notification row lands in
+		// failed/dead-letter where an operator can see it. It has to be set
+		// deliberately -- an unset or misspelled value still refuses to boot
+		// -- so a channel is only ever off because someone said so.
+		b.log.Warn().Str("channel", string(ch)).
+			Msg("channel is DISABLED: every send on it will fail permanently until a provider is configured")
+		b.reg.Register(notification.NewUnavailable(ch))
+		return nil
+	case "email":
+		// Only the sms channel may select this, and only because this
+		// deployment has no SMS rail: the message goes out over SMTP to the
+		// recipient's email address instead (ServiceOptions.SMSViaEmail
+		// resolves the address to match). Any other channel naming "email"
+		// is a configuration mistake -- the email channel already IS email,
+		// and push has no equivalent.
+		if ch != notification.ChannelSMS {
+			return fmt.Errorf("channel %s cannot select the \"email\" transport; it is an sms-only stopgap "+
+				"for a deployment with no SMS rail", ch)
+		}
+		p, err := b.buildSMTP()
+		if err != nil {
+			return fmt.Errorf("build email transport for %s: %w", ch, err)
+		}
+		b.log.Warn().Msg("NOTIFICATION_SMS_PROVIDER=email: sms-channel messages are delivered to the " +
+			"recipient's EMAIL address; a user with no email has no reachable sms channel")
+		b.reg.Register(b.capture(ch, smsOverEmail{p}))
 		return nil
 	case "", "console":
 		if b.prod {

@@ -27,6 +27,7 @@ func newSuspensionTestService(t *testing.T, pool *pgxpool.Pool) (*Service, *fake
 	}
 	svc := NewService(NewRepository(pool), c, events.NewOutbox("telemed-user-service-test"),
 		&captureSMS{}, NewDegradedKeycloakClient(zerolog.Nop()), newTestIssuer(t), nic, zerolog.Nop())
+	svc.SetEmailSender(&captureEmail{})
 	return svc, c
 }
 
@@ -219,7 +220,7 @@ func TestIntegration_SuspendedUserCannotLogInWithAFreshOTP(t *testing.T) {
 		t.Fatalf("handle suspend command: %v", err)
 	}
 
-	if _, err := svc.SendOTP(ctx, phone, PurposeLogin, LanguageEnglish, "127.0.0.1"); err != nil {
+	if _, err := svc.SendOTP(ctx, OTPIdentity{Phone: phone}, PurposeLogin, LanguageEnglish, "127.0.0.1"); err != nil {
 		// Sending is allowed -- the front door does not leak account state to
 		// an unauthenticated caller. Verification is where it stops.
 		t.Fatalf("send otp: %v", err)
@@ -227,7 +228,7 @@ func TestIntegration_SuspendedUserCannotLogInWithAFreshOTP(t *testing.T) {
 	// Read the code the dev SMS provider captured via the service's own cache
 	// is not possible here (the fake cache is internal), so go straight at the
 	// rule under test: VerifyOTP refuses a suspended account.
-	if _, err := svc.VerifyOTP(ctx, phone, "000000", "device-1", PurposeLogin, "127.0.0.1"); err == nil {
+	if _, err := svc.VerifyOTP(ctx, OTPIdentity{Phone: phone}, "000000", "device-1", PurposeLogin, "127.0.0.1"); err == nil {
 		t.Error("VerifyOTP must not succeed for a suspended account")
 	}
 }

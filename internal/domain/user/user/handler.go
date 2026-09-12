@@ -131,8 +131,12 @@ func (h *Handler) JWKS(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------------------------- DTOs --
 
+// sendOTPRequest carries exactly one of phone or email. Neither is
+// `required` at the validator level because the rule is "one of the two",
+// which NewOTPIdentity enforces and reports precisely.
 type sendOTPRequest struct {
-	Phone    string `json:"phone" validate:"required"`
+	Phone    string `json:"phone" validate:"omitempty"`
+	Email    string `json:"email" validate:"omitempty,email"`
 	Purpose  string `json:"purpose" validate:"required,oneof=register login"`
 	Language string `json:"language" validate:"omitempty,oneof=en si ta"`
 }
@@ -143,8 +147,11 @@ type sendOTPResponse struct {
 	AttemptsRemaining int    `json:"attempts_remaining"`
 }
 
+// verifyOTPRequest must name the SAME identity the code was sent to; the
+// cache key is derived from it.
 type verifyOTPRequest struct {
-	Phone    string `json:"phone" validate:"required"`
+	Phone    string `json:"phone" validate:"omitempty"`
+	Email    string `json:"email" validate:"omitempty,email"`
 	OTP      string `json:"otp" validate:"required,len=6,numeric"`
 	DeviceID string `json:"device_id" validate:"omitempty,max=200"`
 	Purpose  string `json:"purpose" validate:"omitempty,oneof=register login"`
@@ -272,7 +279,12 @@ func (h *Handler) SendOTP(w http.ResponseWriter, r *http.Request) {
 	if lang == "" {
 		lang = LanguageEnglish
 	}
-	res, err := h.svc.SendOTP(r.Context(), req.Phone, OTPPurpose(req.Purpose), lang, requestIP(r))
+	ident, err := NewOTPIdentity(req.Phone, req.Email)
+	if err != nil {
+		httpx.Error(w, r, mapError(err))
+		return
+	}
+	res, err := h.svc.SendOTP(r.Context(), ident, OTPPurpose(req.Purpose), lang, requestIP(r))
 	if err != nil {
 		httpx.Error(w, r, mapError(err))
 		return
@@ -292,7 +304,12 @@ func (h *Handler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	if purpose == "" {
 		purpose = PurposeLogin
 	}
-	res, err := h.svc.VerifyOTP(r.Context(), req.Phone, req.OTP, req.DeviceID, purpose, requestIP(r))
+	ident, err := NewOTPIdentity(req.Phone, req.Email)
+	if err != nil {
+		httpx.Error(w, r, mapError(err))
+		return
+	}
+	res, err := h.svc.VerifyOTP(r.Context(), ident, req.OTP, req.DeviceID, purpose, requestIP(r))
 	if err != nil {
 		httpx.Error(w, r, mapError(err))
 		return
@@ -595,6 +612,18 @@ func mapError(err error) error {
 		return httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "invalid phone number")
 	case errors.Is(err, ErrInvalidEmail):
 		return httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "invalid email")
+	case errors.Is(err, ErrOTPIdentityRequired):
+		return httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "provide a phone number or an email address")
+	case errors.Is(err, ErrOTPIdentityAmbiguous):
+		return httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "provide a phone number or an email address, not both")
+	case errors.Is(err, ErrNoDeliveryAddress):
+		// 422, not 404: the request is well formed and the caller can act on
+		// it by using an email address. A 404 would also disclose whether the
+		// number is registered, which the OTP endpoints otherwise never do.
+		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"codes are sent by email and this number has no email address on file; sign in with your email address instead")
+	case errors.Is(err, ErrOTPDeliveryUnavailable):
+		return httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable, "one-time codes are temporarily unavailable")
 	case errors.Is(err, ErrInvalidPassword):
 		return httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "password must be 8–72 characters")
 	case errors.Is(err, ErrInvalidCredentials):

@@ -44,6 +44,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// payment already declare theirs; user and doctor were missed.
 	v.SetDefault("grpc_port", 9091)
 	v.SetDefault("sms_provider", "dev")
+	v.SetDefault("smtp_port", 587)
 	v.SetDefault("jwt_key_id", "user-service-1")
 	v.SetDefault("jwt_issuer", "telemed-user-service")
 	v.SetDefault("jwt_audience", "telemed-api")
@@ -56,6 +57,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		"sms_provider",
 		"dialog_base_url", "dialog_application_id", "dialog_password", "dialog_source_address",
 		"twilio_account_sid", "twilio_auth_token", "twilio_from_number",
+		"smtp_host", "smtp_port", "smtp_username", "smtp_password", "smtp_from",
 		"nic_hash_pepper", "nic_hash_pepper_version", "nic_hash_pepper_previous",
 		"jwt_private_key_pem", "jwt_key_id", "jwt_issuer", "jwt_audience",
 		"keycloak_base_url", "keycloak_realm", "keycloak_admin_client_id", "keycloak_admin_client_secret",
@@ -176,6 +178,18 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		sms = newCapturingSMS(deps.Outbox, cfg.SMSProvider)
 	}
 
+	// --- OTP email transport -----------------------------------------------
+	// Every one-time code goes out over SMTP: this deployment has no SMS
+	// rail, so a phone identity is resolved to the email on its account and
+	// an email identity addresses itself. Fatal in production when unset --
+	// without it nobody can log in or register at all, and the previous
+	// behaviour (SMS_PROVIDER=dev) printed the code to stdout, which in a
+	// container is the stream the log collector ships.
+	emailSender, err := buildOTPEmailSender(cfg, log)
+	if err != nil {
+		return nil, fail(fmt.Errorf("user: %w", err))
+	}
+
 	// --- keycloak identity mirror (degrades, never blocks boot) ------------
 	kc := buildKeycloakClient(ctx, cfg, log)
 
@@ -183,6 +197,9 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	repo := user.NewRepository(pool)
 	outbox := events.NewOutbox(serviceName)
 	svc := user.NewService(repo, deps.Redis, outbox, sms, kc, tokens, nicHasher, log)
+	if emailSender != nil {
+		svc.SetEmailSender(emailSender)
+	}
 	if cfg.GoogleClientID != "" {
 		svc.SetGoogle(user.NewGoogleTokenInfoVerifier(cfg.GoogleClientID, nil))
 		log.Info().Msg("google sign-in enabled")

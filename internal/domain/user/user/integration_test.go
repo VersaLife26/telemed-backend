@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sort"
 	"sync"
 	"testing"
@@ -203,9 +204,43 @@ func (c *captureSMS) lastCode(t *testing.T) string {
 	return m
 }
 
+// captureEmail is a test-only EmailSender. OTP delivery moved to email when
+// this deployment lost its SMS rail, so this -- not captureSMS -- is where a
+// test recovers the code from.
+type captureEmail struct {
+	mu      sync.Mutex
+	last    string
+	lastTo  string
+	lastSub string
+}
+
+func (c *captureEmail) Send(_ context.Context, to, subject, body string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastTo, c.lastSub, c.last = to, subject, body
+	return "captured", nil
+}
+
+func (c *captureEmail) lastCode(t *testing.T) string {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := sixDigits.FindString(c.last)
+	if m == "" {
+		t.Fatalf("no 6-digit code found in captured email body: %q", c.last)
+	}
+	return m
+}
+
+func (c *captureEmail) recipient() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastTo
+}
+
 var sixDigits = regexp.MustCompile(`\d{6}`)
 
-func newTestService(t *testing.T, pool *pgxpool.Pool) (*Service, *captureSMS) {
+func newTestService(t *testing.T, pool *pgxpool.Pool) (*Service, *captureEmail) {
 	t.Helper()
 	repo := NewRepository(pool)
 	outbox := events.NewOutbox("telemed-user-service-test")
@@ -216,12 +251,19 @@ func newTestService(t *testing.T, pool *pgxpool.Pool) (*Service, *captureSMS) {
 	if err != nil {
 		t.Fatalf("NewNICHasher: %v", err)
 	}
-	return NewService(repo, newFakeCache(), outbox, sms, kc, tokens, nic, zerolog.Nop()), sms
+	svc := NewService(repo, newFakeCache(), outbox, sms, kc, tokens, nic, zerolog.Nop())
+	mail := &captureEmail{}
+	svc.SetEmailSender(mail)
+	return svc, mail
 }
 
 func mustCreateUser(t *testing.T, ctx context.Context, repo *Repository, phone string) *User {
 	t.Helper()
-	u := &User{Phone: phone, Name: "Test User", Language: LanguageEnglish, Role: RolePatient, Status: StatusActive}
+	// An email address, because OTP delivery is by email: a phone identity is
+	// resolved to the address on its account, so a test user without one
+	// cannot be sent a code at all (ErrNoDeliveryAddress).
+	email := "user" + strings.TrimPrefix(phone, "+") + "@example.test"
+	u := &User{Phone: phone, Email: &email, Name: "Test User", Language: LanguageEnglish, Role: RolePatient, Status: StatusActive}
 	if err := repo.CreateUser(ctx, repo.Pool(), u); err != nil {
 		t.Fatalf("create user %s: %v", phone, err)
 	}
@@ -361,25 +403,37 @@ func TestIntegration_FamilyMemberAuthorization(t *testing.T) {
 func TestIntegration_OTPRegistrationFlow_CreatesUserAndOutboxEvent(t *testing.T) {
 	ctx := context.Background()
 	pool := setupTestPool(t)
-	svc, sms := newTestService(t, pool)
+	svc, mail := newTestService(t, pool)
 
-	const phone = "+94774444444"
-	sendRes, err := svc.SendOTP(ctx, phone, PurposeRegister, LanguageEnglish, "127.0.0.1")
+	// Registration is by EMAIL. A brand-new phone number has no account and
+	// therefore no address to receive a code at, which is the deliberate
+	// limit of email-only OTP -- asserted directly in
+	// TestIntegration_OTPRegistrationByPhoneHasNowhereToSend below.
+	const email = "newpatient@example.test"
+	sendRes, err := svc.SendOTP(ctx, OTPIdentity{Email: email}, PurposeRegister, LanguageEnglish, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("SendOTP: %v", err)
 	}
 	if sendRes.AttemptsRemaining != otpSendLimitPerPhone-1 {
 		t.Errorf("AttemptsRemaining = %d, want %d", sendRes.AttemptsRemaining, otpSendLimitPerPhone-1)
 	}
+	if got := mail.recipient(); got != email {
+		t.Errorf("code delivered to %q, want %q", got, email)
+	}
 
-	code := sms.lastCode(t)
+	code := mail.lastCode(t)
 
-	auth, err := svc.VerifyOTP(ctx, phone, code, "device-1", PurposeRegister, "127.0.0.1")
+	auth, err := svc.VerifyOTP(ctx, OTPIdentity{Email: email}, code, "device-1", PurposeRegister, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("VerifyOTP: %v", err)
 	}
-	if auth.User.Phone != phone {
-		t.Errorf("created user phone = %q, want %q", auth.User.Phone, phone)
+	if auth.User.Email == nil || *auth.User.Email != email {
+		t.Errorf("created user email = %v, want %q", auth.User.Email, email)
+	}
+	// Migration 000005 dropped NOT NULL on phone precisely so an email-only
+	// account is representable.
+	if auth.User.Phone != "" {
+		t.Errorf("email registration set a phone = %q, want empty", auth.User.Phone)
 	}
 	if auth.AccessToken == "" || auth.RefreshToken == "" {
 		t.Fatal("VerifyOTP did not return both tokens")
@@ -411,7 +465,7 @@ func TestIntegration_OTPRegistrationFlow_CreatesUserAndOutboxEvent(t *testing.T)
 
 	// The OTP is single-use: verifying again with the same (now consumed)
 	// code must fail rather than silently succeeding a second time.
-	if _, err := svc.VerifyOTP(ctx, phone, code, "device-1", PurposeLogin, "127.0.0.1"); err == nil {
+	if _, err := svc.VerifyOTP(ctx, OTPIdentity{Email: email}, code, "device-1", PurposeLogin, "127.0.0.1"); err == nil {
 		t.Error("VerifyOTP succeeded twice with the same code")
 	}
 }
@@ -424,27 +478,28 @@ func TestIntegration_OTPRegistrationFlow_CreatesUserAndOutboxEvent(t *testing.T)
 func TestIntegration_OTPVerify_WrongCodeThenLockout(t *testing.T) {
 	ctx := context.Background()
 	pool := setupTestPool(t)
-	svc, sms := newTestService(t, pool)
+	svc, mail := newTestService(t, pool)
 
-	const phone = "+94775555555"
-	if _, err := svc.SendOTP(ctx, phone, PurposeRegister, LanguageEnglish, "127.0.0.1"); err != nil {
+	const email = "lockout@example.test"
+	ident := OTPIdentity{Email: email}
+	if _, err := svc.SendOTP(ctx, ident, PurposeRegister, LanguageEnglish, "127.0.0.1"); err != nil {
 		t.Fatalf("SendOTP: %v", err)
 	}
-	realCode := sms.lastCode(t)
+	realCode := mail.lastCode(t)
 	wrongCode := "000000"
 	if wrongCode == realCode {
 		wrongCode = "111111"
 	}
 
 	for i := 1; i <= otpVerifyMaxAttempts; i++ {
-		_, err := svc.VerifyOTP(ctx, phone, wrongCode, "device-1", PurposeRegister, "127.0.0.1")
+		_, err := svc.VerifyOTP(ctx, ident, wrongCode, "device-1", PurposeRegister, "127.0.0.1")
 		if !errors.Is(err, ErrOTPInvalid) {
 			t.Fatalf("attempt %d: got err=%v, want ErrOTPInvalid", i, err)
 		}
 	}
 
 	// One more wrong attempt crosses the cap and invalidates the code.
-	_, err := svc.VerifyOTP(ctx, phone, wrongCode, "device-1", PurposeRegister, "127.0.0.1")
+	_, err := svc.VerifyOTP(ctx, ident, wrongCode, "device-1", PurposeRegister, "127.0.0.1")
 	if !errors.Is(err, ErrOTPLocked) {
 		t.Fatalf("attempt %d: got err=%v, want ErrOTPLocked", otpVerifyMaxAttempts+1, err)
 	}
@@ -454,7 +509,7 @@ func TestIntegration_OTPVerify_WrongCodeThenLockout(t *testing.T) {
 	// with the correct code -- is reported as locked rather than merely
 	// "wrong" or "expired". The OTP hash itself was also deleted on
 	// lockout, so even a fresh attempt counter would find no code to check.
-	if _, err := svc.VerifyOTP(ctx, phone, realCode, "device-1", PurposeRegister, "127.0.0.1"); !errors.Is(err, ErrOTPLocked) {
+	if _, err := svc.VerifyOTP(ctx, ident, realCode, "device-1", PurposeRegister, "127.0.0.1"); !errors.Is(err, ErrOTPLocked) {
 		t.Fatalf("using the real code after lockout: got err=%v, want ErrOTPLocked", err)
 	}
 }
@@ -561,5 +616,81 @@ func TestIntegration_GoogleFindOrCreateAndLinkEmail(t *testing.T) {
 	}})
 	if _, err := svc2.LoginGoogle(ctx, "id-token", "", false); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("login-only Google for unknown email: got %v, want ErrUserNotFound", err)
+	}
+}
+
+// TestIntegration_OTPRegistrationByPhoneHasNowhereToSend pins the deliberate
+// limit of email-only OTP.
+//
+// Codes go out over SMTP because this deployment has no SMS rail. A phone
+// identity is therefore resolved to the email on its account -- and a phone
+// that has never registered has no account, so there is nowhere to send to.
+// Every registration attempt by phone number lands here.
+//
+// It fails closed and says why. The alternative, falling back to the dev SMS
+// provider, would "succeed" by printing the code to stdout, which in a
+// container is the stream the log collector ships: a patient's login code in
+// a log aggregator, and a caller told delivery worked when nothing arrived.
+//
+// When an SMS rail is configured this test should be replaced, not deleted:
+// the branch it guards is in Service.otpAddress.
+func TestIntegration_OTPRegistrationByPhoneHasNowhereToSend(t *testing.T) {
+	ctx := context.Background()
+	pool := setupTestPool(t)
+	svc, mail := newTestService(t, pool)
+
+	const unregistered = "+94770000999"
+	_, err := svc.SendOTP(ctx, OTPIdentity{Phone: unregistered}, PurposeRegister, LanguageEnglish, "127.0.0.1")
+	if !errors.Is(err, ErrNoDeliveryAddress) {
+		t.Fatalf("SendOTP to an unregistered phone: got %v, want ErrNoDeliveryAddress", err)
+	}
+	if got := mail.recipient(); got != "" {
+		t.Errorf("a message was sent to %q; nothing should have been delivered", got)
+	}
+
+	// An existing account WITH an email is the case that does work, so the
+	// failure above is about the missing address and not about phone
+	// identities in general.
+	u := mustCreateUser(t, ctx, NewRepository(pool), "+94770000998")
+	if _, err := svc.SendOTP(ctx, OTPIdentity{Phone: u.Phone}, PurposeLogin, LanguageEnglish, "127.0.0.1"); err != nil {
+		t.Fatalf("SendOTP to a registered phone with an email: %v", err)
+	}
+	if got, want := mail.recipient(), *u.Email; got != want {
+		t.Errorf("code delivered to %q, want the account's email %q", got, want)
+	}
+}
+
+// TestOTPIdentity_ExactlyOneOfPhoneOrEmail covers the front-door rule without
+// touching a database.
+func TestOTPIdentity_ExactlyOneOfPhoneOrEmail(t *testing.T) {
+	cases := []struct {
+		name, phone, email string
+		wantErr            error
+	}{
+		{name: "phone only", phone: "+94771234567", wantErr: nil},
+		{name: "email only", email: "Person@Example.TEST", wantErr: nil},
+		{name: "neither", wantErr: ErrOTPIdentityRequired},
+		{name: "both", phone: "+94771234567", email: "a@b.test", wantErr: ErrOTPIdentityAmbiguous},
+		{name: "malformed email", email: "not-an-email", wantErr: ErrInvalidEmail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ident, err := NewOTPIdentity(tc.phone, tc.email)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("NewOTPIdentity(%q, %q) err = %v, want %v", tc.phone, tc.email, err, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				return
+			}
+			// The key namespaces cannot collide: a phone always carries "+"
+			// and an email always carries "@", so a code sent to one can
+			// never be redeemed against the other.
+			if tc.email != "" && ident.key() != NormalizeEmail(tc.email) {
+				t.Errorf("email identity key = %q, want the normalised address", ident.key())
+			}
+			if tc.phone != "" && ident.key() != tc.phone {
+				t.Errorf("phone identity key = %q, want %q", ident.key(), tc.phone)
+			}
+		})
 	}
 }

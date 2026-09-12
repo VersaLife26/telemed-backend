@@ -1,6 +1,10 @@
 package notification
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 // Registry is the default ProviderRegistry: one NotificationProvider
 // instance per channel, selected at boot time from config (ADR-002:
@@ -53,3 +57,32 @@ func (InAppProvider) Channels() []Channel { return []Channel{ChannelInApp} }
 func (InAppProvider) Name() string        { return "in-app" }
 
 var _ NotificationProvider = InAppProvider{}
+
+// UnavailableProvider serves a channel that this deployment cannot deliver on.
+//
+// It is the honest alternative to the console provider for a channel whose
+// credentials do not exist. Console "delivers" by printing: every send is
+// reported successful, the message content and the recipient's phone number
+// or address go to stdout, and a whole channel is silently dead while the
+// product believes it is working. This instead fails every send permanently,
+// so the notification row lands in failed/dead-letter with a reason an
+// operator can read, and nothing is ever recorded as delivered that was not.
+//
+// Permanent rather than transient on purpose: retrying a channel with no
+// credentials just burns the attempt budget to reach the same dead letter six
+// backoffs later.
+type UnavailableProvider struct{ ch Channel }
+
+// NewUnavailable builds the provider for one channel.
+func NewUnavailable(ch Channel) UnavailableProvider { return UnavailableProvider{ch: ch} }
+
+func (p UnavailableProvider) Send(_ context.Context, _ Message) (Receipt, error) {
+	return Receipt{}, Permanent(fmt.Errorf(
+		"notification: the %s channel is disabled in this deployment (NOTIFICATION_%s_PROVIDER=disabled); "+
+			"no provider is configured to deliver it", p.ch, strings.ToUpper(string(p.ch))))
+}
+
+func (p UnavailableProvider) Channels() []Channel { return []Channel{p.ch} }
+func (p UnavailableProvider) Name() string        { return "unavailable" }
+
+var _ NotificationProvider = UnavailableProvider{}

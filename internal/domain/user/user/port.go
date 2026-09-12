@@ -31,7 +31,35 @@ var (
 	ErrGoogleDisabled        = errors.New("user: google sign-in is not configured")
 	ErrGoogleTokenInvalid    = errors.New("user: google id token is invalid")
 	ErrGoogleEmailUnverified = errors.New("user: google email is not verified")
+
+	// ErrOTPIdentityRequired and ErrOTPIdentityAmbiguous police the "exactly
+	// one of phone or email" rule on the OTP front door.
+	ErrOTPIdentityRequired  = errors.New("user: an otp needs a phone number or an email address")
+	ErrOTPIdentityAmbiguous = errors.New("user: send an otp to a phone number or an email address, not both")
+
+	// ErrNoDeliveryAddress is the phone-identity case that cannot be served
+	// while email is the only transport: the number has no account, or the
+	// account has no email on it, so there is nowhere to send the code. It is
+	// deliberately a distinct error rather than ErrUserNotFound -- the caller
+	// needs to be told to use an email address, not that the account is
+	// missing, and a new registration by phone lands here every time.
+	ErrNoDeliveryAddress = errors.New("user: no email address on file for this phone number")
+
+	// ErrOTPDeliveryUnavailable means no OTP transport is wired at all.
+	ErrOTPDeliveryUnavailable = errors.New("user: no otp delivery transport is configured")
 )
+
+// EmailSender delivers one transactional email. It is the OTP transport for
+// this deployment: SMS is not available, so login and registration codes go
+// out over SMTP for phone and email identities alike.
+//
+// Business logic depends on this interface rather than net/smtp for the same
+// reason SMSProvider exists -- swapping SMTP for a vendor API is one adapter.
+type EmailSender interface {
+	// Send delivers a single message and returns a provider message id for
+	// support correlation, or an error if the message was rejected.
+	Send(ctx context.Context, to, subject, body string) (providerMessageID string, err error)
+}
 
 // SMSProvider delivers an OTP (or any transactional text) to a phone number.
 // Business logic never imports a vendor SDK directly -- it depends on this

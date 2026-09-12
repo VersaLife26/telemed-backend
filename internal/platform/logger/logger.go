@@ -143,6 +143,23 @@ func MaskPhone(phone string) string {
 	return strings.Repeat("*", len(phone)-4) + phone[len(phone)-4:]
 }
 
+// MaskEmail keeps the first character of the local part and the full domain:
+// "a****@gmail.com". Enough to recognise which address a support ticket is
+// about and which provider is bouncing, without putting a patient's mailbox in
+// the log stream -- an email address identifies a person as squarely as a
+// phone number does.
+func MaskEmail(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at <= 0 {
+		return "****"
+	}
+	local, domain := email[:at], email[at:]
+	if len(local) <= 1 {
+		return "*" + domain
+	}
+	return local[:1] + strings.Repeat("*", len(local)-1) + domain
+}
+
 // MaskID keeps the first 8 characters of a UUID. Collisions are irrelevant for
 // log correlation and the full identifier stays out of the log stream.
 func MaskID(id string) string {

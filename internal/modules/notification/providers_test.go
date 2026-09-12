@@ -1,12 +1,14 @@
 package notification
 
 import (
+	"context"
 	"testing"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"telemed/internal/domain/notification/notification"
+	"telemed/internal/domain/notification/notification/providers/direct"
 )
 
 func builderFor(env string) channelBuilder {
@@ -97,4 +99,64 @@ func TestRegister_NovuWithoutAWorkflowIsStillAnError(t *testing.T) {
 	err := builderFor("dev").register(notification.ChannelEmail, "novu", buildDirectNever(t))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "novu")
+}
+
+// TestRegister_DisabledIsExplicitAndFailsLoudly. "disabled" is the honest way
+// to express a channel whose credentials do not exist -- unlike console, which
+// reports every send successful and prints the recipient and body to stdout.
+// It must be reachable in production (that is the whole point) while an unset
+// or misspelled value still refuses to boot.
+func TestRegister_DisabledIsExplicitAndFailsLoudly(t *testing.T) {
+	for _, env := range []string{"prod", "production", "dev"} {
+		t.Run(env, func(t *testing.T) {
+			b := builderFor(env)
+			require.NoError(t, b.register(notification.ChannelPush, "disabled", buildDirectNever(t)))
+
+			p, ok := b.reg.ProviderFor(notification.ChannelPush)
+			require.True(t, ok, "a provider must be registered for push")
+			require.Equal(t, "unavailable", p.Name())
+
+			// Every send fails permanently, and nothing is reported delivered.
+			receipt, err := p.Send(context.Background(), notification.Message{To: "device-token"})
+			require.Error(t, err)
+			require.False(t, receipt.Delivered, "a disabled channel must never report a delivery")
+			require.Contains(t, err.Error(), "NOTIFICATION_PUSH_PROVIDER=disabled")
+		})
+	}
+}
+
+// TestRegister_EmailTransportIsSMSOnly. Routing a channel's messages to email
+// is a stopgap for the missing SMS rail. The email channel already is email,
+// and push has no equivalent, so either selecting it is a config mistake that
+// must not boot.
+func TestRegister_EmailTransportIsSMSOnly(t *testing.T) {
+	for _, ch := range []notification.Channel{notification.ChannelPush, notification.ChannelEmail} {
+		t.Run(string(ch), func(t *testing.T) {
+			b := builderFor("production")
+			b.buildSMTP = func() (notification.NotificationProvider, error) {
+				t.Fatal("the smtp transport must not be built for a channel that may not select it")
+				return nil, nil
+			}
+			err := b.register(ch, "email", buildDirectNever(t))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "sms-only")
+		})
+	}
+}
+
+// TestRegister_SMSOverEmailAnswersForTheSMSChannel. The registry dispatches on
+// Channels(), so an SMTP provider registered for sms must claim sms -- not
+// email, which would leave the sms channel resolving to nothing while the
+// config said it was handled.
+func TestRegister_SMSOverEmailAnswersForTheSMSChannel(t *testing.T) {
+	b := builderFor("production")
+	b.buildSMTP = func() (notification.NotificationProvider, error) {
+		return direct.NewSMTP(direct.SMTPConfig{Host: "smtp.example.test", Port: 587, From: "noreply@example.test"})
+	}
+
+	require.NoError(t, b.register(notification.ChannelSMS, "email", buildDirectNever(t)))
+
+	p, ok := b.reg.ProviderFor(notification.ChannelSMS)
+	require.True(t, ok, "the sms channel must resolve to the email transport")
+	require.Equal(t, []notification.Channel{notification.ChannelSMS}, p.Channels())
 }

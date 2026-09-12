@@ -46,6 +46,11 @@ type Service struct {
 	limiter  *otpLimiter
 	outbox   *events.Outbox
 	sms      SMSProvider
+	// email is the OTP transport. sms is retained and still wired, but the
+	// OTP path does not use it while this deployment has no SMS rail -- see
+	// deliverOTP/otpAddress. Re-enabling SMS is a branch in otpAddress, not a
+	// rewiring.
+	email    EmailSender
 	keycloak KeycloakClient
 	tokens   *TokenIssuer
 	google   GoogleVerifier
@@ -66,6 +71,16 @@ type Service struct {
 // cmd/server/main.go and DegradedKeycloakClient.
 func NewService(repo *Repository, c cache.Cache, outbox *events.Outbox, sms SMSProvider, kc KeycloakClient, tokens *TokenIssuer, nic *NICHasher, log zerolog.Logger) *Service {
 	return &Service{repo: repo, cache: c, limiter: newOTPLimiter(c), outbox: outbox, sms: sms, keycloak: kc, tokens: tokens, nic: nic, log: log}
+}
+
+// SetEmailSender attaches the transport every OTP goes out over.
+//
+// A setter rather than a NewService argument to match SetGoogle and
+// SetDoctorApplications, and so the many existing call sites that build a
+// Service for tests keep compiling. Without one, SendOTP returns
+// ErrOTPDeliveryUnavailable rather than panicking on a nil interface.
+func (s *Service) SetEmailSender(e EmailSender) {
+	s.email = e
 }
 
 // SetDoctorApplications attaches the doctor-service client used during OTP
@@ -91,27 +106,85 @@ type SendOTPResult struct {
 	AttemptsRemaining int
 }
 
-func otpCacheKey(phone string) string         { return "otp:code:" + phone }
-func otpAttemptsCacheKey(phone string) string { return "otp:verify_attempts:" + phone }
-func otpSendCacheKey(phone string) string     { return "otp:send:" + phone }
+// OTPIdentity is who a one-time code is for: exactly one of a phone number or
+// an email address.
+//
+// Both are accepted because this deployment has no SMS rail and delivers every
+// code over SMTP (see deliverOTP). An email identity addresses itself; a phone
+// identity is resolved to the address on that account, and fails closed with
+// ErrNoDeliveryAddress when there is none rather than falling back to a
+// transport that would print the code to stdout.
+type OTPIdentity struct {
+	Phone string // E.164, normalised
+	Email string // lowercased and trimmed
+}
+
+// NewOTPIdentity normalises caller input and enforces exactly one of the two.
+func NewOTPIdentity(rawPhone, rawEmail string) (OTPIdentity, error) {
+	phone := httpx.NormalizePhone(rawPhone)
+	email := NormalizeEmail(rawEmail)
+
+	gavePhone := strings.TrimSpace(rawPhone) != ""
+	gaveEmail := strings.TrimSpace(rawEmail) != ""
+
+	switch {
+	case gavePhone && gaveEmail:
+		return OTPIdentity{}, ErrOTPIdentityAmbiguous
+	case gaveEmail:
+		if email == "" || !strings.Contains(email, "@") {
+			return OTPIdentity{}, ErrInvalidEmail
+		}
+		return OTPIdentity{Email: email}, nil
+	case gavePhone:
+		if phone == "" {
+			return OTPIdentity{}, ErrInvalidPhone
+		}
+		return OTPIdentity{Phone: phone}, nil
+	default:
+		return OTPIdentity{}, ErrOTPIdentityRequired
+	}
+}
+
+// key is the cache, rate-limit and audit key for this identity. An E.164 phone
+// always starts "+" and an email always contains "@", so the two namespaces
+// cannot collide and a code sent to one never satisfies a verify on the other.
+func (i OTPIdentity) key() string {
+	if i.Email != "" {
+		return i.Email
+	}
+	return i.Phone
+}
+
+func otpCacheKey(key string) string         { return "otp:code:" + key }
+func otpAttemptsCacheKey(key string) string { return "otp:verify_attempts:" + key }
+func otpSendCacheKey(key string) string     { return "otp:send:" + key }
 
 // SendOTP generates and delivers a 6-digit code, enforcing the 3-per-hour
 // per-phone limit. A separate per-IP limit is applied by
 // middleware.RateLimit on the route (see handler.go Routes) using the same
 // Cache.Incr primitive, so both limits are fixed-window and shared across
 // every replica.
-func (s *Service) SendOTP(ctx context.Context, rawPhone string, purpose OTPPurpose, language Language, ip string) (SendOTPResult, error) {
-	phone := httpx.NormalizePhone(rawPhone)
-	if phone == "" {
-		return SendOTPResult{}, ErrInvalidPhone
+func (s *Service) SendOTP(ctx context.Context, ident OTPIdentity, purpose OTPPurpose, language Language, ip string) (SendOTPResult, error) {
+	key := ident.key()
+	if key == "" {
+		return SendOTPResult{}, ErrOTPIdentityRequired
 	}
 
-	n, allowed, err := s.limiter.allowSend(ctx, phone)
+	// Resolved before the code is generated or the rate limit is spent: a
+	// caller who cannot be delivered to should be told so on the first
+	// attempt, not burn one of three hourly sends on a message that was
+	// never going to arrive.
+	to, err := s.otpAddress(ctx, ident)
+	if err != nil {
+		return SendOTPResult{}, err
+	}
+
+	n, allowed, err := s.limiter.allowSend(ctx, key)
 	if err != nil {
 		return SendOTPResult{}, fmt.Errorf("user: otp send rate limit: %w", err)
 	}
 	if !allowed {
-		s.audit(ctx, phone, purpose, ActionSend, ip, false)
+		s.audit(ctx, key, purpose, ActionSend, ip, false)
 		return SendOTPResult{}, ErrRateLimited
 	}
 
@@ -123,19 +196,19 @@ func (s *Service) SendOTP(ctx context.Context, rawPhone string, purpose OTPPurpo
 	if err != nil {
 		return SendOTPResult{}, err
 	}
-	if err := s.cache.Set(ctx, otpCacheKey(phone), []byte(hash), otpTTL); err != nil {
+	if err := s.cache.Set(ctx, otpCacheKey(key), []byte(hash), otpTTL); err != nil {
 		return SendOTPResult{}, fmt.Errorf("user: store otp: %w", err)
 	}
 	// A fresh code resets the verify-attempt budget; without this, three
 	// wrong guesses against an old code would lock out a code the user
 	// never even tried yet.
-	_ = s.cache.Del(ctx, otpAttemptsCacheKey(phone))
+	_ = s.cache.Del(ctx, otpAttemptsCacheKey(key))
 
-	s.audit(ctx, phone, purpose, ActionSend, ip, true)
+	s.audit(ctx, key, purpose, ActionSend, ip, true)
 
-	if _, err := s.sms.Send(ctx, phone, smsBody(purpose, language, code)); err != nil {
-		s.log.Error().Err(err).Str("phone", logger.MaskPhone(phone)).Msg("sms provider failed to send otp")
-		return SendOTPResult{}, fmt.Errorf("user: send sms: %w", err)
+	if _, err := s.email.Send(ctx, to, otpSubject(purpose, language), otpEmailBody(purpose, language, code)); err != nil {
+		s.log.Error().Err(err).Str("to", logger.MaskEmail(to)).Msg("email provider failed to send otp")
+		return SendOTPResult{}, fmt.Errorf("user: send otp email: %w", err)
 	}
 
 	return SendOTPResult{
@@ -143,6 +216,59 @@ func (s *Service) SendOTP(ctx context.Context, rawPhone string, purpose OTPPurpo
 		ExpiresIn:         otpTTL,
 		AttemptsRemaining: max(0, otpSendLimitPerPhone-int(n)),
 	}, nil
+}
+
+// otpAddress decides where this identity's code is delivered.
+//
+// An email identity is its own address. A phone identity has to be resolved
+// against the account, which is the case that fails while SMS is unavailable:
+// a number with no account (every new registration) or an account with a null
+// email has nowhere to receive a code. That returns ErrNoDeliveryAddress so
+// the handler can tell the caller to use an email address, rather than
+// reporting a send that silently went nowhere.
+func (s *Service) otpAddress(ctx context.Context, ident OTPIdentity) (string, error) {
+	if s.email == nil {
+		return "", ErrOTPDeliveryUnavailable
+	}
+	if ident.Email != "" {
+		return ident.Email, nil
+	}
+
+	u, err := s.repo.FindUserByPhone(ctx, s.repo.Pool(), ident.Phone)
+	switch {
+	case errors.Is(err, ErrUserNotFound):
+		return "", ErrNoDeliveryAddress
+	case err != nil:
+		return "", fmt.Errorf("user: resolve otp address: %w", err)
+	case u.Email == nil || strings.TrimSpace(*u.Email) == "":
+		return "", ErrNoDeliveryAddress
+	}
+	return *u.Email, nil
+}
+
+func otpSubject(purpose OTPPurpose, lang Language) string {
+	verb := "registration"
+	if purpose == PurposeLogin {
+		verb = "login"
+	}
+	switch lang {
+	case LanguageSinhala:
+		return fmt.Sprintf("VersaLife %s කේතය", verb)
+	case LanguageTamil:
+		return fmt.Sprintf("VersaLife %s குறியீடு", verb)
+	default:
+		return fmt.Sprintf("Your VersaLife %s code", verb)
+	}
+}
+
+// otpEmailBody is the same three-language copy smsBody carries, as plain text.
+//
+// Plain text, not HTML: the whole message is six digits and a validity window,
+// there is nothing to lay out, and a text/plain body cannot carry a tracking
+// pixel or a link for a phishing filter to quarantine -- which matters for the
+// one message a patient must receive to get in at all.
+func otpEmailBody(purpose OTPPurpose, lang Language, code string) string {
+	return smsBody(purpose, lang, code)
 }
 
 func smsBody(purpose OTPPurpose, lang Language, code string) string {
@@ -178,25 +304,26 @@ type AuthResult struct {
 // invalidates the code outright rather than merely rejecting it, so an
 // attacker cannot keep guessing against a code that already failed 5 times
 // by simply not triggering whatever counts as a "final" attempt.
-func (s *Service) VerifyOTP(ctx context.Context, rawPhone, code, deviceID string, purpose OTPPurpose, ip string) (AuthResult, error) {
-	phone := httpx.NormalizePhone(rawPhone)
-	if phone == "" {
-		return AuthResult{}, ErrInvalidPhone
+func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, deviceID string, purpose OTPPurpose, ip string) (AuthResult, error) {
+	key := ident.key()
+	if key == "" {
+		return AuthResult{}, ErrOTPIdentityRequired
 	}
+	phone := ident.Phone
 
-	_, locked, err := s.limiter.registerVerifyAttempt(ctx, phone)
+	_, locked, err := s.limiter.registerVerifyAttempt(ctx, key)
 	if err != nil {
 		return AuthResult{}, fmt.Errorf("user: otp verify attempts: %w", err)
 	}
 	if locked {
-		_ = s.cache.Del(ctx, otpCacheKey(phone))
-		s.audit(ctx, phone, purpose, ActionVerify, ip, false)
+		_ = s.cache.Del(ctx, otpCacheKey(key))
+		s.audit(ctx, key, purpose, ActionVerify, ip, false)
 		return AuthResult{}, ErrOTPLocked
 	}
 
-	hashBytes, err := s.cache.Get(ctx, otpCacheKey(phone))
+	hashBytes, err := s.cache.Get(ctx, otpCacheKey(key))
 	if errors.Is(err, cache.ErrNotFound) {
-		s.audit(ctx, phone, purpose, ActionVerify, ip, false)
+		s.audit(ctx, key, purpose, ActionVerify, ip, false)
 		return AuthResult{}, ErrOTPExpired
 	}
 	if err != nil {
@@ -204,19 +331,22 @@ func (s *Service) VerifyOTP(ctx context.Context, rawPhone, code, deviceID string
 	}
 
 	if !VerifyOTPHash(string(hashBytes), code) {
-		s.audit(ctx, phone, purpose, ActionVerify, ip, false)
+		s.audit(ctx, key, purpose, ActionVerify, ip, false)
 		return AuthResult{}, ErrOTPInvalid
 	}
 
 	// Success: the code is single-use regardless of remaining TTL.
-	_ = s.cache.Del(ctx, otpCacheKey(phone))
-	_ = s.cache.Del(ctx, otpAttemptsCacheKey(phone))
-	s.audit(ctx, phone, purpose, ActionVerify, ip, true)
+	_ = s.cache.Del(ctx, otpCacheKey(key))
+	_ = s.cache.Del(ctx, otpAttemptsCacheKey(key))
+	s.audit(ctx, key, purpose, ActionVerify, ip, true)
 
 	var u *User
 	var isNewUser bool
+	// Doctor promotion is keyed on the phone an application was filed under,
+	// so it only applies to a phone identity. An email OTP verifies as a
+	// patient; the doctor keeps the phone path, or an admin re-roles them.
 	var approvedApp *DoctorApplication
-	if s.doctors != nil {
+	if s.doctors != nil && phone != "" {
 		if app, aerr := s.doctors.ApplicationByPhone(ctx, phone); aerr == nil && app.Status == "approved" {
 			approvedApp = &app
 		} else if aerr != nil && !errors.Is(aerr, ErrDoctorApplicationNotFound) {
@@ -225,7 +355,18 @@ func (s *Service) VerifyOTP(ctx context.Context, rawPhone, code, deviceID string
 	}
 
 	err = database.InTx(ctx, s.repo.Pool(), pgx.TxOptions{}, func(tx pgx.Tx) error {
-		existing, ferr := s.repo.FindUserByPhone(ctx, tx, phone)
+		// Look the account up by whichever identity proved ownership. Only
+		// that one: an email OTP proves control of the mailbox and says
+		// nothing about any phone number, and vice versa, so matching on the
+		// other column here would hand one identity's holder the other's
+		// account.
+		var existing *User
+		var ferr error
+		if ident.Email != "" {
+			existing, ferr = s.repo.FindUserByEmail(ctx, tx, ident.Email)
+		} else {
+			existing, ferr = s.repo.FindUserByPhone(ctx, tx, phone)
+		}
 		switch {
 		case ferr == nil:
 			u = existing
@@ -269,6 +410,13 @@ func (s *Service) VerifyOTP(ctx context.Context, rawPhone, code, deviceID string
 					email := approvedApp.Email
 					emailPtr = &email
 				}
+			}
+			// An email identity creates an email-only account: phone stays
+			// empty, which migration 000005 allows -- it dropped NOT NULL on
+			// phone and added the CHECK that one of the two is present.
+			if ident.Email != "" && emailPtr == nil {
+				email := ident.Email
+				emailPtr = &email
 			}
 			u = &User{
 				Phone: phone,

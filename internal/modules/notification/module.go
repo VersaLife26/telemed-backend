@@ -100,6 +100,9 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		MaxAttempts: cfg.MaxSendAttempts,
 		BackoffBase: time.Duration(cfg.SendBackoffBaseSeconds) * time.Second,
 		BackoffMax:  time.Duration(cfg.SendBackoffMaxMinutes) * time.Minute,
+		// Keeps address resolution in step with the transport registered for
+		// the sms channel in buildProviderRegistry.
+		SMSViaEmail: cfg.SMSProvider == "email",
 	})
 	handler := notification.NewHandler(svc, repo, log)
 

@@ -36,6 +36,15 @@ type serviceConfig struct {
 	TwilioAuthToken  string `mapstructure:"twilio_auth_token"`
 	TwilioFromNumber string `mapstructure:"twilio_from_number"`
 
+	// SMTP delivers every one-time code. This deployment has no SMS rail, so
+	// the OTP front door is email for phone and email identities alike --
+	// see user.Service.otpAddress.
+	SMTPHost     string `mapstructure:"smtp_host"`
+	SMTPPort     int    `mapstructure:"smtp_port"`
+	SMTPUsername string `mapstructure:"smtp_username"`
+	SMTPPassword string `mapstructure:"smtp_password"`
+	SMTPFrom     string `mapstructure:"smtp_from"`
+
 	// NICHashPepper keys the HMAC that replaces the old bcrypt nic_hash. It is
 	// held OUTSIDE the database on purpose: a Sri Lankan NIC encodes its own
 	// birth date, family_members stores the plaintext DOB in the same row, and
@@ -250,4 +259,38 @@ func parseNICPepperPrevious(raw string) (map[int]string, error) {
 		out[n] = pepper
 	}
 	return out, nil
+}
+
+// buildOTPEmailSender builds the transport every one-time code goes out over.
+//
+// Fatal in production when SMTP is unset, matching buildSMSProvider's refusal
+// to fall back to the dev provider there. The failure this guards against is
+// total: with no transport, SendOTP returns ErrOTPDeliveryUnavailable and no
+// patient can log in or register. Outside production it degrades to nil so a
+// developer stack still boots with nothing configured, and SendOTP reports
+// the missing transport rather than panicking.
+func buildOTPEmailSender(cfg serviceConfig, log zerolog.Logger) (user.EmailSender, error) {
+	if cfg.SMTPHost == "" || cfg.SMTPFrom == "" {
+		if cfg.IsProd() {
+			return nil, fmt.Errorf("SMTP_HOST and SMTP_FROM are required in production: one-time codes are "+
+				"delivered by email, so without them registration and login are closed to everyone (host=%q from=%q)",
+				cfg.SMTPHost, cfg.SMTPFrom)
+		}
+		log.Warn().Msg("SMTP is not configured; one-time codes cannot be delivered and OTP login will fail")
+		return nil, nil //nolint:nilnil // an absent transport is a valid non-prod state
+	}
+
+	sender, err := user.NewSMTPEmailSender(user.SMTPEmailConfig{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword,
+		From:     cfg.SMTPFrom,
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Info().Str("smtp_host", cfg.SMTPHost).Int("smtp_port", cfg.SMTPPort).Str("from", cfg.SMTPFrom).
+		Msg("otp delivery: email over smtp")
+	return sender, nil
 }
