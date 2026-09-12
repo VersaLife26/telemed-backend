@@ -739,8 +739,10 @@ func (h *Handler) applyDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
+	// Body is already bounded by MaxBytesReader, so ParseMultipartForm cannot
+	// read past the cap regardless of its own in-memory threshold.
 	r.Body = http.MaxBytesReader(w, r.Body, MaxApplyDocumentBytes+1<<20)
-	if err := r.ParseMultipartForm(MaxApplyDocumentBytes + 1<<20); err != nil {
+	if err := r.ParseMultipartForm(MaxApplyDocumentBytes + 1<<20); err != nil { //nolint:gosec // bounded by MaxBytesReader above
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "document is too large"))
@@ -755,7 +757,7 @@ func (h *Handler) applyDocument(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "file is required"))
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	body, err := io.ReadAll(file)
 	if err != nil {
 		writeError(w, r, err)
@@ -798,7 +800,8 @@ func (h *Handler) adminGetApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listed := make([]map[string]any, 0, len(docs))
-	for _, d := range docs {
+	for i := range docs {
+		d := &docs[i]
 		item := map[string]any{
 			"document_type": string(d.DocumentType),
 			"filename":      d.Filename,

@@ -80,7 +80,9 @@ func (s *SMTPEmailSender) Send(ctx context.Context, to, subject, body string) (s
 	// half-way through an SMTP conversation.
 	done := make(chan error, 1)
 	go func() {
-		done <- smtp.SendMail(addr, auth, s.cfg.From, []string{to}, []byte(raw))
+		// Recipient and subject were rejected above if they contain line breaks,
+		// which is the SMTP header-injection vector gosec G707 flags here.
+		done <- smtp.SendMail(addr, auth, s.cfg.From, []string{to}, []byte(raw)) //nolint:gosec // G707: CRLF rejected on to/subject above
 	}()
 
 	select {

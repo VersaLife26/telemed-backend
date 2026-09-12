@@ -490,17 +490,17 @@ func trimStrings(in []string) []string {
 	return out
 }
 
-func clipRunes(s string, max int) string {
+func clipRunes(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
-	if max <= 0 {
+	if maxLen <= 0 {
 		return ""
 	}
 	r := []rune(s)
-	if len(r) <= max {
+	if len(r) <= maxLen {
 		return s
 	}
-	if max == 1 {
+	if maxLen == 1 {
 		return string(r[:1])
 	}
-	return string(r[:max-1]) + "…"
+	return string(r[:maxLen-1]) + "…"
 }
