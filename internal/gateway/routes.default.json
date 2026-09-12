@@ -232,6 +232,18 @@
       "description": "Whether a phone may complete doctor-portal OTP (approved application or already activated)."
     },
     {
+      "name": "doctor-apply-documents",
+      "pattern": "/api/v1/doctors/applications/{applicationID}/documents",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "doctor-service",
+      "auth": "public",
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Upload a signature, seal, or SLMC certificate onto a pending public application. No account exists yet; the application id is the capability."
+    },
+    {
       "name": "doctor-register",
       "pattern": "/api/v1/doctors/register",
       "methods": [
@@ -1339,6 +1351,30 @@
       "timeout_class": "fast",
       "rate_limit": "admin",
       "description": "Read a doctor's slot shape (duration, buffer, daily cap). Staff need it to see what they are about to overwrite."
+    },
+    {
+      "name": "doctor-application-admin-get",
+      "pattern": "/api/v1/admin/doctors/{doctorID}/application",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "admin",
+      "timeout_class": "upload",
+      "rate_limit": "admin",
+      "description": "Public-apply profile fields for credential review. Bank account number is never returned."
+    },
+    {
+      "name": "doctor-application-admin-document",
+      "pattern": "/api/v1/admin/doctors/{doctorID}/application-documents/{docType}",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "admin",
+      "timeout_class": "upload",
+      "rate_limit": "admin",
+      "description": "Raw signature, seal, or SLMC certificate uploaded with a public apply."
     },
     {
       "name": "admin-reschedule-requests-list",

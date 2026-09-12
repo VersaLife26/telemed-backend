@@ -16,7 +16,10 @@ var (
 	ErrNotEligibleReview = errors.New("doctor: caller did not complete an appointment with this doctor")
 	ErrReviewExists      = errors.New("doctor: this appointment has already been reviewed")
 	ErrOverlappingHours  = errors.New("doctor: overlapping working hours for the same day")
-	ErrInvalidSchedule   = errors.New("doctor: invalid schedule settings")
+	ErrInvalidSchedule     = errors.New("doctor: invalid schedule settings")
+	ErrTermsNotAccepted    = errors.New("doctor: terms of the service retention agreement must be accepted")
+	ErrDocumentTooLarge    = errors.New("doctor: uploaded document is too large")
+	ErrInvalidDocumentType = errors.New("doctor: unsupported document type")
 )
 
 // ErrHolidaysNotOwnedHere is GONE, and its absence is the change rather than an

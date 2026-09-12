@@ -48,6 +48,7 @@ func (h *Handler) Routes() chi.Router {
 	r.With(middleware.OptionalAuth(h.auth)).Get("/", h.search)
 	r.Post("/apply", h.apply)
 	r.Get("/applications/eligibility", h.applicationEligibility)
+	r.Post("/applications/{applicationID}/documents", h.applyDocument)
 	r.With(middleware.RequireAuth(h.auth)).Post("/register", h.register)
 
 	r.Route("/me", func(r chi.Router) {
@@ -109,6 +110,8 @@ func (h *Handler) AdminScheduleRoutes() chi.Router {
 	r.Get("/{id}/availability", h.adminGetAvailability)
 	r.Put("/{id}/availability", h.adminSetAvailability)
 	r.Get("/{id}/schedule-settings", h.adminGetScheduleSettings)
+	r.Get("/{id}/application", h.adminGetApplication)
+	r.Get("/{id}/application-documents/{docType}", h.adminGetApplicationDocument)
 	return r
 }
 
@@ -126,7 +129,7 @@ type registerRequest struct {
 	// gateway's OpenAPI all send it, and v1 does not break. The value has
 	// always been CENTS -- the Go field and the database column now say so.
 	FeeCents       int64           `json:"fee_lkr" validate:"gte=0"`
-	Languages      []string        `json:"languages" validate:"required,min=1,dive,oneof=en si ta"`
+	Languages      []string        `json:"languages" validate:"required,min=1,dive,oneof=en si ta other"`
 	Bio            string          `json:"bio" validate:"max=2000"`
 	PhotoURL       string          `json:"photo_url" validate:"omitempty,url"`
 	Qualifications []Qualification `json:"qualifications" validate:"omitempty,dive"`
@@ -134,15 +137,27 @@ type registerRequest struct {
 }
 
 type applyRequest struct {
-	Phone           string   `json:"phone" validate:"required,sriphone"`
-	Email           string   `json:"email" validate:"required,email"`
-	DisplayName     string   `json:"display_name" validate:"required,min=2,max=200"`
-	SLMCNumber      string   `json:"slmc_number" validate:"required,slmc"`
-	Specialty       string   `json:"specialty" validate:"required"`
-	ExperienceYears int      `json:"experience_years" validate:"gte=0,lte=70"`
-	FeeCents        int64    `json:"fee_lkr" validate:"gte=0"`
-	Languages       []string `json:"languages" validate:"required,min=1,dive,oneof=en si ta"`
-	Bio             string   `json:"bio" validate:"max=2000"`
+	Phone                 string       `json:"phone" validate:"required,sriphone"`
+	Email                 string       `json:"email" validate:"required,email"`
+	FirstName             string       `json:"first_name" validate:"required,min=1,max=100"`
+	LastName              string       `json:"last_name" validate:"required,min=1,max=100"`
+	DisplayName           string       `json:"display_name" validate:"omitempty,min=2,max=200"`
+	SLMCNumber            string       `json:"slmc_number" validate:"required,slmc"`
+	Specialty             string       `json:"specialty" validate:"required"`
+	ExperienceYears       int          `json:"experience_years" validate:"gte=0,lte=70"`
+	FeeCents              int64        `json:"fee_lkr" validate:"gte=0"`
+	RequiredFeeCents      int64        `json:"required_fee_lkr" validate:"gte=0"`
+	Languages             []string     `json:"languages" validate:"required,min=1,dive,oneof=en si ta other"`
+	LanguageOther         string       `json:"language_other" validate:"max=100"`
+	Bio                   string       `json:"bio" validate:"max=2000"`
+	PGIMBoardCertified    bool         `json:"pgim_board_certified"`
+	MedicalSchool         string       `json:"medical_school" validate:"required,min=2,max=200"`
+	QualificationsText    string       `json:"qualifications" validate:"required,min=2,max=2000"`
+	AvailabilityNotes     string       `json:"availability_notes" validate:"required,min=2,max=2000"`
+	IsGeneralPractitioner bool         `json:"is_general_practitioner"`
+	PracticingLocations   []string     `json:"practicing_locations" validate:"required,min=1,dive,required,max=200"`
+	TermsAccepted         bool         `json:"terms_accepted"`
+	Bank                  *BankDetails `json:"bank" validate:"required"`
 }
 
 type applicationVerifyRequest struct {
@@ -162,7 +177,7 @@ type updateRequest struct {
 	ExperienceYears int      `json:"experience_years" validate:"gte=0,lte=70"`
 	// Cents, despite the legacy wire name. See registerRequest.
 	FeeCents           int64           `json:"fee_lkr" validate:"gte=0"`
-	Languages          []string        `json:"languages" validate:"required,min=1,dive,oneof=en si ta"`
+	Languages          []string        `json:"languages" validate:"required,min=1,dive,oneof=en si ta other"`
 	Bio                string          `json:"bio" validate:"max=2000"`
 	PhotoURL           string          `json:"photo_url" validate:"omitempty,url"`
 	Qualifications     []Qualification `json:"qualifications" validate:"omitempty,dive"`
@@ -529,6 +544,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "profile was modified by another request, reload and retry"))
 	case errors.Is(err, ErrInvalidTransition):
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, err.Error()))
+	case errors.Is(err, ErrTermsNotAccepted):
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "you must accept the VersaLife service retention agreement"))
+	case errors.Is(err, ErrDocumentTooLarge):
+		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "each document must be 5 MB or smaller"))
+	case errors.Is(err, ErrInvalidDocumentType):
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "upload a signature, seal, or SLMC certificate"))
 	case errors.Is(err, ErrReasonRequired):
 		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "a reason is required for this action"))
 	case errors.Is(err, ErrNotEligibleReview):

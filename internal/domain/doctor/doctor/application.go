@@ -27,37 +27,63 @@ const (
 
 // Application is a doctor registration collected before any OTP/user account.
 type Application struct {
-	ID              uuid.UUID
-	Phone           string
-	Email           string
-	DisplayName     string
-	SLMCNumber      string
-	Specialty       string
-	Languages       []Language
-	ExperienceYears int
-	FeeCents        int64
-	Bio             string
-	Status          ApplicationStatus
-	RejectionReason string
-	DecidedAt       *time.Time
-	DecidedBy       *uuid.UUID
-	ActivatedUserID *uuid.UUID
-	ActivatedAt     *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                    uuid.UUID
+	Phone                 string
+	Email                 string
+	DisplayName           string
+	FirstName             string
+	LastName              string
+	SLMCNumber            string
+	Specialty             string
+	Languages             []Language
+	LanguageOther         string
+	ExperienceYears       int
+	FeeCents              int64
+	RequiredFeeCents      int64
+	Bio                   string
+	PGIMBoardCertified    bool
+	MedicalSchool         string
+	QualificationsText    string
+	AvailabilityNotes     string
+	IsGeneralPractitioner bool
+	PracticingLocations   []string
+	TermsAcceptedAt       *time.Time
+	BankEncrypted         string
+	BankName              string
+	BankBranch            string
+	Status                ApplicationStatus
+	RejectionReason       string
+	DecidedAt             *time.Time
+	DecidedBy             *uuid.UUID
+	ActivatedUserID       *uuid.UUID
+	ActivatedAt           *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // ApplyInput is the validated public apply payload.
 type ApplyInput struct {
-	Phone           string
-	Email           string
-	DisplayName     string
-	SLMCNumber      string
-	Specialty       string
-	Languages       []Language
-	ExperienceYears int
-	FeeCents        int64
-	Bio             string
+	Phone                 string
+	Email                 string
+	FirstName             string
+	LastName              string
+	DisplayName           string
+	SLMCNumber            string
+	Specialty             string
+	Languages             []Language
+	LanguageOther         string
+	ExperienceYears       int
+	FeeCents              int64
+	RequiredFeeCents      int64
+	Bio                   string
+	PGIMBoardCertified    bool
+	MedicalSchool         string
+	QualificationsText    string
+	AvailabilityNotes     string
+	IsGeneralPractitioner bool
+	PracticingLocations   []string
+	TermsAccepted         bool
+	Bank                  *BankDetails
 }
 
 var (
@@ -81,26 +107,49 @@ func (s *Service) Apply(ctx context.Context, in ApplyInput) (Application, error)
 	} else if !ok {
 		return Application{}, fmt.Errorf("%w: unknown specialty %q", ErrInvalidTransition, in.Specialty)
 	}
-	if len(in.Languages) == 0 {
-		return Application{}, fmt.Errorf("%w: at least one language is required", ErrInvalidTransition)
+	if err := validateApplyInput(in); err != nil {
+		return Application{}, err
 	}
-
-	app := Application{
-		ID:              uuid.New(),
-		Phone:           phone,
-		Email:           email,
-		DisplayName:     strings.TrimSpace(in.DisplayName),
-		SLMCNumber:      strings.TrimSpace(in.SLMCNumber),
-		Specialty:       in.Specialty,
-		Languages:       in.Languages,
-		ExperienceYears: in.ExperienceYears,
-		FeeCents:        in.FeeCents,
-		Bio:             strings.TrimSpace(in.Bio),
-		Status:          ApplicationPending,
+	first := strings.TrimSpace(in.FirstName)
+	last := strings.TrimSpace(in.LastName)
+	display := strings.TrimSpace(in.DisplayName)
+	if display == "" {
+		display = strings.TrimSpace(first + " " + last)
+	}
+	bankEnc, err := s.encryptBank(ctx, in.Bank)
+	if err != nil {
+		return Application{}, err
 	}
 
 	now := time.Now().UTC()
-	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	app := Application{
+		ID:                    uuid.New(),
+		Phone:                 phone,
+		Email:                 email,
+		DisplayName:           display,
+		FirstName:             first,
+		LastName:              last,
+		SLMCNumber:            strings.TrimSpace(in.SLMCNumber),
+		Specialty:             in.Specialty,
+		Languages:             in.Languages,
+		LanguageOther:         strings.TrimSpace(in.LanguageOther),
+		ExperienceYears:       in.ExperienceYears,
+		FeeCents:              in.FeeCents,
+		RequiredFeeCents:      in.RequiredFeeCents,
+		Bio:                   strings.TrimSpace(in.Bio),
+		PGIMBoardCertified:    in.PGIMBoardCertified,
+		MedicalSchool:         strings.TrimSpace(in.MedicalSchool),
+		QualificationsText:    strings.TrimSpace(in.QualificationsText),
+		AvailabilityNotes:     strings.TrimSpace(in.AvailabilityNotes),
+		IsGeneralPractitioner: in.IsGeneralPractitioner,
+		PracticingLocations:   trimStrings(in.PracticingLocations),
+		TermsAcceptedAt:       &now,
+		BankEncrypted:         bankEnc,
+		BankName:              strings.TrimSpace(in.Bank.BankName),
+		BankBranch:            strings.TrimSpace(in.Bank.BranchName),
+		Status:                ApplicationPending,
+	}
+	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if err := s.repo.CreateApplication(ctx, tx, &app); err != nil {
 			return err
 		}
@@ -124,6 +173,54 @@ func (s *Service) Apply(ctx context.Context, in ApplyInput) (Application, error)
 	app.CreatedAt = now
 	app.UpdatedAt = now
 	return app, nil
+}
+
+const MaxApplyDocumentBytes = 5 << 20
+
+// SaveApplyDocument stores one credential image on a pending public application.
+func (s *Service) SaveApplyDocument(ctx context.Context, applicationID uuid.UUID, docType DocumentType, filename, contentType string, body []byte) error {
+	if !docType.ValidOnApply() {
+		return ErrInvalidDocumentType
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("%w: empty file", ErrInvalidTransition)
+	}
+	if len(body) > MaxApplyDocumentBytes {
+		return ErrDocumentTooLarge
+	}
+	app, err := s.repo.GetApplication(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	if app.Status != ApplicationPending {
+		return fmt.Errorf("%w: documents can only be attached while the application is pending", ErrInvalidTransition)
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return s.repo.UpsertApplicationDocument(ctx, tx, ApplicationDocument{
+			ApplicationID: applicationID,
+			DocumentType:  docType,
+			Filename:      filename,
+			ContentType:   contentType,
+			Bytes:         body,
+		})
+	})
+}
+
+func (s *Service) ListApplyDocuments(ctx context.Context, applicationID uuid.UUID, includeBytes bool) ([]ApplicationDocument, error) {
+	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListApplicationDocuments(ctx, applicationID, includeBytes)
+}
+
+func (s *Service) GetApplyDocument(ctx context.Context, applicationID uuid.UUID, docType DocumentType) (ApplicationDocument, error) {
+	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
+		return ApplicationDocument{}, err
+	}
+	return s.repo.GetApplicationDocument(ctx, applicationID, docType)
 }
 
 // ApplicationEligibility is the doctor-portal OTP gate.
@@ -273,6 +370,27 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 	if email == "" {
 		email = app.Email
 	}
+	bio := app.Bio
+	if loc := strings.Join(app.PracticingLocations, ", "); loc != "" {
+		if bio != "" {
+			bio += "\n"
+		}
+		bio += "Practicing locations: " + loc
+	}
+	if app.AvailabilityNotes != "" {
+		if bio != "" {
+			bio += "\n"
+		}
+		bio += "Available: " + app.AvailabilityNotes
+	}
+	var quals []Qualification
+	if app.QualificationsText != "" || app.MedicalSchool != "" {
+		quals = []Qualification{{
+			Degree:      clipRunes(app.QualificationsText, 200),
+			Institution: clipRunes(app.MedicalSchool, 200),
+			Year:        now.Year(),
+		}}
+	}
 	d := &Doctor{
 		ID:                 app.ID,
 		UserID:             in.UserID,
@@ -283,7 +401,9 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 		Currency:           "LKR",
 		DisplayName:        app.DisplayName,
 		Languages:          app.Languages,
-		Bio:                app.Bio,
+		Bio:                bio,
+		Qualifications:     quals,
+		BankEncrypted:      app.BankEncrypted,
 		VerificationStatus: StatusApproved,
 		VerifiedAt:         &now,
 		VerifiedBy:         app.DecidedBy,
@@ -316,4 +436,71 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 	d.CreatedAt = now
 	d.UpdatedAt = now
 	return *d, nil
+}
+
+func validateApplyInput(in ApplyInput) error {
+	if !in.TermsAccepted {
+		return ErrTermsNotAccepted
+	}
+	if len(in.Languages) == 0 {
+		return fmt.Errorf("%w: at least one language is required", ErrInvalidTransition)
+	}
+	hasOther := false
+	for _, l := range in.Languages {
+		if l == LanguageOther {
+			hasOther = true
+			break
+		}
+	}
+	if hasOther && strings.TrimSpace(in.LanguageOther) == "" {
+		return fmt.Errorf("%w: specify the other language", ErrInvalidTransition)
+	}
+	if strings.TrimSpace(in.FirstName) == "" || strings.TrimSpace(in.LastName) == "" {
+		return fmt.Errorf("%w: first name and last name are required", ErrInvalidTransition)
+	}
+	if strings.TrimSpace(in.MedicalSchool) == "" {
+		return fmt.Errorf("%w: medical school is required", ErrInvalidTransition)
+	}
+	if strings.TrimSpace(in.QualificationsText) == "" {
+		return fmt.Errorf("%w: qualifications are required", ErrInvalidTransition)
+	}
+	if strings.TrimSpace(in.AvailabilityNotes) == "" {
+		return fmt.Errorf("%w: available times for consultation are required", ErrInvalidTransition)
+	}
+	if len(trimStrings(in.PracticingLocations)) == 0 {
+		return fmt.Errorf("%w: at least one practicing location is required", ErrInvalidTransition)
+	}
+	if in.Bank == nil || strings.TrimSpace(in.Bank.BankName) == "" ||
+		strings.TrimSpace(in.Bank.BranchName) == "" ||
+		strings.TrimSpace(in.Bank.AccountNumber) == "" ||
+		strings.TrimSpace(in.Bank.AccountName) == "" {
+		return fmt.Errorf("%w: bank account details are required", ErrInvalidTransition)
+	}
+	return nil
+}
+
+func trimStrings(in []string) []string {
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func clipRunes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return string(r[:1])
+	}
+	return string(r[:max-1]) + "…"
 }

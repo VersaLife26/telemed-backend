@@ -148,6 +148,7 @@ func TestDeriveCredentialKey_CoversEveryDocumentType(t *testing.T) {
 	for _, dt := range []DocumentType{
 		DocumentSLMCCertificate, DocumentNIC, DocumentDegreeCertificate,
 		DocumentSpecialtyBoardCert, DocumentPhoto, DocumentOther,
+		DocumentSignature, DocumentSeal,
 	} {
 		if !dt.Valid() {
 			t.Fatalf("%q is not a valid document type", dt)

@@ -1,9 +1,13 @@
 package doctor
 
 import (
+	"encoding/base64"
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -598,10 +602,14 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	app, err := h.svc.Apply(r.Context(), ApplyInput{
-		Phone: req.Phone, Email: req.Email, DisplayName: req.DisplayName,
-		SLMCNumber: req.SLMCNumber, Specialty: req.Specialty,
-		ExperienceYears: req.ExperienceYears, FeeCents: req.FeeCents,
-		Languages: toLanguages(req.Languages), Bio: req.Bio,
+		Phone: req.Phone, Email: req.Email, FirstName: req.FirstName, LastName: req.LastName,
+		DisplayName: req.DisplayName, SLMCNumber: req.SLMCNumber, Specialty: req.Specialty,
+		ExperienceYears: req.ExperienceYears, FeeCents: req.FeeCents, RequiredFeeCents: req.RequiredFeeCents,
+		Languages: toLanguages(req.Languages), LanguageOther: req.LanguageOther, Bio: req.Bio,
+		PGIMBoardCertified: req.PGIMBoardCertified, MedicalSchool: req.MedicalSchool,
+		QualificationsText: req.QualificationsText, AvailabilityNotes: req.AvailabilityNotes,
+		IsGeneralPractitioner: req.IsGeneralPractitioner, PracticingLocations: req.PracticingLocations,
+		TermsAccepted: req.TermsAccepted, Bank: req.Bank,
 	})
 	if err != nil {
 		writeError(w, r, err)
@@ -689,21 +697,151 @@ func (h *Handler) attachApplication(w http.ResponseWriter, r *http.Request) {
 
 func toApplicationResponse(a Application) map[string]any {
 	out := map[string]any{
-		"application_id":   a.ID.String(),
-		"phone":            a.Phone,
-		"email":            a.Email,
-		"display_name":     a.DisplayName,
-		"slmc_number":      a.SLMCNumber,
-		"specialty":        a.Specialty,
-		"languages":        languagesToStrings(a.Languages),
-		"experience_years": a.ExperienceYears,
-		"fee_cents":        a.FeeCents,
-		"bio":              a.Bio,
-		"status":           string(a.Status),
-		"created_at":       a.CreatedAt,
+		"application_id":          a.ID.String(),
+		"phone":                   a.Phone,
+		"email":                   a.Email,
+		"first_name":              a.FirstName,
+		"last_name":               a.LastName,
+		"display_name":            a.DisplayName,
+		"slmc_number":             a.SLMCNumber,
+		"specialty":               a.Specialty,
+		"languages":               languagesToStrings(a.Languages),
+		"language_other":          a.LanguageOther,
+		"experience_years":        a.ExperienceYears,
+		"fee_cents":               a.FeeCents,
+		"required_fee_cents":      a.RequiredFeeCents,
+		"bio":                     a.Bio,
+		"pgim_board_certified":    a.PGIMBoardCertified,
+		"medical_school":          a.MedicalSchool,
+		"qualifications":          a.QualificationsText,
+		"availability_notes":      a.AvailabilityNotes,
+		"is_general_practitioner": a.IsGeneralPractitioner,
+		"practicing_locations":    a.PracticingLocations,
+		"bank_name":               a.BankName,
+		"bank_branch":             a.BankBranch,
+		"bank_details_submitted":  a.BankEncrypted != "",
+		"terms_accepted":          a.TermsAcceptedAt != nil,
+		"status":                  string(a.Status),
+		"created_at":              a.CreatedAt,
+	}
+	if a.TermsAcceptedAt != nil {
+		out["terms_accepted_at"] = a.TermsAcceptedAt
 	}
 	if a.RejectionReason != "" {
 		out["rejection_reason"] = a.RejectionReason
 	}
 	return out
+}
+
+func (h *Handler) applyDocument(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "applicationID", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, MaxApplyDocumentBytes+1<<20)
+	if err := r.ParseMultipartForm(MaxApplyDocumentBytes + 1<<20); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "document is too large"))
+			return
+		}
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "could not read the uploaded file"))
+		return
+	}
+	docType := DocumentType(r.FormValue("document_type"))
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "file is required"))
+		return
+	}
+	defer file.Close()
+	body, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	filename := ""
+	contentType := "application/octet-stream"
+	if header != nil {
+		filename = header.Filename
+		if header.Header.Get("Content-Type") != "" {
+			contentType = header.Header.Get("Content-Type")
+		}
+	}
+	if err := h.svc.SaveApplyDocument(r.Context(), id, docType, filename, contentType, body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	httpx.Created(w, r, map[string]any{
+		"application_id": id.String(),
+		"document_type":  string(docType),
+		"filename":       filename,
+	})
+}
+
+func (h *Handler) adminGetApplication(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	app, err := h.svc.repo.GetApplication(r.Context(), id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	includeBytes := r.URL.Query().Get("include") == "bytes"
+	docs, err := h.svc.ListApplyDocuments(r.Context(), id, includeBytes)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	listed := make([]map[string]any, 0, len(docs))
+	for _, d := range docs {
+		item := map[string]any{
+			"document_type": string(d.DocumentType),
+			"filename":      d.Filename,
+			"content_type":  d.ContentType,
+			"uploaded_at":   d.UploadedAt,
+		}
+		if includeBytes && len(d.Bytes) > 0 {
+			item["data_base64"] = base64.StdEncoding.EncodeToString(d.Bytes)
+		}
+		listed = append(listed, item)
+	}
+	out := toApplicationResponse(app)
+	out["documents"] = listed
+	httpx.OK(w, r, out)
+}
+
+func (h *Handler) adminGetApplicationDocument(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	docType := DocumentType(chi.URLParam(r, "docType"))
+	doc, err := h.svc.GetApplyDocument(r.Context(), id, docType)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", doc.ContentType)
+	w.Header().Set("Content-Disposition", `inline; filename="`+safeContentDispositionName(doc.Filename)+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(doc.Bytes)
+}
+
+func safeContentDispositionName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if r == '"' || r == '\\' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, name)
+	if strings.TrimSpace(name) == "" {
+		return "document"
+	}
+	return name
 }

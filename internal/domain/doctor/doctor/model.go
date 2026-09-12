@@ -39,9 +39,10 @@ func (s VerificationStatus) Valid() bool {
 type Language string
 
 const (
-	LanguageEN Language = "en"
-	LanguageSI Language = "si"
-	LanguageTA Language = "ta"
+	LanguageEN    Language = "en"
+	LanguageSI    Language = "si"
+	LanguageTA    Language = "ta"
+	LanguageOther Language = "other"
 )
 
 // Qualification is one entry in a doctor's qualifications list (degree,
@@ -208,12 +209,24 @@ const (
 	// interchangeable.
 	DocumentPhoto DocumentType = "photo"
 	DocumentOther DocumentType = "other"
+	// Apply-time credentials collected before a doctors row exists.
+	DocumentSignature DocumentType = "signature"
+	DocumentSeal      DocumentType = "seal"
 )
 
 func (t DocumentType) Valid() bool {
 	switch t {
 	case DocumentSLMCCertificate, DocumentNIC, DocumentDegreeCertificate,
-		DocumentSpecialtyBoardCert, DocumentPhoto, DocumentOther:
+		DocumentSpecialtyBoardCert, DocumentPhoto, DocumentOther,
+		DocumentSignature, DocumentSeal:
+		return true
+	}
+	return false
+}
+
+func (t DocumentType) ValidOnApply() bool {
+	switch t {
+	case DocumentSignature, DocumentSeal, DocumentSLMCCertificate:
 		return true
 	}
 	return false

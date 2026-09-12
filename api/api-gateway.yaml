@@ -183,17 +183,36 @@ components:
 
     DoctorApplyRequest:
       type: object
-      required: [phone, email, display_name, slmc_number, specialty, fee_lkr, languages]
+      required: [phone, email, first_name, last_name, slmc_number, specialty, fee_lkr, required_fee_lkr, languages, medical_school, qualifications, availability_notes, practicing_locations, terms_accepted, bank]
       properties:
         phone: { type: string, example: "+94771234567" }
         email: { type: string, format: email }
-        display_name: { type: string }
+        first_name: { type: string }
+        last_name: { type: string }
+        display_name: { type: string, description: Optional. Defaults to first_name + last_name. }
         slmc_number: { type: string, example: "SLMC12345" }
         specialty: { type: string, example: general_practice }
         experience_years: { type: integer, example: 8 }
-        fee_lkr: { type: integer, example: 200000, description: fee in cents }
-        languages: { type: array, items: { type: string, enum: [en, si, ta] } }
+        fee_lkr: { type: integer, example: 250000, description: Amount the doctor likes to charge, in cents }
+        required_fee_lkr: { type: integer, example: 200000, description: Minimum the doctor requires per consultation, in cents }
+        languages: { type: array, items: { type: string, enum: [en, si, ta, other] } }
+        language_other: { type: string, description: Required when languages includes other }
         bio: { type: string }
+        pgim_board_certified: { type: boolean }
+        medical_school: { type: string }
+        qualifications: { type: string }
+        availability_notes: { type: string }
+        is_general_practitioner: { type: boolean }
+        practicing_locations: { type: array, items: { type: string } }
+        terms_accepted: { type: boolean }
+        bank:
+          type: object
+          required: [bank_name, branch_name, account_number, account_name]
+          properties:
+            bank_name: { type: string }
+            branch_name: { type: string }
+            account_number: { type: string }
+            account_name: { type: string }
     DoctorRegisterRequest:
       type: object
       required: [slmc_number, specialty, experience_years, fee_lkr, languages]
@@ -999,6 +1018,38 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Envelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/doctors/applications/{applicationID}/documents:
+    post:
+      tags: [doctors]
+      summary: Upload a credential onto a pending public application
+      security: []
+      description: >
+        Signature, seal, or most recent SLMC certificate. The application id
+        is the capability; no account exists yet. Replacing the same
+        document_type overwrites the previous file.
+      parameters:
+        - name: applicationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, document_type]
+              properties:
+                file: { type: string, format: binary }
+                document_type: { type: string, enum: [signature, seal, slmc_certificate] }
+      responses:
+        '201':
+          description: Document stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/doctors/applications/eligibility:
     get:
@@ -2123,6 +2174,54 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/ScheduleSettings' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/doctors/{doctorID}/application:
+    get:
+      tags: [admin]
+      summary: Public-apply profile submitted before OTP
+      description: >
+        Extra fields collected on POST /doctors/apply. Bank account number is
+        never returned. Pass include=bytes to embed uploaded credential images
+        as data_base64.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: include
+          in: query
+          schema: { type: string, enum: [bytes] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/doctors/{doctorID}/application-documents/{docType}:
+    get:
+      tags: [admin]
+      summary: Download one public-apply credential image
+      description: Raw bytes of signature, seal, or slmc_certificate.
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: docType
+          in: path
+          required: true
+          schema: { type: string, enum: [signature, seal, slmc_certificate] }
+      responses:
+        '200':
+          description: File bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 

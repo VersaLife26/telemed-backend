@@ -43,10 +43,11 @@ import (
 //     publication state -- and carries no PHI. Its sibling doctor-reviews-post
 //     is authenticated: reading opinions is public, writing one is not.
 //
-//   - doctor-apply, doctor-application-eligibility. Public doctor onboarding
-//     collects details before any account exists; eligibility gates OTP on the
-//     doctor portal after admin approval. Both are rate-limited and carry no
-//     session. Authenticated register remains for post-account document flows.
+//   - doctor-apply, doctor-apply-documents, doctor-application-eligibility.
+//     Public doctor onboarding collects details and credential images before
+//     any account exists; eligibility gates OTP on the doctor portal after
+//     admin approval. All three are rate-limited and carry no session.
+//     Authenticated register remains for post-account document flows.
 //
 // Nothing else may be added without the same kind of justification. In
 // particular, no route that returns or accepts patient data belongs here.
@@ -62,6 +63,7 @@ var wantPublicRoutes = map[string]struct{}{
 	"doctor-detail":                  {},
 	"doctor-reviews-get":             {},
 	"doctor-apply":                   {},
+	"doctor-apply-documents":         {},
 	"doctor-application-eligibility": {},
 	"prescription-verify-get":        {},
 	"webhook-stripe":                 {},

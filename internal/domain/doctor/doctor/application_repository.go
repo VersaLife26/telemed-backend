@@ -13,28 +13,53 @@ import (
 )
 
 const applicationColumns = `
-	id, phone, email, display_name, slmc_number, specialty, languages,
-	experience_years, fee_cents, bio, status, rejection_reason,
+	id, phone, email, display_name, first_name, last_name, slmc_number, specialty, languages,
+	language_other, experience_years, fee_cents, required_fee_cents, bio,
+	pgim_board_certified, medical_school, qualifications_text, availability_notes,
+	is_general_practitioner, practicing_locations, terms_accepted_at,
+	bank_encrypted, bank_name, bank_branch,
+	status, rejection_reason,
 	decided_at, decided_by, activated_user_id, activated_at, created_at, updated_at`
 
 func scanApplication(row pgx.Row) (Application, error) {
 	var a Application
-	var languages []string
-	var bio, rejection *string
-	var decidedAt, activatedAt *time.Time
+	var languages, locations []string
+	var bio, rejection, languageOther, medicalSchool, quals, availability, bankEnc, bankName, bankBranch *string
+	var firstName, lastName *string
+	var decidedAt, activatedAt, termsAt *time.Time
 	var decidedBy, activatedUserID *uuid.UUID
 	var status string
+	var pgim, gp bool
+	var requiredFee int64
 
 	err := row.Scan(
-		&a.ID, &a.Phone, &a.Email, &a.DisplayName, &a.SLMCNumber, &a.Specialty, &languages,
-		&a.ExperienceYears, &a.FeeCents, &bio, &status, &rejection,
+		&a.ID, &a.Phone, &a.Email, &a.DisplayName, &firstName, &lastName, &a.SLMCNumber, &a.Specialty, &languages,
+		&languageOther, &a.ExperienceYears, &a.FeeCents, &requiredFee, &bio,
+		&pgim, &medicalSchool, &quals, &availability,
+		&gp, &locations, &termsAt,
+		&bankEnc, &bankName, &bankBranch,
+		&status, &rejection,
 		&decidedAt, &decidedBy, &activatedUserID, &activatedAt, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		return Application{}, err
 	}
 	a.Languages = stringsToLanguages(languages)
+	a.FirstName = deref(firstName)
+	a.LastName = deref(lastName)
+	a.LanguageOther = deref(languageOther)
+	a.RequiredFeeCents = requiredFee
 	a.Bio = deref(bio)
+	a.PGIMBoardCertified = pgim
+	a.MedicalSchool = deref(medicalSchool)
+	a.QualificationsText = deref(quals)
+	a.AvailabilityNotes = deref(availability)
+	a.IsGeneralPractitioner = gp
+	a.PracticingLocations = locations
+	a.TermsAcceptedAt = termsAt
+	a.BankEncrypted = deref(bankEnc)
+	a.BankName = deref(bankName)
+	a.BankBranch = deref(bankBranch)
 	a.RejectionReason = deref(rejection)
 	a.Status = ApplicationStatus(status)
 	a.DecidedAt = decidedAt
@@ -48,15 +73,28 @@ func scanApplication(row pgx.Row) (Application, error) {
 func (r *Repository) CreateApplication(ctx context.Context, tx pgx.Tx, a *Application) error {
 	const q = `
 		INSERT INTO doctor_applications (
-			id, phone, email, display_name, slmc_number, specialty, languages,
-			experience_years, fee_cents, bio, status, created_at, updated_at
+			id, phone, email, display_name, first_name, last_name, slmc_number, specialty, languages,
+			language_other, experience_years, fee_cents, required_fee_cents, bio,
+			pgim_board_certified, medical_school, qualifications_text, availability_notes,
+			is_general_practitioner, practicing_locations, terms_accepted_at,
+			bank_encrypted, bank_name, bank_branch, status, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7,
-			$8, $9, $10, $11, NOW(), NOW()
+			$1, $2, $3, $4, $5, $6, $7, $8, $9,
+			$10, $11, $12, $13, $14,
+			$15, $16, $17, $18,
+			$19, $20, $21,
+			$22, $23, $24, $25, NOW(), NOW()
 		)`
+	locs := a.PracticingLocations
+	if locs == nil {
+		locs = []string{}
+	}
 	_, err := tx.Exec(ctx, q,
-		a.ID, a.Phone, a.Email, a.DisplayName, a.SLMCNumber, a.Specialty, languagesToStrings(a.Languages),
-		a.ExperienceYears, a.FeeCents, a.Bio, string(a.Status),
+		a.ID, a.Phone, a.Email, a.DisplayName, a.FirstName, a.LastName, a.SLMCNumber, a.Specialty, languagesToStrings(a.Languages),
+		a.LanguageOther, a.ExperienceYears, a.FeeCents, a.RequiredFeeCents, a.Bio,
+		a.PGIMBoardCertified, a.MedicalSchool, a.QualificationsText, a.AvailabilityNotes,
+		a.IsGeneralPractitioner, locs, a.TermsAcceptedAt,
+		nullString(a.BankEncrypted), a.BankName, a.BankBranch, string(a.Status),
 	)
 	if err != nil {
 		if database.IsUniqueViolation(err) {
@@ -160,4 +198,85 @@ func (r *Repository) MarkApplicationActivated(ctx context.Context, tx pgx.Tx, id
 		return ErrApplicationNotReady
 	}
 	return nil
+}
+
+type ApplicationDocument struct {
+	ID            uuid.UUID
+	ApplicationID uuid.UUID
+	DocumentType  DocumentType
+	Filename      string
+	ContentType   string
+	Bytes         []byte
+	UploadedAt    time.Time
+}
+
+func (r *Repository) UpsertApplicationDocument(ctx context.Context, tx pgx.Tx, d ApplicationDocument) error {
+	const q = `
+		INSERT INTO doctor_application_documents (
+			id, application_id, document_type, filename, content_type, bytes, uploaded_at
+		) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (application_id, document_type) DO UPDATE SET
+			filename = EXCLUDED.filename,
+			content_type = EXCLUDED.content_type,
+			bytes = EXCLUDED.bytes,
+			uploaded_at = NOW()`
+	id := d.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	_, err := tx.Exec(ctx, q, id, d.ApplicationID, string(d.DocumentType), d.Filename, d.ContentType, d.Bytes)
+	if err != nil {
+		return fmt.Errorf("doctor: upsert application document: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListApplicationDocuments(ctx context.Context, applicationID uuid.UUID, includeBytes bool) ([]ApplicationDocument, error) {
+	cols := `id, application_id, document_type, filename, content_type, uploaded_at`
+	if includeBytes {
+		cols = `id, application_id, document_type, filename, content_type, bytes, uploaded_at`
+	}
+	q := `SELECT ` + cols + ` FROM doctor_application_documents WHERE application_id = $1 ORDER BY uploaded_at ASC`
+	rows, err := r.pool.Query(ctx, q, applicationID)
+	if err != nil {
+		return nil, fmt.Errorf("doctor: list application documents: %w", err)
+	}
+	defer rows.Close()
+	var out []ApplicationDocument
+	for rows.Next() {
+		var d ApplicationDocument
+		var dtype string
+		if includeBytes {
+			if err := rows.Scan(&d.ID, &d.ApplicationID, &dtype, &d.Filename, &d.ContentType, &d.Bytes, &d.UploadedAt); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := rows.Scan(&d.ID, &d.ApplicationID, &dtype, &d.Filename, &d.ContentType, &d.UploadedAt); err != nil {
+				return nil, err
+			}
+		}
+		d.DocumentType = DocumentType(dtype)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) GetApplicationDocument(ctx context.Context, applicationID uuid.UUID, docType DocumentType) (ApplicationDocument, error) {
+	const q = `
+		SELECT id, application_id, document_type, filename, content_type, bytes, uploaded_at
+		FROM doctor_application_documents
+		WHERE application_id = $1 AND document_type = $2`
+	var d ApplicationDocument
+	var dtype string
+	err := r.pool.QueryRow(ctx, q, applicationID, string(docType)).Scan(
+		&d.ID, &d.ApplicationID, &dtype, &d.Filename, &d.ContentType, &d.Bytes, &d.UploadedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ApplicationDocument{}, ErrNotFound
+		}
+		return ApplicationDocument{}, fmt.Errorf("doctor: get application document: %w", err)
+	}
+	d.DocumentType = DocumentType(dtype)
+	return d, nil
 }

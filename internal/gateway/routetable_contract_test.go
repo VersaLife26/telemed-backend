@@ -71,6 +71,7 @@ var mobileClientSurface = []backendRoute{
 	// doctor-service -- internal/doctor/handler.go
 	{"GET", "/api/v1/doctors", "doctor-service", "doctor/handler.go:32"},
 	{"POST", "/api/v1/doctors/apply", "doctor-service", "doctor/handler.go:apply"},
+	{"POST", "/api/v1/doctors/applications/{applicationID}/documents", "doctor-service", "doctor/handler.go:applyDocument"},
 	{"GET", "/api/v1/doctors/applications/eligibility", "doctor-service", "doctor/handler.go:eligibility"},
 	{"POST", "/api/v1/doctors/register", "doctor-service", "doctor/handler.go:33"},
 	{"GET", "/api/v1/doctors/me", "doctor-service", "doctor/handler.go:37"},
