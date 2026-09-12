@@ -57,11 +57,15 @@ func TestConfig_ProdRefusesToBootWithoutAnAdminIPAllowlist(t *testing.T) {
 	}
 }
 
-// TestConfig_ProdRefusesToBootWithoutTheAdminIssuer: Keycloak is the only
-// issuer permitted to assert an admin role (ADR-010, and F1's issuer binding).
-// Unset, Base.IssuerKeys() silently omits it and this service trusts
-// user-service -- a phone-OTP issuer -- alone, for the surface whose entire
-// justification is SAML SSO and enforced 2FA.
+// TestConfig_ProdRefusesToBootWithoutTheAdminIssuer: exactly one designated
+// issuer may assert an admin role (ADR-010, and F1's issuer binding). With none
+// bound, Base.IssuerKeys() omits it and this service trusts user-service -- a
+// phone-OTP issuer -- alone, for the surface whose entire justification is SAML
+// SSO and enforced 2FA.
+//
+// The issuer is named by ADMIN_ISSUER or, for a deployment still on Keycloak,
+// KEYCLOAK_ISSUER. Which of the two holds it is not the control; that one of
+// them does, with a key set, is.
 func TestConfig_ProdRefusesToBootWithoutTheAdminIssuer(t *testing.T) {
 	cases := map[string]func(*appConfig){
 		"no issuer":   func(c *appConfig) { c.KeycloakIssuer = "" },
@@ -70,6 +74,13 @@ func TestConfig_ProdRefusesToBootWithoutTheAdminIssuer(t *testing.T) {
 			c.KeycloakIssuer = ""
 			c.KeycloakJWKSURL = ""
 		},
+		// The Access migration's own failure mode: the admin issuer is named
+		// but its keys are not, so nothing can verify an admin token.
+		"admin issuer without its jwks url": func(c *appConfig) {
+			c.KeycloakIssuer = ""
+			c.KeycloakJWKSURL = ""
+			c.AdminIssuer = "https://versalife.cloudflareaccess.com"
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -77,9 +88,29 @@ func TestConfig_ProdRefusesToBootWithoutTheAdminIssuer(t *testing.T) {
 			mutate(&cfg)
 			err := cfg.Validate()
 			require.Error(t, err)
-			require.Contains(t, err.Error(), "KEYCLOAK_ISSUER")
+			require.Contains(t, err.Error(), "ADR-010")
 		})
 	}
+}
+
+// TestConfig_ProdBootsOnTheAccessAdminIssuer is the other half of ADR-010, and
+// the reason this check no longer names Keycloak: Keycloak was replaced by
+// Cloudflare Access, env/common.env deliberately leaves KEYCLOAK_ISSUER empty,
+// and a check that demanded it kept the whole backend in a restart loop over an
+// IdP nobody runs. ADMIN_ISSUER is what middleware.SetAdminIssuer binds admin
+// role checks to, so a deployment naming only that is correctly configured.
+func TestConfig_ProdBootsOnTheAccessAdminIssuer(t *testing.T) {
+	cfg := validConfig("prod")
+	cfg.KeycloakIssuer = ""
+	cfg.KeycloakJWKSURL = ""
+	cfg.AdminIssuer = "https://versalife.cloudflareaccess.com"
+	cfg.AdminJWKSURL = "https://versalife.cloudflareaccess.com/cdn-cgi/access/certs"
+
+	require.NoError(t, cfg.Validate())
+	// The binding, not just the boot: admin roles must resolve to Access, and
+	// user-service must never be the issuer that carries them.
+	require.Equal(t, "https://versalife.cloudflareaccess.com", cfg.AdminTokenIssuer())
+	require.Contains(t, cfg.IssuerKeys(), cfg.AdminTokenIssuer())
 }
 
 // TestConfig_ProdReportsEveryProblemAtOnce. An operator fixing a deployment

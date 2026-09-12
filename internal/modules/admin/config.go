@@ -108,11 +108,24 @@ type appConfig struct {
 // same rule applied where the decision is actually made, so a request that
 // reaches this service inside the mesh cannot bypass it.
 //
-// KEYCLOAK_ISSUER is checked for the same reason. Keycloak is the ONLY issuer
-// permitted to assert an admin role (ADR-010, and F1's issuer binding). If it
-// is unset, Base.IssuerKeys() simply omits it, and this service boots trusting
-// user-service alone -- a phone-OTP token issuer -- for a surface that exists
-// on the assumption of SAML SSO and enforced 2FA.
+// The admin token issuer is checked for the same reason, and this check used
+// to name KEYCLOAK_ISSUER specifically. That was correct when Keycloak was the
+// only administrator IdP, and it is the wrong question now: ADR-010's actual
+// requirement is that SOME designated admin IdP is named and has a key set, so
+// that user-service -- a phone-OTP issuer, which can put super_admin in a token
+// it honestly signs -- is never the thing asserting an admin role.
+//
+// Base.AdminTokenIssuer() is what middleware.SetAdminIssuer binds admin ROLE
+// checks to (cmd/telemed/main.go) and what adminusers.NewDirectory is scoped by
+// (module.go). It returns ADMIN_ISSUER in preference to KEYCLOAK_ISSUER and
+// never returns UserIssuer, so asking it the question keeps the boundary
+// exactly where ADR-010 put it while letting Cloudflare Access hold it.
+// internal/gateway/config.go already asks it this way at the edge; this is the
+// same rule where the decision is made.
+//
+// Both halves are required: Base.IssuerKeys() only binds an issuer to a key set
+// when the JWKS URL is set too, so a named issuer with no keys is an admin
+// surface whose tokens nothing can verify.
 func (c appConfig) Validate() error {
 	if err := c.Base.Validate(); err != nil {
 		return err
@@ -136,9 +149,12 @@ func (c appConfig) Validate() error {
 		problems = append(problems, "ADMIN_IP_ALLOWLIST has no usable entries, which middleware.IPAllowlist treats as "+
 			"\"allow every address\"; set the office and VPN CIDRs")
 	}
-	if strings.TrimSpace(c.KeycloakIssuer) == "" || strings.TrimSpace(c.KeycloakJWKSURL) == "" {
-		problems = append(problems, "KEYCLOAK_ISSUER and KEYCLOAK_JWKS_URL are required: Keycloak is the only "+
-			"issuer allowed to assert an admin role (ADR-010)")
+	if iss := c.AdminTokenIssuer(); iss == "" {
+		problems = append(problems, "ADMIN_ISSUER (or KEYCLOAK_ISSUER) is required: without it no issuer is bound to "+
+			"the admin role and any trusted issuer may assert one (ADR-010)")
+	} else if _, ok := c.IssuerKeys()[iss]; !ok {
+		problems = append(problems, "the admin issuer "+iss+" has no key set: set ADMIN_JWKS_URL (or "+
+			"KEYCLOAK_JWKS_URL) so admin tokens can be verified (ADR-010)")
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("config: refusing to start in %s: %s", c.Env, strings.Join(problems, "; "))
