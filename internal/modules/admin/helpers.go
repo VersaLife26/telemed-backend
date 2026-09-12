@@ -58,37 +58,19 @@ func splitCSV(raw string) []string {
 	return out
 }
 
-// buildIdentityProvider connects the Keycloak admin client used to create and
-// re-role admin accounts.
+// buildIdentityProvider returns the administrator identity provider.
 //
-// Unlike user-service, an unreachable Keycloak here does NOT degrade into a
-// working service with a quiet warning. There, Keycloak mirrors an account
-// that already exists and works, so degrading keeps patients logging in. Here
-// it IS the admin identity provider, and the operations that need it --
-// creating a login, changing the realm role that authorizes every route --
-// have no meaningful half-success. UnavailableProvider refuses them loudly at
-// the first attempt rather than writing rows for admins who cannot sign in, or
-// reporting a demotion that never reached the realm.
+// Cloudflare Access is the admin IdP for this deployment, and Access is not a
+// directory this service writes to: it admits an address by policy, and the
+// admin_users table decides what that address may do. So there is nothing to
+// connect to and nothing to fail -- see adminusers.AccessProvider for the full
+// split, and for the one thing it deliberately cannot do (admit a new email
+// through Access).
 //
-// The rest of the service is unaffected: listing admins and deactivating one
-// both work from the database alone.
-func buildIdentityProvider(ctx context.Context, cfg appConfig, log zerolog.Logger) adminusers.IdentityProvider {
-	if cfg.KeycloakBaseURL == "" || cfg.KeycloakAdminClientID == "" {
-		return adminusers.NewUnavailableProvider(log)
-	}
-	p, err := adminusers.NewGocloakProvider(ctx, adminusers.KeycloakConfig{
-		BaseURL:      cfg.KeycloakBaseURL,
-		Realm:        cfg.KeycloakRealm,
-		ClientID:     cfg.KeycloakAdminClientID,
-		ClientSecret: cfg.KeycloakAdminClientSecret,
-	})
-	if err != nil {
-		log.Error().Err(err).Msg("adminusers: keycloak admin client unavailable; " +
-			"creating and re-roling admins is disabled until it is reachable")
-		return adminusers.NewUnavailableProvider(log)
-	}
-	log.Info().Str("realm", cfg.KeycloakRealm).Msg("adminusers: keycloak admin client connected")
-	return p
+// This used to dial Keycloak and fall back to a provider that refused every
+// create and re-role when it could not. Both are gone with Keycloak.
+func buildIdentityProvider(_ context.Context, _ appConfig, log zerolog.Logger) adminusers.IdentityProvider {
+	return adminusers.NewAccessProvider(log)
 }
 
 // buildMeshCredentials returns the service token source used on outbound gRPC.
@@ -102,11 +84,10 @@ func buildIdentityProvider(ctx context.Context, cfg appConfig, log zerolog.Logge
 // Outside production it degrades to nil, so a developer running one service
 // against a mesh with no Keycloak still gets a working process.
 func buildMeshCredentials(cfg appConfig, log zerolog.Logger) (credentials.PerRPCCredentials, error) {
+	// MESH_TOKEN_URL only. The Keycloak realm endpoint this used to fall back
+	// to does not exist in this deployment, and guessing one would turn a
+	// missing setting into a connection error at the first gRPC call.
 	tokenURL := cfg.MeshTokenURL
-	if tokenURL == "" && cfg.KeycloakBaseURL != "" {
-		tokenURL = strings.TrimSuffix(cfg.KeycloakBaseURL, "/") +
-			"/realms/" + cfg.KeycloakRealm + "/protocol/openid-connect/token"
-	}
 
 	src, err := servicetoken.New(servicetoken.Config{
 		TokenURL:     tokenURL,
@@ -119,7 +100,7 @@ func buildMeshCredentials(cfg appConfig, log zerolog.Logger) (credentials.PerRPC
 	})
 	if errors.Is(err, servicetoken.ErrNotConfigured) {
 		if cfg.IsProd() {
-			return nil, fmt.Errorf("MESH_CLIENT_ID/MESH_CLIENT_SECRET and KEYCLOAK_BASE_URL are "+
+			return nil, fmt.Errorf("MESH_CLIENT_ID, MESH_CLIENT_SECRET and MESH_TOKEN_URL are "+
 				"required in production: user-service authenticates every gRPC method, so a "+
 				"client without a service token fails on every call: %w", err)
 		}

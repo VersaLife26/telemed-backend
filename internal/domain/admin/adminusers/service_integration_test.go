@@ -149,8 +149,9 @@ func TestRoleChangeReachesKeycloak(t *testing.T) {
 		}
 	}
 	if !sawSetRole {
-		t.Error("a role change did not reach Keycloak; the demotion is cosmetic " +
-			"and the account keeps its old access (security review F4)")
+		t.Error("a role change did not reach the identity provider; under a provider " +
+			"that holds the authorising role this makes the demotion cosmetic " +
+			"(security review F4)")
 	}
 	if !sawRevoke {
 		t.Error("sessions were not revoked; the demotion only applies at token " +
@@ -158,10 +159,10 @@ func TestRoleChangeReachesKeycloak(t *testing.T) {
 	}
 }
 
-// TestRoleChangeIsRefusedIfKeycloakRejectsIt proves the write order. Keycloak
-// is written first precisely so a failure is a clean refusal rather than a
-// database that disagrees with what actually authorizes the account.
-func TestRoleChangeIsRefusedIfKeycloakRejectsIt(t *testing.T) {
+// TestRoleChangeIsRefusedIfTheProviderRejectsIt proves the write order. The
+// identity provider is called first precisely so a failure is a clean refusal
+// rather than a database that disagrees with it.
+func TestRoleChangeIsRefusedIfTheProviderRejectsIt(t *testing.T) {
 	idp := &recordingIDP{}
 	svc := newService(t, idp)
 
@@ -190,23 +191,36 @@ func TestRoleChangeIsRefusedIfKeycloakRejectsIt(t *testing.T) {
 	}
 }
 
-// TestUnavailableProviderRefusesEverything states the fail-closed contract of
-// the no-credentials stand-in, so a future edit cannot make one method a
-// silent no-op.
-func TestUnavailableProviderRefusesEverything(t *testing.T) {
-	p := adminusers.NewUnavailableProvider(zerolog.Nop())
+// TestAccessProviderIsADatabaseFirstNoOp states the contract that replaced the
+// Keycloak provider, so a future edit cannot quietly reintroduce a dependency
+// on an identity provider this deployment does not run.
+//
+// Under Keycloak the realm held the role that authorised every route, so these
+// calls had to succeed for a change to be real. Under Cloudflare Access the
+// admin_users row is what Directory.RolesForSubject reads, so the service's own
+// write IS the change and these are records of it.
+func TestAccessProviderIsADatabaseFirstNoOp(t *testing.T) {
+	p := adminusers.NewAccessProvider(zerolog.Nop())
 	ctx := t.Context()
 
-	if _, err := p.CreateAdmin(ctx, "a@b.c", "A", "ops"); !errors.Is(err, adminusers.ErrIdentityProviderUnavailable) {
-		t.Errorf("CreateAdmin = %v", err)
+	// The subject is the normalised email, because that is what an Access
+	// token is matched on and what admin_users.keycloak_subject (NOT NULL,
+	// unique) has to hold.
+	subject, err := p.CreateAdmin(ctx, "  Ops@Clinic.LK ", "Ops", "ops")
+	if err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
 	}
-	if err := p.SetRole(ctx, "s", "ops", "finance"); !errors.Is(err, adminusers.ErrIdentityProviderUnavailable) {
-		t.Errorf("SetRole = %v", err)
+	if subject != "ops@clinic.lk" {
+		t.Errorf("subject = %q, want the normalised email", subject)
 	}
-	if err := p.SetEnabled(ctx, "s", false); !errors.Is(err, adminusers.ErrIdentityProviderUnavailable) {
-		t.Errorf("SetEnabled = %v", err)
+
+	if err := p.SetRole(ctx, subject, "ops", "finance"); err != nil {
+		t.Errorf("SetRole = %v, want nil", err)
 	}
-	if err := p.RevokeSessions(ctx, "s"); !errors.Is(err, adminusers.ErrIdentityProviderUnavailable) {
-		t.Errorf("RevokeSessions = %v", err)
+	if err := p.SetEnabled(ctx, subject, false); err != nil {
+		t.Errorf("SetEnabled = %v, want nil", err)
+	}
+	if err := p.RevokeSessions(ctx, subject); err != nil {
+		t.Errorf("RevokeSessions = %v, want nil", err)
 	}
 }

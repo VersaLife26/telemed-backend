@@ -14,24 +14,16 @@ import (
 // allowlist. See internal/adminusers for the additional per-admin scope on
 // top of this global list.
 type appConfig struct {
-	// Admin logins live in Keycloak: it issues the tokens whose realm_access
-	// roles authorize every route in this service. These credentials let a
-	// super_admin create and re-role colleagues from the console instead of by
-	// hand in the Keycloak admin UI. Without them that surface refuses -- see
-	// adminusers.UnavailableProvider.
-	KeycloakBaseURL           string `mapstructure:"keycloak_base_url"`
-	KeycloakRealm             string `mapstructure:"keycloak_realm"`
-	KeycloakAdminClientID     string `mapstructure:"keycloak_admin_client_id"`
-	KeycloakAdminClientSecret string `mapstructure:"keycloak_admin_client_secret"`
-
 	// The service account this process authenticates AS when it calls another
-	// service over gRPC. Distinct from the admin client above: that one manages
-	// admin logins, this one is our own identity on the mesh. Its Keycloak
-	// service account must hold the "service" realm role.
+	// service over gRPC -- this service's own identity on the mesh, and the
+	// only identity configuration left here now that Cloudflare Access is the
+	// administrator IdP. Admin logins are admitted by the Access policy and
+	// authorised by the admin_users table; see adminusers.AccessProvider.
 	MeshClientID     string `mapstructure:"mesh_client_id"`
 	MeshClientSecret string `mapstructure:"mesh_client_secret"`
-	// MeshTokenURL defaults to the realm token endpoint derived from
-	// KeycloakBaseURL and KeycloakRealm; set it only to override.
+	// MeshTokenURL is the client-credentials token endpoint, and must be set
+	// explicitly. It used to be derived from KEYCLOAK_BASE_URL and
+	// KEYCLOAK_REALM, which is no longer a thing this deployment has.
 	MeshTokenURL string `mapstructure:"mesh_token_url"`
 
 	config.Base `mapstructure:",squash"`

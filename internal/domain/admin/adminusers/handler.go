@@ -123,7 +123,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrIdentityProviderUnavailable) {
 			// 503, not 500: nothing is wrong with the request, and the
-			// operator can retry once Keycloak is reachable.
+			// operator can retry once the identity provider is reachable.
 			httpx.Error(w, r, httpx.ErrUnavailable.WithCause(err))
 			return
 		}
@@ -166,10 +166,10 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, httpx.ErrNotFound)
 		return
 	case errors.Is(err, ErrIdentityProviderUnavailable):
-		// A role or active change could not reach Keycloak, so it was not
-		// applied anywhere -- the service writes the realm before the row
-		// precisely so this is a clean refusal rather than a database that
-		// disagrees with what actually authorizes the account. 503, because
+		// A role or active change could not reach the identity provider, so
+		// it was not applied anywhere -- the service calls the provider before
+		// writing the row precisely so this is a clean refusal rather than a
+		// database that disagrees with the provider. 503, because
 		// the request was fine and retrying later is the correct response.
 		httpx.Error(w, r, httpx.ErrUnavailable.WithCause(err))
 		return

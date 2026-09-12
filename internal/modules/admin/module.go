@@ -63,7 +63,6 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// Short by default and hard-capped in credentialing.NewService: a
 	// presigned URL to a scanned NIC is a bearer credential.
 	v.SetDefault("doc_presign_ttl", credentialing.DefaultPresignTTL)
-	v.SetDefault("keycloak_realm", "telemedicine")
 	v.SetDefault("mesh_client_id", "telemed-api")
 	v.SetDefault("user_service_grpc_addr", "localhost:9091")
 	v.SetDefault("user_lookup_timeout_seconds", 3)
@@ -75,8 +74,6 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		"user_service_grpc_addr", "user_lookup_timeout_seconds", "trusted_proxies",
 		"user_service_grpc_tls", "user_service_grpc_ca_file",
 		"user_service_grpc_server_name", "user_service_grpc_allow_plaintext",
-		"keycloak_base_url", "keycloak_realm",
-		"keycloak_admin_client_id", "keycloak_admin_client_secret",
 		"mesh_client_id", "mesh_client_secret", "mesh_token_url",
 		"doctor_service_url",
 	} {
