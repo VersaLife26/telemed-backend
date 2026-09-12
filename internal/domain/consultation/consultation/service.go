@@ -23,6 +23,9 @@ var (
 	ErrNotFound     = errors.New("consultation: not found")
 	ErrForbidden    = errors.New("consultation: caller is not a party to this consultation")
 	ErrInvalidState = errors.New("consultation: invalid state transition")
+	// ErrJoinCutoff is a patient trying to join for the first time after the
+	// late-join window. Reconnects (already waiting or active) still work.
+	ErrJoinCutoff = errors.New("consultation: late-join window has closed")
 )
 
 // store is the persistence contract the service depends on. Defining it here,
@@ -66,6 +69,7 @@ type store interface {
 	ClaimWebhookEvent(ctx context.Context, tx pgx.Tx, eventID, eventType string) (bool, error)
 
 	ListStaleActive(ctx context.Context, q queryer, quietSince time.Time, limit int) ([]StaleCandidate, error)
+	ListScheduledPastJoinCutoff(ctx context.Context, q queryer, cutoff time.Time, limit int) ([]*Consultation, error)
 }
 
 // Options configures Service. Every duration has a sane default applied by
@@ -207,6 +211,11 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 		return JoinResult{}, ErrInvalidState
 	}
 
+	now := time.Now().UTC()
+	if role == RolePatient && c.Status == StatusScheduled && !now.Before(c.ScheduledAt.Add(LateJoinCutoff)) {
+		return JoinResult{}, ErrJoinCutoff
+	}
+
 	if _, err := s.video.CreateRoom(ctx, RoomSpec{
 		RoomName:            c.RoomName,
 		EmptyTimeoutSeconds: s.opts.EmptyRoomTimeoutSeconds,
@@ -227,7 +236,6 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 		return JoinResult{}, fmt.Errorf("consultation: generate token: %w", err)
 	}
 
-	now := time.Now().UTC()
 	// Computed from the same clock reading the join is stamped with, so the
 	// client is never told an expiry earlier than the token actually has.
 	tokenExpiresAt := now.Add(s.opts.TokenTTL)
@@ -283,6 +291,7 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 		AppointmentID:  c.AppointmentID,
 		Status:         c.Status,
 		Role:           string(role),
+		ScheduledAt:    c.ScheduledAt,
 		Token:          token,
 		TokenExpiresAt: tokenExpiresAt,
 		RoomName:       c.RoomName,

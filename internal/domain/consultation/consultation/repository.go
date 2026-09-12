@@ -341,6 +341,37 @@ func (r *Repository) SetEarlyJoinResponse(ctx context.Context, tx pgx.Tx, consul
 	return tag.RowsAffected() == 1, nil
 }
 
+// ListScheduledPastJoinCutoff returns consults still waiting for a first
+// patient join after the late-join window. Waiting/active rows are excluded
+// so a late arriver already in the queue is not auto no-showed.
+func (r *Repository) ListScheduledPastJoinCutoff(ctx context.Context, q queryer, cutoff time.Time, limit int) ([]*Consultation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const sql = `
+		SELECT ` + consultationColumns + `
+		FROM consultations
+		WHERE status = 'scheduled'
+		  AND deleted_at IS NULL
+		  AND scheduled_at <= $1
+		ORDER BY scheduled_at ASC
+		LIMIT $2`
+	rows, err := q.Query(ctx, sql, cutoff.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("consultation: list scheduled past join cutoff: %w", err)
+	}
+	defer rows.Close()
+	var out []*Consultation
+	for rows.Next() {
+		c, err := scanConsultation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // --- participants --------------------------------------------------------
 
 // UpsertParticipantJoin records a join. A second join by the same identity is

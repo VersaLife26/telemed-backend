@@ -326,6 +326,8 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		httpx.Error(w, r, httpx.ErrForbidden.WithCause(err))
 	case errors.Is(err, ErrInvalidState):
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "consultation is not in a state that allows this action").WithCause(err))
+	case errors.Is(err, ErrJoinCutoff):
+		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "the join window has closed; this visit was not started in time").WithCause(err))
 	case errors.Is(err, ErrOptimisticLock):
 		httpx.Error(w, r, httpx.ErrConflict.WithCause(err))
 	case errors.Is(err, ErrWebhookUnverified):

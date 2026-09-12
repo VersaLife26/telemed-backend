@@ -31,11 +31,12 @@ const (
 // NoShowGrace is how long after a consultation should have ended before an
 // appointment nobody closed out is recorded as a no-show.
 //
-// It is generous on purpose. consultation-service publishing the outcome is the
-// authoritative path; this job is only the backstop for when that never
-// arrives, and a wrongly recorded no-show feeds the prepayment rule and
-// penalises a patient who did nothing wrong. Twelve hours means a consultation
-// that ran late, or a doctor who forgot to close the room, does not become an
+// It is generous on purpose. A patient who never joins is closed earlier by
+// consultation-service's late-join sweep (10 minutes after scheduled_at).
+// This job is only the backstop for when that never arrives -- a started
+// visit the doctor forgot to close, or a confirmed booking with no
+// consultation row -- and a wrongly recorded no-show feeds the prepayment
+// rule. Twelve hours means a consultation that ran late does not become an
 // accusation.
 const NoShowGrace = 12 * time.Hour
 

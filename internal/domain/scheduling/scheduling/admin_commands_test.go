@@ -1,10 +1,12 @@
 package scheduling_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"telemed/internal/domain/scheduling/scheduling"
 	"telemed/internal/platform/events"
@@ -28,6 +30,7 @@ func TestConsumersSubscribeToAdminCommands(t *testing.T) {
 	for _, want := range []events.Subject{
 		events.SubjectAdminAppointmentForceCancel,
 		events.SubjectAdminDoubleBookingResolveRequested,
+		events.SubjectConsultationPatientNoShow,
 	} {
 		if !subscribed[want] {
 			t.Errorf("scheduling does not subscribe to %s: an administrator's "+
@@ -106,4 +109,40 @@ func TestAdminCommandPayloadsDecode(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("consultation patient no-show", func(t *testing.T) {
+		consultationID, appointmentID := uuid.New(), uuid.New()
+		env := envelope(t, events.SubjectConsultationPatientNoShow,
+			events.ConsultationPatientNoShow{
+				ConsultationID: consultationID,
+				AppointmentID:  appointmentID,
+			})
+
+		var got events.ConsultationPatientNoShow
+		if err := env.Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.AppointmentID != appointmentID {
+			t.Errorf("appointment_id = %s, want %s", got.AppointmentID, appointmentID)
+		}
+		if got.ConsultationID != consultationID {
+			t.Errorf("consultation_id = %s, want %s", got.ConsultationID, consultationID)
+		}
+	})
+}
+
+func TestHandleConsultationPatientNoShow_UnparseableAcks(t *testing.T) {
+	c := scheduling.NewConsumers(nil, nil, nil, zerolog.Nop())
+	env := envelope(t, events.SubjectConsultationPatientNoShow, "not-json-object")
+	if err := c.Handle(context.Background(), env); err != nil {
+		t.Fatalf("unparseable consultation.patient_no_show must ack, got %v", err)
+	}
+}
+
+func TestHandleConsultationPatientNoShow_MissingIDAcks(t *testing.T) {
+	c := scheduling.NewConsumers(nil, nil, nil, zerolog.Nop())
+	env := envelope(t, events.SubjectConsultationPatientNoShow, events.ConsultationPatientNoShow{})
+	if err := c.Handle(context.Background(), env); err != nil {
+		t.Fatalf("missing appointment_id must ack, got %v", err)
+	}
 }

@@ -236,6 +236,7 @@ type JoinResult struct {
 	AppointmentID  uuid.UUID `json:"appointment_id"`
 	Status         Status    `json:"status"`
 	Role           string    `json:"role"` // patient | doctor
+	ScheduledAt    time.Time `json:"scheduled_at"`
 
 	Token          string    `json:"token"`
 	TokenExpiresAt time.Time `json:"token_expires_at"`

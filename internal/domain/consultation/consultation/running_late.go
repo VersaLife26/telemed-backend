@@ -154,10 +154,14 @@ func (w *RunningLateSweeper) Run(ctx context.Context) {
 			n, err := w.svc.SweepRunningLate(ctx, time.Time{}, w.batch)
 			if err != nil {
 				w.log.Error().Err(err).Msg("running-late sweep failed")
-				continue
-			}
-			if n > 0 {
+			} else if n > 0 {
 				w.log.Info().Int("notified", n).Msg("next patients notified that the doctor is running late")
+			}
+			absent, err := w.svc.SweepPatientNoShow(ctx, time.Time{}, w.batch)
+			if err != nil {
+				w.log.Error().Err(err).Msg("patient no-show sweep failed")
+			} else if absent > 0 {
+				w.log.Info().Int("marked", absent).Msg("late patients who never joined marked no-show")
 			}
 		}
 	}

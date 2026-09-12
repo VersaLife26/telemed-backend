@@ -4,16 +4,26 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"telemed/internal/platform/events"
 )
 
+// appointmentTeardownSubjects close an unstarted consultation so a late join
+// cannot reopen a visit that scheduling has already recorded as cancelled or
+// a no-show.
+var appointmentTeardownSubjects = []events.Subject{
+	events.SubjectAppointmentCancelled,
+	events.SubjectAppointmentNoShow,
+}
+
 // RegisterConsumers starts the durable consumers this service owns:
 //
 //   - appointment.confirmed pre-creates the consultation row so the room name
 //     is known before either party ever calls Join.
-//   - appointment.cancelled tears down a consultation that has not started.
+//   - appointment.cancelled and appointment.no_show tear down a consultation
+//     that has not started, so a late join cannot reopen a closed visit.
 //   - appointment.rescheduled moves scheduled_at on a consultation that has
 //     not started, keeping the same room name and join URLs.
 //
@@ -50,19 +60,21 @@ func RegisterConsumers(ctx context.Context, sub events.Subscriber, svc *Service,
 
 	go func() {
 		err := sub.Subscribe(ctx, "consultation-service-appointment-cancelled",
-			[]events.Subject{events.SubjectAppointmentCancelled},
+			appointmentTeardownSubjects,
 			func(ctx context.Context, env events.Envelope) error {
-				var payload events.AppointmentCancelled
-				if err := env.Decode(&payload); err != nil {
-					return fmt.Errorf("consultation: decode appointment.cancelled: %w", err)
+				var id struct {
+					AppointmentID uuid.UUID `json:"appointment_id"`
 				}
-				if err := svc.TeardownForCancellation(ctx, payload.AppointmentID); err != nil {
-					return fmt.Errorf("consultation: handle appointment.cancelled: %w", err)
+				if err := env.Decode(&id); err != nil {
+					return fmt.Errorf("consultation: decode %s: %w", env.Subject, err)
+				}
+				if err := svc.TeardownForCancellation(ctx, id.AppointmentID); err != nil {
+					return fmt.Errorf("consultation: handle %s: %w", env.Subject, err)
 				}
 				return nil
 			})
 		if err != nil {
-			log.Error().Err(err).Msg("appointment.cancelled consumer stopped")
+			log.Error().Err(err).Msg("appointment.cancelled/no_show consumer stopped")
 		}
 	}()
 

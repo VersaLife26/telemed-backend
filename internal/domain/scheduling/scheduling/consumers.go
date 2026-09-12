@@ -54,6 +54,7 @@ func (c *Consumers) Subjects() []events.Subject {
 		// so it is the only place that can carry them out.
 		events.SubjectAdminAppointmentForceCancel,
 		events.SubjectAdminDoubleBookingResolveRequested,
+		events.SubjectConsultationPatientNoShow,
 	}
 }
 
@@ -79,6 +80,8 @@ func (c *Consumers) Handle(ctx context.Context, env events.Envelope) error {
 		err = c.handleAdminForceCancel(ctx, env)
 	case events.SubjectAdminDoubleBookingResolveRequested:
 		err = c.handleAdminResolveDoubleBooking(ctx, env)
+	case events.SubjectConsultationPatientNoShow:
+		err = c.handleConsultationPatientNoShow(ctx, env)
 	default:
 		// Subscribing to a subject we do not handle is a wiring bug, but
 		// nak-ing forever would wedge the consumer. Ack and complain.
@@ -593,6 +596,37 @@ func (c *Consumers) handleAdminForceCancel(ctx context.Context, env events.Envel
 		return nil
 	}
 	return c.forceCancel(ctx, cmd.AppointmentID, cmd.AdminID, cmd.Reason, env)
+}
+
+func (c *Consumers) handleConsultationPatientNoShow(ctx context.Context, env events.Envelope) error {
+	var p events.ConsultationPatientNoShow
+	if err := env.Decode(&p); err != nil {
+		c.log.Error().Err(err).Str("event_id", env.ID.String()).
+			Msg("dropping unparseable consultation.patient_no_show")
+		return nil
+	}
+	if p.AppointmentID == uuid.Nil {
+		c.log.Error().Str("event_id", env.ID.String()).
+			Msg("consultation.patient_no_show without an appointment_id")
+		return nil
+	}
+	_, err := c.svc.MarkTerminal(ctx, p.AppointmentID, uuid.Nil, "system", AppointmentNoShow)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrAppointmentNotCancellable):
+		c.log.Info().Str("appointment_id", maskID(p.AppointmentID)).
+			Str("event_id", env.ID.String()).
+			Msg("patient no-show: appointment was already closed")
+		return nil
+	case errors.Is(err, ErrAppointmentNotFound):
+		c.log.Error().Str("appointment_id", maskID(p.AppointmentID)).
+			Str("event_id", env.ID.String()).
+			Msg("patient no-show for an unknown appointment")
+		return nil
+	default:
+		return err
+	}
 }
 
 // handleAdminResolveDoubleBooking cancels the losing half of a double booking.

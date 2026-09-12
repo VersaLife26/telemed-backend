@@ -84,6 +84,9 @@ const (
 	// can join a few minutes early. It is not a reschedule: the booked time
 	// stands unless they accept and join through the existing waiting room.
 	SubjectConsultationEarlyJoinOffered Subject = "consultation.early_join_offered"
+	// SubjectConsultationPatientNoShow is a first-join that never happened
+	// after the late-join grace. Scheduling marks the appointment no_show.
+	SubjectConsultationPatientNoShow Subject = "consultation.patient_no_show"
 
 	SubjectPrescriptionIssued Subject = "prescription.issued"
 
@@ -114,7 +117,7 @@ var AllSubjects = []Subject{
 	SubjectWaitlistSlotOffer,
 	SubjectPaymentSucceeded, SubjectPaymentFailed, SubjectPaymentRefunded, SubjectPayoutSent,
 	SubjectConsultationStarted, SubjectConsultationEnded, SubjectConsultationDoctorRunningLate,
-	SubjectConsultationEarlyJoinOffered,
+	SubjectConsultationEarlyJoinOffered, SubjectConsultationPatientNoShow,
 	SubjectPrescriptionIssued,
 	SubjectAdminUserSuspendRequested, SubjectAdminUserReinstateRequested,
 	SubjectAdminAppointmentForceCancel, SubjectAdminDoubleBookingResolveRequested,

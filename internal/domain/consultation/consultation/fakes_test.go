@@ -366,6 +366,32 @@ func (f *fakeStore) SetEarlyJoinResponse(_ context.Context, _ pgx.Tx, consultati
 	return true, nil
 }
 
+func (f *fakeStore) ListScheduledPastJoinCutoff(_ context.Context, _ queryer, cutoff time.Time, limit int) ([]*Consultation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	var out []*Consultation
+	for _, c := range f.consultations {
+		if c.Status != StatusScheduled || c.DeletedAt != nil {
+			continue
+		}
+		if c.ScheduledAt.After(cutoff) {
+			continue
+		}
+		cp := *c
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ScheduledAt.Before(out[j].ScheduledAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (f *fakeStore) UpsertParticipantJoin(_ context.Context, _ pgx.Tx, consultationID uuid.UUID, identity string, role ParticipantRole, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

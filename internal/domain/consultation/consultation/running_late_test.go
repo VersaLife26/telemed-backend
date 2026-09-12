@@ -23,8 +23,8 @@ func TestSweepRunningLate_NotifiesNextPatientOnce(t *testing.T) {
 		DoctorID:       doctorID,
 		RoomName:       "room-active-" + uuid.NewString(),
 		Status:         StatusScheduled,
-		ScheduledAt:    now.Add(-30 * time.Minute),
-		ScheduledEndAt: now.Add(-5 * time.Minute),
+		ScheduledAt:    now.Add(-2 * time.Minute),
+		ScheduledEndAt: now.Add(13 * time.Minute),
 	}
 	require.NoError(t, st.CreateConsultation(ctx, fakeTx{}, active))
 	patientJoins(t, svc, activePatient, active)
@@ -73,8 +73,8 @@ func TestSweepRunningLate_NoNextPatientStillClaims(t *testing.T) {
 		DoctorID:       doctorID,
 		RoomName:       "room-solo-" + uuid.NewString(),
 		Status:         StatusScheduled,
-		ScheduledAt:    now.Add(-40 * time.Minute),
-		ScheduledEndAt: now.Add(-10 * time.Minute),
+		ScheduledAt:    now.Add(-2 * time.Minute),
+		ScheduledEndAt: now.Add(13 * time.Minute),
 	}
 	require.NoError(t, st.CreateConsultation(ctx, fakeTx{}, active))
 	patientJoins(t, svc, patientID, active)
@@ -108,7 +108,7 @@ func TestSweepRunningLate_IgnoresConsultStillInsideSlot(t *testing.T) {
 		DoctorID:       doctorID,
 		RoomName:       "room-ontime-" + uuid.NewString(),
 		Status:         StatusScheduled,
-		ScheduledAt:    now.Add(-10 * time.Minute),
+		ScheduledAt:    now.Add(-5 * time.Minute),
 		ScheduledEndAt: now.Add(5 * time.Minute), // still inside the slot
 	}
 	require.NoError(t, st.CreateConsultation(ctx, fakeTx{}, active))
@@ -144,8 +144,8 @@ func TestSweepRunningLate_SkipsOtherDoctorsNextPatient(t *testing.T) {
 		DoctorID:       doctorA,
 		RoomName:       "room-doc-a-" + uuid.NewString(),
 		Status:         StatusScheduled,
-		ScheduledAt:    now.Add(-30 * time.Minute),
-		ScheduledEndAt: now.Add(-2 * time.Minute),
+		ScheduledAt:    now.Add(-2 * time.Minute),
+		ScheduledEndAt: now.Add(13 * time.Minute),
 	}
 	require.NoError(t, st.CreateConsultation(ctx, fakeTx{}, active))
 	patientJoins(t, svc, patientA, active)
