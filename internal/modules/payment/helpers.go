@@ -115,8 +115,17 @@ func buildRegistry(cfg payment.Settings, log zerolog.Logger) (*payment.Registry,
 			Msg("mock payment rail enabled; this must never happen in production")
 	}
 
+	// Zero rails is a supported state: the platform is deployed before a
+	// payment gateway has been arranged. It is NOT a degraded rail that takes
+	// money badly -- there is no rail at all, so every charge, refund and
+	// payout fails at the request with ErrProviderNotConfigured, exactly as a
+	// request naming an unconfigured rail already does. Nothing is recorded as
+	// paid. The boot-time refusal this replaces guarded against a rail being
+	// silently absent; the warning below is what makes it not silent.
 	if len(reg.Names()) == 0 {
-		return nil, errors.New("no payment rail is configured; set STRIPE_SECRET_KEY, PAYHERE_MERCHANT_ID, DIALOG_APPLICATION_ID or PAYMENT_ENABLE_MOCK")
+		log.Warn().Msg("NO PAYMENT RAIL IS CONFIGURED: every payment operation will fail at the request. " +
+			"Set STRIPE_SECRET_KEY, PAYHERE_MERCHANT_ID or DIALOG_APPLICATION_ID to take payments")
+		return reg, nil
 	}
 	if _, err := reg.Get(""); err != nil {
 		return nil, fmt.Errorf("default provider: %w", err)

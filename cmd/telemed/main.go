@@ -770,9 +770,25 @@ func buildICEProvider(v *viper.Viper, log zerolog.Logger) websignal.ICEProvider 
 	stun := v.GetStringSlice("ice_stun_urls")
 	switch strings.ToLower(strings.TrimSpace(v.GetString("ice_turn_mode"))) {
 	case "cloudflare":
+		keyID := v.GetString("cloudflare_turn_key_id")
+		apiToken := v.GetString("cloudflare_turn_api_token")
+		// Without a key the provider still constructs and the stack still
+		// reports healthy -- minting only fails at call time, deep enough that
+		// nothing in any log names TURN. The symptom is "the other person's
+		// video never loads", and only for the subset of users who need a
+		// relay: behind carrier-grade NAT, which is most Sri Lankan mobile
+		// subscribers. Say it once at boot, where someone is looking.
+		if keyID == "" || apiToken == "" {
+			log.Warn().
+				Bool("key_id_set", keyID != "").
+				Bool("api_token_set", apiToken != "").
+				Msg("ICE_TURN_MODE=cloudflare but the TURN credentials are incomplete: STUN-only. " +
+					"Calls will connect on the same network and fail silently behind CGNAT. " +
+					"Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN")
+		}
 		return websignal.NewCloudflareTURN(
-			v.GetString("cloudflare_turn_key_id"),
-			v.GetString("cloudflare_turn_api_token"),
+			keyID,
+			apiToken,
 			v.GetDuration("ice_turn_ttl"),
 			stun,
 			log,
