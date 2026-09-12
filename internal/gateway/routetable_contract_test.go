@@ -90,6 +90,10 @@ var mobileClientSurface = []backendRoute{
 	{"PUT", "/api/v1/appointments/{appointmentID}/cancel", "scheduling-service", "scheduling/handler.go:61"},
 	{"POST", "/api/v1/appointments/{appointmentID}/complete", "scheduling-service", "scheduling/handler.go:62"},
 	{"POST", "/api/v1/appointments/{appointmentID}/no-show", "scheduling-service", "scheduling/handler.go:63"},
+	{"POST", "/api/v1/appointments/{appointmentID}/reschedule-requests", "scheduling-service", "scheduling/handler.go:reschedule"},
+	{"GET", "/api/v1/appointments/{appointmentID}/reschedule-requests", "scheduling-service", "scheduling/handler.go:reschedule"},
+	{"POST", "/api/v1/reschedule-requests/{requestID}/accept", "scheduling-service", "scheduling/handler.go:reschedule"},
+	{"POST", "/api/v1/reschedule-requests/{requestID}/decline", "scheduling-service", "scheduling/handler.go:reschedule"},
 	{"POST", "/api/v1/waitlist", "scheduling-service", "scheduling/handler.go:66"},
 
 	// consultation-service -- internal/consultation/handler.go
@@ -100,6 +104,11 @@ var mobileClientSurface = []backendRoute{
 	{"GET", "/api/v1/consultations/{consultationID}", "consultation-service", "consultation/handler.go:45"},
 	{"GET", "/api/v1/consultations/{consultationID}/waiting-room", "consultation-service", "consultation/handler.go:46"},
 	{"POST", "/api/v1/consultations/{consultationID}/quality", "consultation-service", "consultation/handler.go:47"},
+	{"POST", "/api/v1/consultations/ready-for-next", "consultation-service", "consultation/handler.go:early-join"},
+	{"POST", "/api/v1/consultations/{consultationID}/ready-for-next", "consultation-service", "consultation/handler.go:early-join"},
+	{"GET", "/api/v1/consultations/{consultationID}/early-join", "consultation-service", "consultation/handler.go:early-join"},
+	{"POST", "/api/v1/consultations/{consultationID}/early-join/accept", "consultation-service", "consultation/handler.go:early-join"},
+	{"POST", "/api/v1/consultations/{consultationID}/early-join/decline", "consultation-service", "consultation/handler.go:early-join"},
 	{"POST", "/api/v1/webhooks/livekit", "consultation-service", "consultation/handler.go:60"},
 
 	// payment-service -- internal/payment/handler.go, handler_client.go, webhook.go
@@ -346,6 +355,11 @@ func TestRouteTable_ConsultationSurfaceIsReachable(t *testing.T) {
 		"GET /api/v1/consultations/{consultationID}",
 		"GET /api/v1/consultations/{consultationID}/waiting-room",
 		"POST /api/v1/consultations/{consultationID}/quality",
+		"POST /api/v1/consultations/ready-for-next",
+		"POST /api/v1/consultations/{consultationID}/ready-for-next",
+		"GET /api/v1/consultations/{consultationID}/early-join",
+		"POST /api/v1/consultations/{consultationID}/early-join/accept",
+		"POST /api/v1/consultations/{consultationID}/early-join/decline",
 	} {
 		r, ok := idx[key]
 		if !ok {

@@ -14,6 +14,7 @@ import (
 type TemplateData struct {
 	DoctorName       string
 	DateTime         string // pre-formatted in the recipient's locale/timezone
+	ProposedDateTime string
 	FeeLKR           string // pre-formatted, e.g. "Rs. 2,500.00"
 	AmountLKR        string
 	Reason           string

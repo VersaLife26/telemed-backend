@@ -82,7 +82,7 @@ const (
 	ErrorClassPermanent ErrorClass = "permanent"
 )
 
-// TemplateKey identifies one of the platform's 13 notification templates.
+// TemplateKey identifies a seeded notification template.
 type TemplateKey string
 
 const (
@@ -102,6 +102,10 @@ const (
 	TemplateDoctorApplicationSubmitted TemplateKey = "doctor_application_submitted"
 	TemplateDoctorApplicationApproved  TemplateKey = "doctor_application_approved"
 	TemplateDoctorApplicationRejected  TemplateKey = "doctor_application_rejected"
+	TemplateRescheduleRequested        TemplateKey = "reschedule_requested"
+	TemplateRescheduleConfirmed        TemplateKey = "reschedule_confirmed"
+	TemplateDoctorRunningLate          TemplateKey = "doctor_running_late"
+	TemplateEarlyJoinOffered           TemplateKey = "early_join_offered"
 )
 
 // Notification is one rendered, addressed message and its delivery state.

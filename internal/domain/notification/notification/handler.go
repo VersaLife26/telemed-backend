@@ -145,6 +145,7 @@ func requireWebhookToken(secret string, log zerolog.Logger) func(http.Handler) h
 type templateDataDTO struct {
 	DoctorName       string `json:"doctor_name"`
 	DateTime         string `json:"date_time"`
+	ProposedDateTime string `json:"proposed_date_time"`
 	FeeLKR           string `json:"fee_lkr"`
 	AmountLKR        string `json:"amount_lkr"`
 	Reason           string `json:"reason"`

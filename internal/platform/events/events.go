@@ -59,6 +59,13 @@ const (
 	SubjectAppointmentCompleted Subject = "appointment.completed"
 	SubjectAppointmentNoShow    Subject = "appointment.no_show"
 	SubjectAppointmentReminder  Subject = "appointment.reminder_due"
+	// SubjectAppointmentRescheduleRequested is a doctor asking to move a
+	// confirmed booking. It is not a cancellation: the original slot stays
+	// held until the patient or an administrator accepts or declines.
+	SubjectAppointmentRescheduleRequested Subject = "appointment.reschedule_requested"
+	// SubjectAppointmentRescheduled is the fact that the same paid appointment
+	// now occupies a different slot. Consumers must not treat this as a cancel.
+	SubjectAppointmentRescheduled Subject = "appointment.rescheduled"
 
 	SubjectWaitlistSlotOffer Subject = "waitlist.slot_offered"
 
@@ -69,6 +76,14 @@ const (
 
 	SubjectConsultationStarted Subject = "consultation.started"
 	SubjectConsultationEnded   Subject = "consultation.ended"
+	// SubjectConsultationDoctorRunningLate is a courtesy to the next patient
+	// while the previous consult is still active past its booked end. It is
+	// not a reschedule and carries no clinical detail.
+	SubjectConsultationDoctorRunningLate Subject = "consultation.doctor_running_late"
+	// SubjectConsultationEarlyJoinOffered asks the next patient whether they
+	// can join a few minutes early. It is not a reschedule: the booked time
+	// stands unless they accept and join through the existing waiting room.
+	SubjectConsultationEarlyJoinOffered Subject = "consultation.early_join_offered"
 
 	SubjectPrescriptionIssued Subject = "prescription.issued"
 
@@ -95,9 +110,11 @@ var AllSubjects = []Subject{
 	SubjectSlotsGenerated, SubjectSlotBooked, SubjectSlotReleased, SubjectSlotWithdrawn,
 	SubjectAppointmentCreated, SubjectAppointmentConfirmed, SubjectAppointmentCancelled,
 	SubjectAppointmentCompleted, SubjectAppointmentNoShow, SubjectAppointmentReminder,
+	SubjectAppointmentRescheduleRequested, SubjectAppointmentRescheduled,
 	SubjectWaitlistSlotOffer,
 	SubjectPaymentSucceeded, SubjectPaymentFailed, SubjectPaymentRefunded, SubjectPayoutSent,
-	SubjectConsultationStarted, SubjectConsultationEnded,
+	SubjectConsultationStarted, SubjectConsultationEnded, SubjectConsultationDoctorRunningLate,
+	SubjectConsultationEarlyJoinOffered,
 	SubjectPrescriptionIssued,
 	SubjectAdminUserSuspendRequested, SubjectAdminUserReinstateRequested,
 	SubjectAdminAppointmentForceCancel, SubjectAdminDoubleBookingResolveRequested,

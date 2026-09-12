@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"telemed/internal/platform/httpx"
@@ -36,7 +37,12 @@ func (h *Handler) Routes(auth *middleware.Authenticator) chi.Router {
 	r.Use(middleware.RequireAuth(auth))
 	r.Use(middleware.NoStore)
 
+	r.Post("/ready-for-next", h.readyForNextLatest)
 	r.Post("/{appointment_id}/join", h.join)
+	r.Post("/{appointment_id}/ready-for-next", h.readyForNext)
+	r.Get("/{appointment_id}/early-join", h.getEarlyJoin)
+	r.Post("/{appointment_id}/early-join/accept", h.acceptEarlyJoin)
+	r.Post("/{appointment_id}/early-join/decline", h.declineEarlyJoin)
 	r.Post("/{id}/admit", h.admit)
 	r.Post("/{id}/end", h.end)
 	r.Post("/{id}/consent", h.consent)
@@ -68,6 +74,82 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.service.Join(r.Context(), p, appointmentID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, result)
+}
+
+type emptyJSONRequest struct{}
+
+func (h *Handler) readyForNextLatest(w http.ResponseWriter, r *http.Request) {
+	h.handleReadyForNext(w, r, uuid.Nil)
+}
+
+func (h *Handler) readyForNext(w http.ResponseWriter, r *http.Request) {
+	appointmentID, err := httpx.PathUUID(r, "appointment_id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	h.handleReadyForNext(w, r, appointmentID)
+}
+
+func (h *Handler) handleReadyForNext(w http.ResponseWriter, r *http.Request, appointmentID uuid.UUID) {
+	p := middleware.MustPrincipal(r.Context())
+	var body emptyJSONRequest
+	if err := httpx.DecodeJSON(w, r, &body); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+
+	result, err := h.service.ReadyForNext(r.Context(), p, appointmentID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, result)
+}
+
+func (h *Handler) getEarlyJoin(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	appointmentID, err := httpx.PathUUID(r, "appointment_id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+
+	result, err := h.service.GetEarlyJoin(r.Context(), p, appointmentID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, result)
+}
+
+func (h *Handler) acceptEarlyJoin(w http.ResponseWriter, r *http.Request) {
+	h.respondEarlyJoin(w, r, true)
+}
+
+func (h *Handler) declineEarlyJoin(w http.ResponseWriter, r *http.Request) {
+	h.respondEarlyJoin(w, r, false)
+}
+
+func (h *Handler) respondEarlyJoin(w http.ResponseWriter, r *http.Request, accept bool) {
+	p := middleware.MustPrincipal(r.Context())
+	appointmentID, err := httpx.PathUUID(r, "appointment_id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	var body emptyJSONRequest
+	if err := httpx.DecodeJSON(w, r, &body); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+
+	result, err := h.service.RespondEarlyJoin(r.Context(), p, appointmentID, accept)
 	if err != nil {
 		h.writeError(w, r, err)
 		return

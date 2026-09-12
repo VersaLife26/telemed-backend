@@ -88,6 +88,8 @@ func (c *Consumer) Subjects() []events.Subject {
 		events.SubjectAppointmentCompleted,
 		events.SubjectAppointmentNoShow,
 		events.SubjectAppointmentReminder,
+		events.SubjectAppointmentRescheduleRequested,
+		events.SubjectAppointmentRescheduled,
 		events.SubjectDoctorApproved,
 		events.SubjectDoctorRejected,
 		events.SubjectDoctorApplicationSubmitted,
@@ -102,6 +104,8 @@ func (c *Consumer) Subjects() []events.Subject {
 		events.SubjectPayoutSent,
 		events.SubjectWaitlistSlotOffer,
 		events.SubjectConsultationStarted,
+		events.SubjectConsultationDoctorRunningLate,
+		events.SubjectConsultationEarlyJoinOffered,
 	}
 }
 
@@ -124,6 +128,10 @@ func (c *Consumer) Handle(ctx context.Context, env events.Envelope) error {
 		return c.onAppointmentTerminal(ctx, env, "no_show")
 	case events.SubjectAppointmentReminder:
 		return c.onAppointmentReminderDue(ctx, env)
+	case events.SubjectAppointmentRescheduleRequested:
+		return c.onAppointmentRescheduleRequested(ctx, env)
+	case events.SubjectAppointmentRescheduled:
+		return c.onAppointmentRescheduled(ctx, env)
 	case events.SubjectDoctorApproved:
 		return c.onDoctorApproved(ctx, env)
 	case events.SubjectDoctorRejected:
@@ -148,6 +156,10 @@ func (c *Consumer) Handle(ctx context.Context, env events.Envelope) error {
 		return c.onWaitlistSlotOffered(ctx, env)
 	case events.SubjectConsultationStarted:
 		return c.onConsultationStarted(ctx, env)
+	case events.SubjectConsultationDoctorRunningLate:
+		return c.onDoctorRunningLate(ctx, env)
+	case events.SubjectConsultationEarlyJoinOffered:
+		return c.onEarlyJoinOffered(ctx, env)
 	default:
 		c.log.Warn().Str("subject", string(env.Subject)).Msg("consumer: subscribed to a subject with no handler")
 		return nil
@@ -354,7 +366,68 @@ func (c *Consumer) onAppointmentCancelled(ctx context.Context, env events.Envelo
 	return err
 }
 
-// onAppointmentTerminal retires the local reminder projection row for an
+func (c *Consumer) onAppointmentRescheduleRequested(ctx context.Context, env events.Envelope) error {
+	var p events.AppointmentRescheduleRequested
+	if err := env.Decode(&p); err != nil {
+		return fmt.Errorf("consumer: decode %s: %w", env.Subject, err)
+	}
+	doc, err := c.doctor(ctx, p.DoctorID)
+	if err != nil {
+		return err
+	}
+	patient, known, err := c.contact(ctx, p.PatientID)
+	if err != nil {
+		return err
+	}
+	if !known {
+		return c.skipUnknownRecipient(env, p.PatientID)
+	}
+	_, err = c.svc.Notify(ctx, NotifyRequest{
+		UserID:      p.PatientID,
+		TemplateKey: TemplateRescheduleRequested,
+		Data: TemplateData{
+			DoctorName:       doc.DisplayName(),
+			DateTime:         formatDateTime(p.OriginalStart),
+			ProposedDateTime: formatDateTime(p.ProposedStart),
+		},
+		Phone: patient.Phone, Email: patient.Email, LocaleHint: patient.Locale,
+		DedupeKeyBase: env.ID.String(), SourceEventID: &env.ID,
+	})
+	return err
+}
+
+func (c *Consumer) onAppointmentRescheduled(ctx context.Context, env events.Envelope) error {
+	var p events.AppointmentRescheduled
+	if err := env.Decode(&p); err != nil {
+		return fmt.Errorf("consumer: decode %s: %w", env.Subject, err)
+	}
+	if err := c.repo.UpdateReminderStartsAt(ctx, c.repo.Pool(), p.AppointmentID, p.ProposedStart); err != nil {
+		return err
+	}
+	doc, err := c.doctor(ctx, p.DoctorID)
+	if err != nil {
+		return err
+	}
+	patient, known, err := c.contact(ctx, p.PatientID)
+	if err != nil {
+		return err
+	}
+	if !known {
+		return c.skipUnknownRecipient(env, p.PatientID)
+	}
+	_, err = c.svc.Notify(ctx, NotifyRequest{
+		UserID:      p.PatientID,
+		TemplateKey: TemplateRescheduleConfirmed,
+		Data: TemplateData{
+			DoctorName: doc.DisplayName(),
+			DateTime:   formatDateTime(p.ProposedStart),
+		},
+		Phone: patient.Phone, Email: patient.Email, LocaleHint: patient.Locale,
+		DedupeKeyBase: env.ID.String(), SourceEventID: &env.ID,
+	})
+	return err
+}
+
 // appointment that completed or no-showed -- either way, no reminder is due
 // for it again. This produces no notification of its own.
 func (c *Consumer) onAppointmentTerminal(ctx context.Context, env events.Envelope, status string) error {
@@ -727,6 +800,69 @@ func (c *Consumer) onConsultationStarted(ctx context.Context, env events.Envelop
 		Phone:         patient.Phone,
 		LocaleHint:    patient.Locale,
 		DedupeKeyBase: env.ID.String(), SourceEventID: &env.ID,
+	})
+	return err
+}
+
+func (c *Consumer) onDoctorRunningLate(ctx context.Context, env events.Envelope) error {
+	var p events.ConsultationDoctorRunningLate
+	if err := env.Decode(&p); err != nil {
+		return fmt.Errorf("consumer: decode %s: %w", env.Subject, err)
+	}
+
+	doc, err := c.doctor(ctx, p.DoctorID)
+	if err != nil {
+		return err
+	}
+	patient, known, err := c.contact(ctx, p.NextPatientID)
+	if err != nil {
+		return err
+	}
+	if !known {
+		return c.skipUnknownRecipient(env, p.NextPatientID)
+	}
+
+	_, err = c.svc.Notify(ctx, NotifyRequest{
+		UserID:      p.NextPatientID,
+		TemplateKey: TemplateDoctorRunningLate,
+		Data:        TemplateData{DoctorName: doc.DisplayName()},
+		Phone:       patient.Phone, Email: patient.Email, LocaleHint: patient.Locale,
+		// Business key so a redelivered envelope and a second detect for the
+		// same active→next pair cannot spam the waiting patient.
+		DedupeKeyBase: "doctor_running_late:" + p.ActiveAppointmentID.String() + ":" + p.NextAppointmentID.String(),
+		SourceEventID: &env.ID,
+	})
+	return err
+}
+
+func (c *Consumer) onEarlyJoinOffered(ctx context.Context, env events.Envelope) error {
+	var p events.ConsultationEarlyJoinOffered
+	if err := env.Decode(&p); err != nil {
+		return fmt.Errorf("consumer: decode %s: %w", env.Subject, err)
+	}
+
+	doc, err := c.doctor(ctx, p.DoctorID)
+	if err != nil {
+		return err
+	}
+	patient, known, err := c.contact(ctx, p.NextPatientID)
+	if err != nil {
+		return err
+	}
+	if !known {
+		return c.skipUnknownRecipient(env, p.NextPatientID)
+	}
+
+	_, err = c.svc.Notify(ctx, NotifyRequest{
+		UserID:      p.NextPatientID,
+		TemplateKey: TemplateEarlyJoinOffered,
+		Data: TemplateData{
+			DoctorName: doc.DisplayName(),
+			JoinLink:   c.links.Join(p.NextAppointmentID),
+		},
+		Phone: patient.Phone, Email: patient.Email, LocaleHint: patient.Locale,
+		DedupeKeyBase: "early_join_offered:" + p.SourceAppointmentID.String() + ":" + p.NextAppointmentID.String(),
+		SourceEventID: &env.ID,
 	})
 	return err
 }

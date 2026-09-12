@@ -25,6 +25,7 @@ const (
 	jobLockNoShow      int64 = 0x5C4ED0_06
 	jobLockOverbooking int64 = 0x5C4ED0_07
 	jobLockInvariants  int64 = 0x5C4ED0_08
+	jobLockReschedule  int64 = 0x5C4ED0_09
 )
 
 // NoShowGrace is how long after a consultation should have ended before an
@@ -80,6 +81,7 @@ func (s *Scheduler) Register(ctx context.Context) error {
 		// batches and both no-op cheaply when there is nothing to do.
 		{"sweep-waitlist-offers", "* * * * *", jobLockWaitlist, s.runWaitlistSweep},
 		{"sweep-unpaid-bookings", "*/2 * * * *", jobLockUnpaid, s.runUnpaidSweep},
+		{"sweep-expired-reschedules", "* * * * *", jobLockReschedule, s.runRescheduleExpiry},
 		{"check-invariants", "*/5 * * * *", jobLockInvariants, s.runInvariantCheck},
 	}
 
@@ -188,6 +190,11 @@ func (s *Scheduler) runWaitlistSweep(ctx context.Context) error {
 
 func (s *Scheduler) runUnpaidSweep(ctx context.Context) error {
 	_, err := s.svc.SweepUnpaidBookings(ctx)
+	return err
+}
+
+func (s *Scheduler) runRescheduleExpiry(ctx context.Context) error {
+	_, err := s.svc.SweepExpiredRescheduleRequests(ctx)
 	return err
 }
 

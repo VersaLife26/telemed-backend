@@ -64,6 +64,11 @@ type Config struct {
 	StaleIdleTimeout   time.Duration `mapstructure:"stale_idle_timeout"`
 	StaleSweepBatch    int           `mapstructure:"stale_sweep_batch"`
 
+	// RunningLateSweep* tell the next patient when a live consult has run past
+	// its booked end. Interval 0 disables the worker (tests).
+	RunningLateSweepInterval time.Duration `mapstructure:"running_late_sweep_interval"`
+	RunningLateSweepBatch    int           `mapstructure:"running_late_sweep_batch"`
+
 	// TrustedProxies are the CIDRs whose X-Forwarded-For / X-Real-IP headers
 	// this service believes. Requests from anywhere else have their client
 	// address taken from the TCP peer, which no header can forge. Empty means
@@ -98,6 +103,8 @@ func registerConsultationDefaults(v *viper.Viper) {
 	v.SetDefault("stale_sweep_interval", consultation.DefaultSweepInterval)
 	v.SetDefault("stale_idle_timeout", consultation.DefaultIdleTimeout)
 	v.SetDefault("stale_sweep_batch", consultation.DefaultSweepBatch)
+	v.SetDefault("running_late_sweep_interval", consultation.DefaultRunningLateInterval)
+	v.SetDefault("running_late_sweep_batch", consultation.DefaultRunningLateBatch)
 
 	for _, key := range []string{
 		"video_provider",
@@ -105,6 +112,7 @@ func registerConsultationDefaults(v *viper.Viper) {
 		"recording_bucket", "minio_endpoint", "minio_access_key", "minio_secret_key", "minio_use_ssl", "recording_retention_days",
 		"default_consultation_duration_seconds", "quality_degrade_threshold",
 		"stale_sweep_interval", "stale_idle_timeout", "stale_sweep_batch",
+		"running_late_sweep_interval", "running_late_sweep_batch",
 		"trusted_proxies",
 	} {
 		_ = v.BindEnv(key)

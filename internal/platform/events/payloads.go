@@ -373,6 +373,39 @@ type AppointmentCancelled struct {
 	CancelledAt   time.Time `json:"cancelled_at"`
 }
 
+// AppointmentRescheduleRequested announces a pending move. Reason prose is
+// deliberately absent: it is caller-authored and lives only on the scheduling
+// row, the same rule as appointment.cancelled.
+type AppointmentRescheduleRequested struct {
+	RequestID      uuid.UUID `json:"request_id"`
+	AppointmentID  uuid.UUID `json:"appointment_id"`
+	PatientID      uuid.UUID `json:"patient_id"`
+	DoctorID       uuid.UUID `json:"doctor_id"`
+	OriginalSlotID uuid.UUID `json:"original_slot_id"`
+	OriginalStart  time.Time `json:"original_start_at"`
+	OriginalEnd    time.Time `json:"original_end_at"`
+	ProposedSlotID uuid.UUID `json:"proposed_slot_id"`
+	ProposedStart  time.Time `json:"proposed_start_at"`
+	ProposedEnd    time.Time `json:"proposed_end_at"`
+	RequestedAt    time.Time `json:"requested_at"`
+}
+
+// AppointmentRescheduled announces that a paid appointment now occupies a
+// different slot. PaymentID is unchanged; there is no refund.
+type AppointmentRescheduled struct {
+	RequestID      uuid.UUID `json:"request_id"`
+	AppointmentID  uuid.UUID `json:"appointment_id"`
+	PatientID      uuid.UUID `json:"patient_id"`
+	DoctorID       uuid.UUID `json:"doctor_id"`
+	OriginalSlotID uuid.UUID `json:"original_slot_id"`
+	OriginalStart  time.Time `json:"original_start_at"`
+	ProposedSlotID uuid.UUID `json:"proposed_slot_id"`
+	ProposedStart  time.Time `json:"proposed_start_at"`
+	ProposedEnd    time.Time `json:"proposed_end_at"`
+	DecidedByRole  string    `json:"decided_by_role"`
+	RescheduledAt  time.Time `json:"rescheduled_at"`
+}
+
 // AppointmentTerminal backs appointment.completed and appointment.no_show.
 type AppointmentTerminal struct {
 	AppointmentID uuid.UUID `json:"appointment_id"`
@@ -469,6 +502,31 @@ type ConsultationStarted struct {
 	DoctorID       uuid.UUID `json:"doctor_id"`
 	RoomName       string    `json:"room_name"`
 	StartedAt      time.Time `json:"started_at"`
+}
+
+// ConsultationDoctorRunningLate asks notification to ping the next patient
+// while this doctor is still finishing the previous visit.
+type ConsultationDoctorRunningLate struct {
+	ActiveConsultationID uuid.UUID `json:"active_consultation_id"`
+	ActiveAppointmentID  uuid.UUID `json:"active_appointment_id"`
+	NextAppointmentID    uuid.UUID `json:"next_appointment_id"`
+	NextPatientID        uuid.UUID `json:"next_patient_id"`
+	DoctorID             uuid.UUID `json:"doctor_id"`
+	MinutesLate          int       `json:"minutes_late"`
+	DetectedAt           time.Time `json:"detected_at"`
+}
+
+// ConsultationEarlyJoinOffered asks notification to ping the next patient
+// because the doctor finished the previous visit early. PHI is the doctor
+// id only; notification resolves a display name. No slot times are moved.
+type ConsultationEarlyJoinOffered struct {
+	SourceConsultationID uuid.UUID `json:"source_consultation_id"`
+	SourceAppointmentID  uuid.UUID `json:"source_appointment_id"`
+	NextConsultationID   uuid.UUID `json:"next_consultation_id"`
+	NextAppointmentID    uuid.UUID `json:"next_appointment_id"`
+	NextPatientID        uuid.UUID `json:"next_patient_id"`
+	DoctorID             uuid.UUID `json:"doctor_id"`
+	OfferedAt            time.Time `json:"offered_at"`
 }
 
 // ConsultationEnded announces a call finishing.

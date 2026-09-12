@@ -175,6 +175,14 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		log.Warn().Msg("STALE_SWEEP_INTERVAL is 0: consultations left active by a lost webhook will never be closed")
 	}
 
+	if cfg.RunningLateSweepInterval > 0 {
+		late := consultation.NewRunningLateSweeper(svc,
+			cfg.RunningLateSweepInterval, cfg.RunningLateSweepBatch, log)
+		go late.Run(ctx)
+	} else {
+		log.Warn().Msg("RUNNING_LATE_SWEEP_INTERVAL is 0: next patients will not be told when a consult overruns")
+	}
+
 	// --- routes ---------------------------------------------------------
 	m.API = func(r chi.Router) {
 		r.Mount("/consultations", handler.Routes(deps.Auth))

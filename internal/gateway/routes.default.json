@@ -478,6 +478,57 @@
       "description": "Mark a patient no-show. Doctor only: a patient must not be able to declare their own no-show, nor close out a consultation to dodge one."
     },
     {
+      "name": "appointment-reschedule-create",
+      "pattern": "/api/v1/appointments/{appointmentID}/reschedule-requests",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Doctor proposes a new time for a confirmed booking. scheduling-service holds the instant and notifies admin and the patient."
+    },
+    {
+      "name": "appointment-reschedule-list",
+      "pattern": "/api/v1/appointments/{appointmentID}/reschedule-requests",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Reschedule requests for one appointment. scheduling-service scopes to a party of the booking."
+    },
+    {
+      "name": "reschedule-accept",
+      "pattern": "/api/v1/reschedule-requests/{requestID}/accept",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Patient of that booking, or an administrator, accepts the move. Same appointment id and payment; no cancel event."
+    },
+    {
+      "name": "reschedule-decline",
+      "pattern": "/api/v1/reschedule-requests/{requestID}/decline",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Patient of that booking, or an administrator, declines. Original booking is cancelled with a full refund."
+    },
+    {
       "name": "waitlist-post",
       "pattern": "/api/v1/waitlist",
       "methods": [
@@ -502,7 +553,7 @@
       "auth": "authenticated",
       "timeout_class": "write",
       "rate_limit": "moderate",
-      "description": "Join a consultation and mint a LiveKit token. The path id here is the APPOINTMENT id -- this is the only endpoint on the service keyed that way, and the response returns consultation_id for every call below. The path parameter is named {consultationID} to match its siblings because chi permits only one parameter name per position in its tree; the value is an appointment id."
+      "description": "Join a consultation and mint a LiveKit token. The path id here is the APPOINTMENT id -- join, ready-for-next and early-join are keyed that way, and the join response returns consultation_id for every call below. The path parameter is named {consultationID} to match its siblings because chi permits only one parameter name per position in its tree; the value is an appointment id."
     },
     {
       "name": "consultation-get",
@@ -578,6 +629,78 @@
       "timeout_class": "fast",
       "rate_limit": "generous",
       "description": "Report a connection-quality sample and learn whether to downgrade video. Called repeatedly during a call on a bad 3G link, so it is rate-limited generously and timed as a read."
+    },
+    {
+      "name": "consultation-ready-for-next",
+      "pattern": "/api/v1/consultations/ready-for-next",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Doctor finished early: ping only the immediate next patient asking if they can join now. Does not rewrite later slots. Uses the doctor's latest ended consult as the previous visit."
+    },
+    {
+      "name": "consultation-ready-for-next-after",
+      "pattern": "/api/v1/consultations/{consultationID}/ready-for-next",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Same as consultation-ready-for-next, keyed by the ended visit's APPOINTMENT id (join-style path param named {consultationID})."
+    },
+    {
+      "name": "consultation-early-join-get",
+      "pattern": "/api/v1/consultations/{consultationID}/early-join",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Patient view of a pending join-now offer. Path id is the APPOINTMENT id."
+    },
+    {
+      "name": "consultation-early-join-accept",
+      "pattern": "/api/v1/consultations/{consultationID}/early-join/accept",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Patient agrees to join a few minutes early. Does not move scheduled_at; they join through the existing waiting room."
+    },
+    {
+      "name": "consultation-early-join-decline",
+      "pattern": "/api/v1/consultations/{consultationID}/early-join/decline",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Patient keeps the original booked time. No refund, no slot rewrite."
     },
     {
       "name": "payment-intent-post",
@@ -1216,6 +1339,42 @@
       "timeout_class": "fast",
       "rate_limit": "admin",
       "description": "Read a doctor's slot shape (duration, buffer, daily cap). Staff need it to see what they are about to overwrite."
+    },
+    {
+      "name": "admin-reschedule-requests-list",
+      "pattern": "/api/v1/admin/reschedule-requests",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "admin",
+      "timeout_class": "fast",
+      "rate_limit": "admin",
+      "description": "Pending doctor-requested reschedules. Named ahead of admin-catchall so the request reaches scheduling-service, which owns the rows."
+    },
+    {
+      "name": "admin-reschedule-accept",
+      "pattern": "/api/v1/admin/reschedule-requests/{requestID}/accept",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Administrator accepts a pending reschedule after talking to the patient. Moves the same paid appointment."
+    },
+    {
+      "name": "admin-reschedule-decline",
+      "pattern": "/api/v1/admin/reschedule-requests/{requestID}/decline",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Administrator declines a pending reschedule. Cancels the original booking with a full refund."
     },
     {
       "name": "admin-catchall",

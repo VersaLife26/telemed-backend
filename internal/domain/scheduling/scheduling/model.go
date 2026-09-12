@@ -411,3 +411,37 @@ func RequiresPrepayment(stats NoShowStats) bool {
 	}
 	return stats.NoShowRate() > NoShowPrepaymentThreshold
 }
+
+// RescheduleStatus is the lifecycle of a doctor-requested move.
+type RescheduleStatus string
+
+const (
+	ReschedulePending  RescheduleStatus = "pending"
+	RescheduleAccepted RescheduleStatus = "accepted"
+	RescheduleDeclined RescheduleStatus = "declined"
+	RescheduleExpired  RescheduleStatus = "expired"
+)
+
+// RescheduleRequest is a doctor asking to move one confirmed booking. The
+// doctor's reason lives only on this row; it is never published on NATS.
+type RescheduleRequest struct {
+	ID                  uuid.UUID
+	AppointmentID       uuid.UUID
+	PatientID           uuid.UUID
+	DoctorID            uuid.UUID
+	OriginalSlotID      uuid.UUID
+	OriginalStartAt     time.Time
+	OriginalEndAt       time.Time
+	ProposedSlotID      uuid.UUID
+	ProposedStartAt     time.Time
+	ProposedEndAt       time.Time
+	ProposedSlotCreated bool
+	Reason              string
+	Status              RescheduleStatus
+	DecidedBy           *uuid.UUID
+	DecidedByRole       string
+	DecidedAt           *time.Time
+	Version             int
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}

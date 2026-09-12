@@ -104,7 +104,11 @@ func (h *Handler) PatientRoutes(r chi.Router) {
 		r.Put("/{appointmentID}/cancel", h.cancelAppointment)
 		r.Post("/{appointmentID}/complete", h.completeAppointment)
 		r.Post("/{appointmentID}/no-show", h.noShowAppointment)
+		r.Post("/{appointmentID}/reschedule-requests", h.createRescheduleRequest)
+		r.Get("/{appointmentID}/reschedule-requests", h.listRescheduleRequests)
 	})
+	r.Post("/reschedule-requests/{requestID}/accept", h.acceptRescheduleRequest)
+	r.Post("/reschedule-requests/{requestID}/decline", h.declineRescheduleRequest)
 	r.Route("/waitlist", func(r chi.Router) {
 		r.Post("/", h.joinWaitlist)
 		r.Get("/", h.listWaitlist)
@@ -345,6 +349,9 @@ func (h *Handler) AdminRoutes(r chi.Router) {
 	// what made the unfiltered admin listing a T1 bulk PHI read (F4).
 	r.Get("/appointments", h.listAppointmentsForAdmin)
 	r.Post("/appointments/{appointmentID}/force-cancel", h.forceCancel)
+	r.Get("/reschedule-requests", h.listPendingRescheduleRequests)
+	r.Post("/reschedule-requests/{requestID}/accept", h.adminAcceptRescheduleRequest)
+	r.Post("/reschedule-requests/{requestID}/decline", h.adminDeclineRescheduleRequest)
 	r.Post("/holidays", h.setHoliday)
 }
 

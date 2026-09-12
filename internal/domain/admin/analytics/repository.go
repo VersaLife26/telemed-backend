@@ -44,6 +44,11 @@ func (r *Repository) UpsertPayment(ctx context.Context, eventID uuid.UUID, statu
 // UpsertAppointment applies one appointment.* event to
 // appointments_projection, last-write-wins by occurred_at so an
 // out-of-order redelivery of an older status cannot regress newer state.
+//
+// scheduled_at is written on INSERT only. Later lifecycle events (confirm,
+// cancel, complete) do not carry a new visit time, so ON CONFLICT leaves
+// that column alone. appointment.rescheduled is the exception: use
+// RescheduleAppointment, which is allowed to move scheduled_at.
 func (r *Repository) UpsertAppointment(ctx context.Context, eventID uuid.UUID, status string, a AppointmentFact) error {
 	const q = `
 		INSERT INTO appointments_projection
@@ -56,6 +61,27 @@ func (r *Repository) UpsertAppointment(ctx context.Context, eventID uuid.UUID, s
 		a.District, status, a.ScheduledAt, a.OccurredAt)
 	if err != nil {
 		return fmt.Errorf("analytics: upsert appointment projection: %w", err)
+	}
+	return nil
+}
+
+// RescheduleAppointment moves a paid booking's projected time. Status stays
+// confirmed; scheduled_at becomes the proposed instant.
+func (r *Repository) RescheduleAppointment(ctx context.Context, eventID uuid.UUID, a AppointmentFact) error {
+	const q = `
+		INSERT INTO appointments_projection
+			(appointment_id, event_id, doctor_id, patient_id, specialty_code, district, status, scheduled_at, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'confirmed',$7,$8)
+		ON CONFLICT (appointment_id) DO UPDATE SET
+			event_id = EXCLUDED.event_id,
+			status = 'confirmed',
+			scheduled_at = EXCLUDED.scheduled_at,
+			occurred_at = EXCLUDED.occurred_at
+		WHERE EXCLUDED.occurred_at >= appointments_projection.occurred_at`
+	_, err := r.pool.Exec(ctx, q, a.AppointmentID, eventID, a.DoctorID, a.PatientID, a.SpecialtyCode,
+		a.District, a.ScheduledAt, a.OccurredAt)
+	if err != nil {
+		return fmt.Errorf("analytics: reschedule appointment projection: %w", err)
 	}
 	return nil
 }

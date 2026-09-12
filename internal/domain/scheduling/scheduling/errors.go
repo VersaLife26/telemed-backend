@@ -110,6 +110,27 @@ var (
 	// ErrHolidayRangeInvalid is a list query whose "to" precedes its "from".
 	ErrHolidayRangeInvalid = errors.New("scheduling: holiday range ends before it starts")
 
+	// ErrRescheduleNotFound is a bad request id, or one the caller may not see.
+	ErrRescheduleNotFound = errors.New("scheduling: reschedule request not found")
+
+	// ErrRescheduleAlreadyPending is a second propose while one is still open.
+	ErrRescheduleAlreadyPending = errors.New("scheduling: a reschedule request is already pending for this appointment")
+
+	// ErrRescheduleNotPending is accept/decline on a request that was already
+	// decided or expired.
+	ErrRescheduleNotPending = errors.New("scheduling: this reschedule request is no longer pending")
+
+	// ErrAppointmentNotReschedulable is a propose against anything other than a
+	// confirmed future booking.
+	ErrAppointmentNotReschedulable = errors.New("scheduling: appointment cannot be rescheduled")
+
+	// ErrProposedTimeInPast rejects a proposed start that has already gone.
+	ErrProposedTimeInPast = errors.New("scheduling: proposed time is in the past")
+
+	// ErrProposedTimeUnchanged rejects a propose that does not actually move
+	// the visit.
+	ErrProposedTimeUnchanged = errors.New("scheduling: proposed time matches the current booking")
+
 	// ErrAdminScopeRequired rejects an administrative listing that is not
 	// bounded to one doctor and one window.
 	//
@@ -208,6 +229,29 @@ func APIError(err error) error {
 	case errors.Is(err, ErrHolidayRangeInvalid):
 		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
 			"\"to\" must not precede \"from\"")
+
+	case errors.Is(err, ErrRescheduleNotFound):
+		return httpx.NewError(http.StatusNotFound, httpx.CodeNotFound, "reschedule request not found")
+
+	case errors.Is(err, ErrRescheduleAlreadyPending):
+		return httpx.NewError(http.StatusConflict, httpx.CodeConflict,
+			"a reschedule request is already waiting for this appointment")
+
+	case errors.Is(err, ErrRescheduleNotPending):
+		return httpx.NewError(http.StatusConflict, httpx.CodeConflict,
+			"this reschedule request has already been decided")
+
+	case errors.Is(err, ErrAppointmentNotReschedulable):
+		return httpx.NewError(http.StatusConflict, httpx.CodeConflict,
+			"only a confirmed upcoming appointment can be rescheduled")
+
+	case errors.Is(err, ErrProposedTimeInPast):
+		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"the proposed time must be in the future")
+
+	case errors.Is(err, ErrProposedTimeUnchanged):
+		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"the proposed time must differ from the current booking")
 
 	case errors.Is(err, ErrForbidden):
 		return httpx.ErrForbidden

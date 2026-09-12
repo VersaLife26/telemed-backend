@@ -120,6 +120,9 @@ func (f *fakeStore) CreateConsultation(_ context.Context, _ pgx.Tx, c *Consultat
 	if c.RecordingStatus == "" {
 		c.RecordingStatus = RecordingNone
 	}
+	if c.ScheduledEndAt.IsZero() || !c.ScheduledEndAt.After(c.ScheduledAt) {
+		c.ScheduledEndAt = c.ScheduledAt.Add(15 * time.Minute)
+	}
 
 	cp := *c
 	f.consultations[c.ID] = &cp
@@ -191,6 +194,176 @@ func (f *fakeStore) UpdateConsultation(_ context.Context, _ pgx.Tx, c *Consultat
 		f.completedDurations[updated.DoctorID] = append(f.completedDurations[updated.DoctorID], *updated.DurationSeconds)
 	}
 	return nil
+}
+
+func (f *fakeStore) UpdateConsultationScheduledAt(_ context.Context, _ pgx.Tx, appointmentID uuid.UUID, startAt, endAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	id, ok := f.byAppointment[appointmentID]
+	if !ok {
+		return nil
+	}
+	existing := f.consultations[id]
+	if existing.Status != StatusScheduled && existing.Status != StatusWaiting {
+		return nil
+	}
+	if !endAt.After(startAt) {
+		endAt = startAt.Add(15 * time.Minute)
+	}
+	updated := *existing
+	updated.ScheduledAt = startAt.UTC()
+	updated.ScheduledEndAt = endAt.UTC()
+	updated.RunningLateNotifiedAt = nil
+	updated.EarlyJoinOfferedAt = nil
+	updated.EarlyJoinResponse = nil
+	updated.EarlyJoinRespondedAt = nil
+	updated.Version = existing.Version + 1
+	updated.UpdatedAt = time.Now().UTC()
+	f.consultations[id] = &updated
+	return nil
+}
+
+func (f *fakeStore) ListOverrunActive(_ context.Context, _ queryer, now time.Time, limit int) ([]*Consultation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	var out []*Consultation
+	for _, c := range f.consultations {
+		if c.Status != StatusActive || c.DeletedAt != nil {
+			continue
+		}
+		if c.RunningLateNotifiedAt != nil {
+			continue
+		}
+		if !c.ScheduledEndAt.Before(now) {
+			continue
+		}
+		cp := *c
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ScheduledEndAt.Before(out[j].ScheduledEndAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeStore) FindNextUpcomingForDoctor(_ context.Context, _ queryer, doctorID uuid.UUID, afterScheduledAt time.Time) (*Consultation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *Consultation
+	for _, c := range f.consultations {
+		if c.DoctorID != doctorID || c.DeletedAt != nil {
+			continue
+		}
+		if c.Status != StatusScheduled && c.Status != StatusWaiting {
+			continue
+		}
+		if !c.ScheduledAt.After(afterScheduledAt) {
+			continue
+		}
+		if best == nil || c.ScheduledAt.Before(best.ScheduledAt) {
+			cp := *c
+			best = &cp
+		}
+	}
+	if best == nil {
+		return nil, ErrNotFound
+	}
+	return best, nil
+}
+
+func (f *fakeStore) ClaimRunningLateNotified(_ context.Context, _ pgx.Tx, consultationID uuid.UUID, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.consultations[consultationID]
+	if !ok || c.Status != StatusActive || c.DeletedAt != nil || c.RunningLateNotifiedAt != nil {
+		return false, nil
+	}
+	ts := at.UTC()
+	c.RunningLateNotifiedAt = &ts
+	c.Version++
+	c.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
+func (f *fakeStore) FindActiveForDoctor(_ context.Context, _ queryer, doctorID uuid.UUID) (*Consultation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.consultations {
+		if c.DoctorID != doctorID || c.DeletedAt != nil || c.Status != StatusActive {
+			continue
+		}
+		cp := *c
+		return &cp, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (f *fakeStore) FindLatestTerminalForDoctor(_ context.Context, _ queryer, doctorID uuid.UUID) (*Consultation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *Consultation
+	var bestAt time.Time
+	for _, c := range f.consultations {
+		if c.DoctorID != doctorID || c.DeletedAt != nil {
+			continue
+		}
+		if c.Status != StatusEnded && c.Status != StatusAbandoned && c.Status != StatusFailed {
+			continue
+		}
+		at := c.UpdatedAt
+		if c.EndedAt != nil {
+			at = *c.EndedAt
+		}
+		if best == nil || at.After(bestAt) {
+			cp := *c
+			best = &cp
+			bestAt = at
+		}
+	}
+	if best == nil {
+		return nil, ErrNotFound
+	}
+	return best, nil
+}
+
+func (f *fakeStore) ClaimEarlyJoinOffered(_ context.Context, _ pgx.Tx, consultationID uuid.UUID, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.consultations[consultationID]
+	if !ok || c.DeletedAt != nil || c.EarlyJoinOfferedAt != nil {
+		return false, nil
+	}
+	if c.Status != StatusScheduled && c.Status != StatusWaiting {
+		return false, nil
+	}
+	ts := at.UTC()
+	c.EarlyJoinOfferedAt = &ts
+	c.Version++
+	c.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
+func (f *fakeStore) SetEarlyJoinResponse(_ context.Context, _ pgx.Tx, consultationID uuid.UUID, response string, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.consultations[consultationID]
+	if !ok || c.DeletedAt != nil || c.EarlyJoinOfferedAt == nil || c.EarlyJoinResponse != nil {
+		return false, nil
+	}
+	resp := response
+	ts := at.UTC()
+	c.EarlyJoinResponse = &resp
+	c.EarlyJoinRespondedAt = &ts
+	c.Version++
+	c.UpdatedAt = time.Now().UTC()
+	return true, nil
 }
 
 func (f *fakeStore) UpsertParticipantJoin(_ context.Context, _ pgx.Tx, consultationID uuid.UUID, identity string, role ParticipantRole, at time.Time) error {

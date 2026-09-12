@@ -45,7 +45,7 @@ func (p *Projector) Subscribe(ctx context.Context, sub events.Subscriber) error 
 		[]events.Subject{
 			events.SubjectAppointmentCreated, events.SubjectAppointmentConfirmed,
 			events.SubjectAppointmentCancelled, events.SubjectAppointmentCompleted,
-			events.SubjectAppointmentNoShow,
+			events.SubjectAppointmentNoShow, events.SubjectAppointmentRescheduled,
 		}, p.handleAppointment)
 }
 
@@ -132,8 +132,9 @@ func (p *Projector) handlePayment(ctx context.Context, env events.Envelope) erro
 //
 // Only appointment.created carries the specialty, which is exactly why the
 // repository's ON CONFLICT clause updates status and occurred_at but leaves
-// specialty_code and scheduled_at as the creation event set them. A later
-// event must never overwrite a fact it does not carry.
+// specialty_code as the creation event set them. scheduled_at is also frozen
+// after create -- except appointment.rescheduled, which is the one later
+// event that carries a new visit time (see RescheduleAppointment).
 func (p *Projector) handleAppointment(ctx context.Context, env events.Envelope) error {
 	if env.Subject == events.SubjectAppointmentCreated {
 		var payload events.AppointmentCreated
@@ -178,6 +179,21 @@ func (p *Projector) handleAppointment(ctx context.Context, env events.Envelope) 
 			PatientID: payload.PatientID, ScheduledAt: payload.StartAt,
 			OccurredAt: payload.CancelledAt,
 		}
+
+	case events.SubjectAppointmentRescheduled:
+		var payload events.AppointmentRescheduled
+		if err := env.Decode(&payload); err != nil {
+			return fmt.Errorf("analytics: decode %s: %w", env.Subject, err)
+		}
+		specialty, district, err := p.repo.AppointmentContext(ctx, payload.AppointmentID)
+		if err != nil {
+			return err
+		}
+		return p.repo.RescheduleAppointment(ctx, env.ID, AppointmentFact{
+			AppointmentID: payload.AppointmentID, DoctorID: payload.DoctorID,
+			PatientID: payload.PatientID, SpecialtyCode: specialty, District: district,
+			ScheduledAt: payload.ProposedStart, OccurredAt: payload.RescheduledAt,
+		})
 
 	case events.SubjectAppointmentCompleted, events.SubjectAppointmentNoShow:
 		var payload events.AppointmentTerminal

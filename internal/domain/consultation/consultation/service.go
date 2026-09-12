@@ -36,6 +36,14 @@ type store interface {
 	GetConsultationByAppointment(ctx context.Context, q queryer, appointmentID uuid.UUID) (*Consultation, error)
 	GetConsultationByRoomName(ctx context.Context, q queryer, roomName string) (*Consultation, error)
 	UpdateConsultation(ctx context.Context, tx pgx.Tx, c *Consultation) error
+	UpdateConsultationScheduledAt(ctx context.Context, tx pgx.Tx, appointmentID uuid.UUID, startAt, endAt time.Time) error
+	ListOverrunActive(ctx context.Context, q queryer, now time.Time, limit int) ([]*Consultation, error)
+	FindNextUpcomingForDoctor(ctx context.Context, q queryer, doctorID uuid.UUID, afterScheduledAt time.Time) (*Consultation, error)
+	ClaimRunningLateNotified(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, at time.Time) (bool, error)
+	FindActiveForDoctor(ctx context.Context, q queryer, doctorID uuid.UUID) (*Consultation, error)
+	FindLatestTerminalForDoctor(ctx context.Context, q queryer, doctorID uuid.UUID) (*Consultation, error)
+	ClaimEarlyJoinOffered(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, at time.Time) (bool, error)
+	SetEarlyJoinResponse(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, response string, at time.Time) (bool, error)
 
 	UpsertParticipantJoin(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, identity string, role ParticipantRole, at time.Time) error
 	MarkParticipantLeft(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, identity string, at time.Time) error
@@ -931,13 +939,22 @@ func (s *Service) handleParticipantLeft(ctx context.Context, evt WebhookEvent) e
 // consultation row was created with ScheduledAt = 0001-01-01. Sharing the type
 // makes that class of mistake a compile error.
 func (s *Service) CreateFromAppointment(ctx context.Context, in events.AppointmentConfirmed) error {
+	endAt := in.EndAt
+	if endAt.IsZero() || !endAt.After(in.StartAt) {
+		d := s.opts.DefaultConsultationDuration
+		if d <= 0 {
+			d = 15 * time.Minute
+		}
+		endAt = in.StartAt.Add(d)
+	}
 	c := &Consultation{
-		AppointmentID: in.AppointmentID,
-		PatientID:     in.PatientID,
-		DoctorID:      in.DoctorID,
-		RoomName:      roomNameFor(in.AppointmentID),
-		Status:        StatusScheduled,
-		ScheduledAt:   in.StartAt,
+		AppointmentID:  in.AppointmentID,
+		PatientID:      in.PatientID,
+		DoctorID:       in.DoctorID,
+		RoomName:       roomNameFor(in.AppointmentID),
+		Status:         StatusScheduled,
+		ScheduledAt:    in.StartAt,
+		ScheduledEndAt: endAt,
 	}
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		return s.store.CreateConsultation(ctx, tx, c)
@@ -946,6 +963,23 @@ func (s *Service) CreateFromAppointment(ctx context.Context, in events.Appointme
 		return nil
 	}
 	return err
+}
+
+// RescheduleFromAppointment moves consultations.scheduled_at / scheduled_end_at
+// to the new visit window. Join URLs stay valid (same appointment id); only the
+// clock on the row changes, and only while the consultation has not started.
+func (s *Service) RescheduleFromAppointment(ctx context.Context, in events.AppointmentRescheduled) error {
+	endAt := in.ProposedEnd
+	if endAt.IsZero() || !endAt.After(in.ProposedStart) {
+		d := s.opts.DefaultConsultationDuration
+		if d <= 0 {
+			d = 15 * time.Minute
+		}
+		endAt = in.ProposedStart.Add(d)
+	}
+	return database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return s.store.UpdateConsultationScheduledAt(ctx, tx, in.AppointmentID, in.ProposedStart, endAt)
+	})
 }
 
 // TeardownForCancellation handles events.SubjectAppointmentCancelled. A

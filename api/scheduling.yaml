@@ -243,6 +243,110 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /appointments/{appointmentID}/reschedule-requests:
+    post:
+      tags: [appointments]
+      operationId: createRescheduleRequest
+      summary: Doctor proposes a new time for a confirmed booking
+      description: |
+        Doctor only. Holds the proposed instant (an existing AVAILABLE slot or
+        an ad-hoc BLOCKED slot) until the patient or an administrator accepts
+        (move the same paid appointment) or declines (full refund). The doctor's
+        reason is stored on the request row and is never published on NATS.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [proposed_start_at]
+              properties:
+                proposed_start_at:
+                  type: string
+                  format: date-time
+                  description: UTC RFC3339. Duration is taken from the original slot.
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: Request created; proposed time is held.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/RescheduleRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+    get:
+      tags: [appointments]
+      operationId: listAppointmentRescheduleRequests
+      summary: Reschedule requests for one appointment
+      description: Patient, treating doctor, or administrator of that booking.
+      parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
+      responses:
+        '200':
+          description: Requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/RescheduleRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /reschedule-requests/{requestID}/accept:
+    post:
+      tags: [appointments]
+      operationId: acceptRescheduleRequest
+      summary: Accept a pending reschedule (patient of that booking, or admin)
+      description: Moves the same paid appointment onto the held slot. Does not emit appointment.cancelled.
+      parameters: [{ $ref: '#/components/parameters/RequestID' }]
+      responses:
+        '200':
+          description: Moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request: { $ref: '#/components/schemas/RescheduleRequest' }
+                      appointment: { $ref: '#/components/schemas/Appointment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /reschedule-requests/{requestID}/decline:
+    post:
+      tags: [appointments]
+      operationId: declineRescheduleRequest
+      summary: Decline a pending reschedule (patient of that booking, or admin)
+      description: Cancels the original booking with a FULL refund and drops the held slot.
+      parameters: [{ $ref: '#/components/parameters/RequestID' }]
+      responses:
+        '200':
+          description: Declined and original cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request: { $ref: '#/components/schemas/RescheduleRequest' }
+                      appointment: { $ref: '#/components/schemas/Appointment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /waitlist:
     post:
       tags: [waitlist]
@@ -441,6 +545,75 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/reschedule-requests:
+    get:
+      tags: [admin]
+      operationId: listPendingRescheduleRequests
+      summary: Pending doctor-requested reschedules
+      description: Administrative queue. scheduling-service is the source of truth.
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PerPage' }
+      responses:
+        '200':
+          description: Pending requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/RescheduleRequest' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/reschedule-requests/{requestID}/accept:
+    post:
+      tags: [admin]
+      operationId: adminAcceptRescheduleRequest
+      summary: Accept a pending reschedule on the patient's behalf
+      parameters: [{ $ref: '#/components/parameters/RequestID' }]
+      responses:
+        '200':
+          description: Moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request: { $ref: '#/components/schemas/RescheduleRequest' }
+                      appointment: { $ref: '#/components/schemas/Appointment' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/reschedule-requests/{requestID}/decline:
+    post:
+      tags: [admin]
+      operationId: adminDeclineRescheduleRequest
+      summary: Decline a pending reschedule and refund the original in full
+      parameters: [{ $ref: '#/components/parameters/RequestID' }]
+      responses:
+        '200':
+          description: Declined.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request: { $ref: '#/components/schemas/RescheduleRequest' }
+                      appointment: { $ref: '#/components/schemas/Appointment' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /admin/holidays:
     post:
       tags: [admin]
@@ -498,6 +671,11 @@ components:
       schema: { type: string, format: uuid }
     AppointmentID:
       name: appointmentID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RequestID:
+      name: requestID
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -638,6 +816,41 @@ components:
           description: The deadline the "you have five minutes" push refers to.
         offer_count: { type: integer }
         created_at: { type: string, format: date-time }
+
+    RescheduleRequest:
+      type: object
+      required:
+        - id
+        - appointment_id
+        - patient_id
+        - doctor_id
+        - original_start_at
+        - proposed_start_at
+        - status
+        - created_at
+      properties:
+        id: { type: string, format: uuid }
+        appointment_id: { type: string, format: uuid }
+        patient_id: { type: string, format: uuid }
+        doctor_id: { type: string, format: uuid }
+        original_slot_id: { type: string, format: uuid }
+        original_start_at: { type: string, format: date-time }
+        original_end_at: { type: string, format: date-time }
+        original_start_at_local: { type: string }
+        original_end_at_local: { type: string }
+        proposed_slot_id: { type: string, format: uuid }
+        proposed_start_at: { type: string, format: date-time }
+        proposed_end_at: { type: string, format: date-time }
+        proposed_start_at_local: { type: string }
+        proposed_end_at_local: { type: string }
+        reason: { type: string }
+        status: { type: string, enum: [pending, accepted, declined, expired] }
+        decided_by: { type: string, format: uuid }
+        decided_by_role: { type: string, enum: [patient, admin, system] }
+        decided_at: { type: string, format: date-time }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     Meta:
       type: object

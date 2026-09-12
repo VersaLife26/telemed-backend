@@ -111,13 +111,16 @@ const (
 // Consultation is the aggregate root: one row per appointment, one LiveKit
 // room, one recording (if consented), one timeline.
 type Consultation struct {
-	ID              uuid.UUID
-	AppointmentID   uuid.UUID
-	PatientID       uuid.UUID
-	DoctorID        uuid.UUID
-	RoomName        string
-	Status          Status
-	ScheduledAt     time.Time
+	ID            uuid.UUID
+	AppointmentID uuid.UUID
+	PatientID     uuid.UUID
+	DoctorID      uuid.UUID
+	RoomName      string
+	Status        Status
+	ScheduledAt   time.Time
+	// ScheduledEndAt is the booked slot end. Used to detect a live consult
+	// that has run past its allotted time so the next patient can be told.
+	ScheduledEndAt  time.Time
 	StartedAt       *time.Time
 	EndedAt         *time.Time
 	DurationSeconds *int
@@ -125,10 +128,20 @@ type Consultation struct {
 	RecordingStatus RecordingStatus
 	EgressID        *string
 	EndReason       *string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	DeletedAt       *time.Time
-	Version         int
+	// RunningLateNotifiedAt is set once the next patient has been told this
+	// consult is running late. Null means not yet notified (or not overdue).
+	RunningLateNotifiedAt *time.Time
+	// EarlyJoinOfferedAt is set when the previous visit finished early and
+	// this next patient was asked whether they can join now. Response is
+	// accepted | declined; a null response is still pending. Neither field
+	// rewrites scheduled_at.
+	EarlyJoinOfferedAt   *time.Time
+	EarlyJoinResponse    *string
+	EarlyJoinRespondedAt *time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	DeletedAt            *time.Time
+	Version              int
 }
 
 // Participant is one side of the call, joined at least once.
@@ -201,14 +214,15 @@ type ICEServer struct {
 
 // JoinResult is the response to POST /consultations/{appointment_id}/join.
 //
-// ConsultationID is load-bearing, not decoration. Join is the ONLY endpoint on
-// this service keyed by appointment id; /admit, /end, /consent, /waiting-room
-// and /quality are all keyed by the consultation's own id. A client arrives
-// holding an appointment id (that is what scheduling gives it) and, until this
-// field existed, left the join call still holding only an appointment id --
-// so it could not call any of them. Recording consent in particular could not
-// be given through the API at all, and consent is what gates egress: the
-// platform could offer a recording feature no patient was able to authorise.
+// ConsultationID is load-bearing, not decoration. Join, ready-for-next and
+// early-join are keyed by appointment id; /admit, /end, /consent,
+// /waiting-room and /quality are keyed by the consultation's own id. A client
+// arrives holding an appointment id (that is what scheduling gives it) and,
+// until this field existed, left the join call still holding only an
+// appointment id -- so it could not call any of them. Recording consent in
+// particular could not be given through the API at all, and consent is what
+// gates egress: the platform could offer a recording feature no patient was
+// able to authorise.
 //
 // The remaining fields exist so a client can act without a second round trip:
 // Status tells a patient whether they are in the waiting room or already live,

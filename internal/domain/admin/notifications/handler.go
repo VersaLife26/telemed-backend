@@ -14,6 +14,7 @@ import (
 )
 
 const KindDoctorApplication = "doctor_application"
+const KindRescheduleRequest = "reschedule_request"
 
 // Service owns admin inbox rows and projects application-submitted events into them.
 type Service struct {
@@ -43,9 +44,14 @@ func (s *Service) MarkAllRead(ctx context.Context) error {
 
 // Subscribe listens for new doctor applications and creates inbox rows.
 func (s *Service) Subscribe(ctx context.Context, sub events.Subscriber) error {
-	return sub.Subscribe(ctx, "admin-notifications-doctor-application",
+	if err := sub.Subscribe(ctx, "admin-notifications-doctor-application",
 		[]events.Subject{events.SubjectDoctorApplicationSubmitted},
-		s.handle)
+		s.handle); err != nil {
+		return err
+	}
+	return sub.Subscribe(ctx, "admin-notifications-reschedule",
+		[]events.Subject{events.SubjectAppointmentRescheduleRequested},
+		s.handleReschedule)
 }
 
 func (s *Service) handle(ctx context.Context, env events.Envelope) error {
@@ -62,6 +68,24 @@ func (s *Service) handle(ctx context.Context, env events.Envelope) error {
 		Title:      "New doctor application",
 		Body:       fmt.Sprintf("%s (%s) applied — SLMC %s, %s", p.FullName, p.Email, p.SLMCNumber, p.Specialty),
 		Href:       "/doctors/" + p.ApplicationID.String(),
+		ResourceID: &id,
+	})
+}
+
+func (s *Service) handleReschedule(ctx context.Context, env events.Envelope) error {
+	if env.Subject != events.SubjectAppointmentRescheduleRequested {
+		return nil
+	}
+	var p events.AppointmentRescheduleRequested
+	if err := env.Decode(&p); err != nil {
+		return fmt.Errorf("notifications: decode reschedule_requested: %w", err)
+	}
+	id := p.RequestID
+	return s.repo.Insert(ctx, Notification{
+		Kind:       KindRescheduleRequest,
+		Title:      "Reschedule requested",
+		Body:       "A doctor asked to move a confirmed visit. Accept only after the patient agrees, or decline for a full refund.",
+		Href:       "/appointments?tab=reschedule",
 		ResourceID: &id,
 	})
 }

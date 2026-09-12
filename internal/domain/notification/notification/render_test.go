@@ -125,3 +125,35 @@ func TestRenderTemplate_MissingFieldRendersEmpty(t *testing.T) {
 		t.Fatalf("unexpected render: %q", rendered.Body)
 	}
 }
+
+func TestRenderTemplate_DoctorRunningLateCopy(t *testing.T) {
+	tmpl := Template{
+		Key: TemplateDoctorRunningLate, Channel: ChannelSMS, Locale: LocaleEnglish,
+		BodyTemplate: "Dr. {{.DoctorName}} is currently with the previous patient. Please stay with us — we are sorry for the short delay.",
+	}
+	rendered, err := RenderTemplate(tmpl, TemplateData{DoctorName: "Silva"})
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	for _, want := range []string{"Silva", "previous patient", "sorry for the short delay"} {
+		if !strings.Contains(rendered.Body, want) {
+			t.Errorf("body %q missing %q", rendered.Body, want)
+		}
+	}
+}
+
+func TestRenderTemplate_EarlyJoinOfferedCopy(t *testing.T) {
+	tmpl := Template{
+		Key: TemplateEarlyJoinOffered, Channel: ChannelSMS, Locale: LocaleEnglish,
+		BodyTemplate: "Dr. {{.DoctorName}} is free a few minutes early. Can you join now? {{.JoinLink}} — or keep your booked time.",
+	}
+	rendered, err := RenderTemplate(tmpl, TemplateData{DoctorName: "Silva", JoinLink: "https://app.example/join"})
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	for _, want := range []string{"Silva", "few minutes early", "join now", "keep your booked time"} {
+		if !strings.Contains(rendered.Body, want) {
+			t.Errorf("body %q missing %q", rendered.Body, want)
+		}
+	}
+}

@@ -48,8 +48,8 @@ var _ store = (*Repository)(nil)
 
 func (r *Repository) CreateConsultation(ctx context.Context, tx pgx.Tx, c *Consultation) error {
 	const q = `
-		INSERT INTO consultations (id, appointment_id, patient_id, doctor_id, room_name, status, scheduled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO consultations (id, appointment_id, patient_id, doctor_id, room_name, status, scheduled_at, scheduled_end_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING created_at, updated_at, version`
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
@@ -61,7 +61,10 @@ func (r *Repository) CreateConsultation(ctx context.Context, tx pgx.Tx, c *Consu
 	if c.RecordingStatus == "" {
 		c.RecordingStatus = RecordingNone
 	}
-	err := tx.QueryRow(ctx, q, c.ID, c.AppointmentID, c.PatientID, c.DoctorID, c.RoomName, string(c.Status), c.ScheduledAt).
+	if c.ScheduledEndAt.IsZero() || !c.ScheduledEndAt.After(c.ScheduledAt) {
+		c.ScheduledEndAt = c.ScheduledAt.Add(15 * time.Minute)
+	}
+	err := tx.QueryRow(ctx, q, c.ID, c.AppointmentID, c.PatientID, c.DoctorID, c.RoomName, string(c.Status), c.ScheduledAt, c.ScheduledEndAt).
 		Scan(&c.CreatedAt, &c.UpdatedAt, &c.Version)
 	if err != nil {
 		if database.IsUniqueViolation(err) {
@@ -72,16 +75,18 @@ func (r *Repository) CreateConsultation(ctx context.Context, tx pgx.Tx, c *Consu
 	return nil
 }
 
-const consultationColumns = `id, appointment_id, patient_id, doctor_id, room_name, status, scheduled_at,
+const consultationColumns = `id, appointment_id, patient_id, doctor_id, room_name, status, scheduled_at, scheduled_end_at,
 	started_at, ended_at, duration_seconds, recording_url, recording_status, egress_id, end_reason,
+	running_late_notified_at, early_join_offered_at, early_join_response, early_join_responded_at,
 	created_at, updated_at, deleted_at, version`
 
 func scanConsultation(row pgx.Row) (*Consultation, error) {
 	var c Consultation
 	var status, recordingStatus string
 	err := row.Scan(
-		&c.ID, &c.AppointmentID, &c.PatientID, &c.DoctorID, &c.RoomName, &status, &c.ScheduledAt,
+		&c.ID, &c.AppointmentID, &c.PatientID, &c.DoctorID, &c.RoomName, &status, &c.ScheduledAt, &c.ScheduledEndAt,
 		&c.StartedAt, &c.EndedAt, &c.DurationSeconds, &c.RecordingURL, &recordingStatus, &c.EgressID, &c.EndReason,
+		&c.RunningLateNotifiedAt, &c.EarlyJoinOfferedAt, &c.EarlyJoinResponse, &c.EarlyJoinRespondedAt,
 		&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.Version,
 	)
 	if err != nil {
@@ -160,6 +165,180 @@ func (r *Repository) UpdateConsultation(ctx context.Context, tx pgx.Tx, c *Consu
 		return fmt.Errorf("consultation: update consultation %s: %w", c.ID, err)
 	}
 	return nil
+}
+
+// UpdateConsultationScheduledAt moves the visit window when a paid appointment
+// is rescheduled. Active or ended consultations are left alone: a live call
+// must not jump clocks under the participants.
+func (r *Repository) UpdateConsultationScheduledAt(ctx context.Context, tx pgx.Tx, appointmentID uuid.UUID, startAt, endAt time.Time) error {
+	if !endAt.After(startAt) {
+		endAt = startAt.Add(15 * time.Minute)
+	}
+	const q = `
+		UPDATE consultations
+		SET scheduled_at = $2,
+		    scheduled_end_at = $3,
+		    running_late_notified_at = NULL,
+		    early_join_offered_at = NULL,
+		    early_join_response = NULL,
+		    early_join_responded_at = NULL,
+		    updated_at = NOW(),
+		    version = version + 1
+		WHERE appointment_id = $1
+		  AND status IN ('scheduled', 'waiting')
+		  AND deleted_at IS NULL`
+	if _, err := tx.Exec(ctx, q, appointmentID, startAt.UTC(), endAt.UTC()); err != nil {
+		return fmt.Errorf("consultation: update scheduled window %s: %w", appointmentID, err)
+	}
+	return nil
+}
+
+// ListOverrunActive returns live consults whose booked end has passed and that
+// have not yet triggered a running-late notice.
+func (r *Repository) ListOverrunActive(ctx context.Context, q queryer, now time.Time, limit int) ([]*Consultation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const sql = `
+		SELECT ` + consultationColumns + `
+		FROM consultations
+		WHERE status = 'active'
+		  AND deleted_at IS NULL
+		  AND running_late_notified_at IS NULL
+		  AND scheduled_end_at < $1
+		ORDER BY scheduled_end_at ASC
+		LIMIT $2`
+	rows, err := q.Query(ctx, sql, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("consultation: list overrun active: %w", err)
+	}
+	defer rows.Close()
+	var out []*Consultation
+	for rows.Next() {
+		c, err := scanConsultation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// FindNextUpcomingForDoctor returns the doctor's next not-yet-started consult
+// after the active one, if any.
+func (r *Repository) FindNextUpcomingForDoctor(ctx context.Context, q queryer, doctorID uuid.UUID, afterScheduledAt time.Time) (*Consultation, error) {
+	const sql = `
+		SELECT ` + consultationColumns + `
+		FROM consultations
+		WHERE doctor_id = $1
+		  AND deleted_at IS NULL
+		  AND status IN ('scheduled', 'waiting')
+		  AND scheduled_at > $2
+		ORDER BY scheduled_at ASC
+		LIMIT 1`
+	c, err := scanConsultation(q.QueryRow(ctx, sql, doctorID, afterScheduledAt.UTC()))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("consultation: find next upcoming: %w", err)
+	}
+	return c, nil
+}
+
+// ClaimRunningLateNotified stamps the active consult so a second replica or
+// tick cannot double-notify the next patient.
+func (r *Repository) ClaimRunningLateNotified(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, at time.Time) (bool, error) {
+	const q = `
+		UPDATE consultations
+		SET running_late_notified_at = $2, updated_at = NOW(), version = version + 1
+		WHERE id = $1
+		  AND status = 'active'
+		  AND deleted_at IS NULL
+		  AND running_late_notified_at IS NULL`
+	tag, err := tx.Exec(ctx, q, consultationID, at.UTC())
+	if err != nil {
+		return false, fmt.Errorf("consultation: claim running late %s: %w", consultationID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// FindActiveForDoctor returns the doctor's live consult, if any. Ready-for-next
+// uses this so a doctor still in a call cannot ping the next patient.
+func (r *Repository) FindActiveForDoctor(ctx context.Context, q queryer, doctorID uuid.UUID) (*Consultation, error) {
+	const sql = `
+		SELECT ` + consultationColumns + `
+		FROM consultations
+		WHERE doctor_id = $1
+		  AND status = 'active'
+		  AND deleted_at IS NULL
+		LIMIT 1`
+	c, err := scanConsultation(q.QueryRow(ctx, sql, doctorID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("consultation: find active for doctor: %w", err)
+	}
+	return c, nil
+}
+
+// FindLatestTerminalForDoctor is the visit the doctor most recently closed,
+// used when they tap ready-for-next from the queue without an appointment id.
+func (r *Repository) FindLatestTerminalForDoctor(ctx context.Context, q queryer, doctorID uuid.UUID) (*Consultation, error) {
+	const sql = `
+		SELECT ` + consultationColumns + `
+		FROM consultations
+		WHERE doctor_id = $1
+		  AND status IN ('ended', 'abandoned', 'failed')
+		  AND deleted_at IS NULL
+		ORDER BY COALESCE(ended_at, updated_at) DESC
+		LIMIT 1`
+	c, err := scanConsultation(q.QueryRow(ctx, sql, doctorID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("consultation: find latest terminal for doctor: %w", err)
+	}
+	return c, nil
+}
+
+// ClaimEarlyJoinOffered stamps the next consult so a second tap cannot spam
+// the same patient. It does not change scheduled_at.
+func (r *Repository) ClaimEarlyJoinOffered(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, at time.Time) (bool, error) {
+	const q = `
+		UPDATE consultations
+		SET early_join_offered_at = $2, updated_at = NOW(), version = version + 1
+		WHERE id = $1
+		  AND status IN ('scheduled', 'waiting')
+		  AND deleted_at IS NULL
+		  AND early_join_offered_at IS NULL`
+	tag, err := tx.Exec(ctx, q, consultationID, at.UTC())
+	if err != nil {
+		return false, fmt.Errorf("consultation: claim early join %s: %w", consultationID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// SetEarlyJoinResponse records accepted or declined once. scheduled_at is
+// left alone either way.
+func (r *Repository) SetEarlyJoinResponse(ctx context.Context, tx pgx.Tx, consultationID uuid.UUID, response string, at time.Time) (bool, error) {
+	const q = `
+		UPDATE consultations
+		SET early_join_response = $2,
+		    early_join_responded_at = $3,
+		    updated_at = NOW(),
+		    version = version + 1
+		WHERE id = $1
+		  AND early_join_offered_at IS NOT NULL
+		  AND early_join_response IS NULL
+		  AND deleted_at IS NULL`
+	tag, err := tx.Exec(ctx, q, consultationID, response, at.UTC())
+	if err != nil {
+		return false, fmt.Errorf("consultation: set early join response %s: %w", consultationID, err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // --- participants --------------------------------------------------------

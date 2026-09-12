@@ -1223,6 +1223,84 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/Appointment' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/v1/appointments/{appointmentID}/reschedule-requests:
+    post:
+      tags: [scheduling]
+      summary: Doctor proposes a new time for a confirmed booking
+      description: Requires role `doctor`.
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [proposed_start_at]
+              properties:
+                proposed_start_at: { type: string, format: date-time }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [scheduling]
+      summary: Reschedule requests for one appointment
+      parameters:
+        - name: appointmentID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/reschedule-requests/{requestID}/accept:
+    post:
+      tags: [scheduling]
+      summary: Accept a pending reschedule
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Moved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/reschedule-requests/{requestID}/decline:
+    post:
+      tags: [scheduling]
+      summary: Decline a pending reschedule
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Declined
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /api/v1/waitlist:
     post:
       tags: [scheduling]
@@ -2126,6 +2204,52 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /api/v1/admin/reschedule-requests:
+    get:
+      tags: [admin]
+      summary: Pending doctor-requested reschedules
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/reschedule-requests/{requestID}/accept:
+    post:
+      tags: [admin]
+      summary: Accept a pending reschedule on the patient's behalf
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Moved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/reschedule-requests/{requestID}/decline:
+    post:
+      tags: [admin]
+      summary: Decline a pending reschedule and refund in full
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Declined
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/admin/doctors/{doctorID}/verify:
     post:
       tags: [admin]
@@ -2592,6 +2716,106 @@ paths:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/QualityReportResponse' } }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/ready-for-next:
+    post:
+      tags: [consultations]
+      summary: Ask the next patient to join a few minutes early
+      description: >
+        Doctor only, after the previous call has ended. Pings only the immediate
+        next confirmed/waiting patient. Does not rewrite later slots.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/consultations/{consultationID}/ready-for-next:
+    post:
+      tags: [consultations]
+      summary: Ask the next patient to join early after this ended visit
+      description: >
+        Path id is the ended visit's appointment id. Same behaviour as
+        POST /consultations/ready-for-next. Does not rewrite later slots.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/consultations/{consultationID}/early-join:
+    get:
+      tags: [consultations]
+      summary: Patient view of a join-now offer
+      description: Path id is the appointment id.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/consultations/{consultationID}/early-join/accept:
+    post:
+      tags: [consultations]
+      summary: Patient agrees to join a few minutes early
+      description: >
+        Does not move scheduled_at. The patient joins through the existing
+        waiting-room path.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/consultations/{consultationID}/early-join/decline:
+    post:
+      tags: [consultations]
+      summary: Patient keeps the original booked time
+      description: No refund and no slot rewrite.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /api/v1/payments:
     get:

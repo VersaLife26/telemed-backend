@@ -711,6 +711,24 @@ func (r *Repository) SetReminderStateStatus(ctx context.Context, db Querier, app
 	return nil
 }
 
+// UpdateReminderStartsAt moves the local reminder projection when a paid
+// appointment is rescheduled. Sent flags are cleared so the 24h/1h reminders
+// fire relative to the new instant rather than the old one.
+func (r *Repository) UpdateReminderStartsAt(ctx context.Context, db Querier, appointmentID uuid.UUID, startsAt time.Time) error {
+	const q = `
+		UPDATE appointment_reminder_state
+		SET starts_at = $2,
+		    reminder_24h_sent_at = NULL,
+		    reminder_1h_sent_at = NULL,
+		    updated_at = NOW()
+		WHERE appointment_id = $1`
+	_, err := db.Exec(ctx, q, appointmentID, startsAt)
+	if err != nil {
+		return fmt.Errorf("notification: update reminder starts_at: %w", err)
+	}
+	return nil
+}
+
 func scanReminderState(rows pgx.Rows) (AppointmentReminderState, error) {
 	var s AppointmentReminderState
 	err := rows.Scan(&s.AppointmentID, &s.PatientID, &s.DoctorID, &s.DoctorName, &s.Specialty,

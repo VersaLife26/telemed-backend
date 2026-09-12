@@ -1,0 +1,65 @@
+-- Patient templates for doctor-requested reschedule. Reason prose is never
+-- interpolated: it stays on the scheduling row (same PHI rule as cancel).
+
+INSERT INTO templates (key, channel, locale, urgency, subject_template, body_template) VALUES
+('reschedule_requested', 'sms', 'en', 'high', NULL,
+ 'Dr. {{.DoctorName}} asked to move your visit from {{.DateTime}} to {{.ProposedDateTime}}. Open the app to accept or decline (full refund).'),
+('reschedule_requested', 'sms', 'si', 'high', NULL,
+ 'වෛද්‍ය {{.DoctorName}} ඔබගේ හමුව {{.DateTime}} සිට {{.ProposedDateTime}} දක්වා වෙනස් කිරීමට ඉල්ලා ඇත. යෙදුමෙන් පිළිගන්න හෝ ප්‍රතික්ෂේප කරන්න (සම්පූර්ණ ආපසු ගෙවීම).'),
+('reschedule_requested', 'sms', 'ta', 'high', NULL,
+ 'மருத்துவர் {{.DoctorName}} உங்கள் சந்திப்பை {{.DateTime}} இலிருந்து {{.ProposedDateTime}}க்கு மாற்றக் கேட்டுள்ளார். செயலியில் ஏற்கவும் அல்லது நிராகரிக்கவும் (முழுத் திருப்பிச் செலுத்தல்).'),
+
+('reschedule_requested', 'push', 'en', 'high', 'Visit time change requested',
+ 'Dr. {{.DoctorName}} asked to move {{.DateTime}} to {{.ProposedDateTime}}.'),
+('reschedule_requested', 'push', 'si', 'high', 'හමුවේ වේලාව වෙනස් කිරීමට ඉල්ලීමක්',
+ 'වෛද්‍ය {{.DoctorName}} {{.DateTime}} හමුව {{.ProposedDateTime}} දක්වා වෙනස් කිරීමට ඉල්ලා ඇත.'),
+('reschedule_requested', 'push', 'ta', 'high', 'சந்திப்பு நேரம் மாற்றக் கோரிக்கை',
+ 'மருத்துவர் {{.DoctorName}} {{.DateTime}} சந்திப்பை {{.ProposedDateTime}}க்கு மாற்றக் கேட்டுள்ளார்.'),
+
+('reschedule_requested', 'email', 'en', 'high',
+ 'Your visit with Dr. {{.DoctorName}} may move',
+ '<p>Dr. {{.DoctorName}} cannot attend your visit at {{.DateTime}} and has asked to move it to {{.ProposedDateTime}}.</p><p>Open the app to accept the new time, or decline for a full refund.</p>'),
+('reschedule_requested', 'email', 'si', 'high',
+ 'වෛද්‍ය {{.DoctorName}} සමඟ ඔබගේ හමුව ගෙන යා හැක',
+ '<p>වෛද්‍ය {{.DoctorName}}ට {{.DateTime}} හමුවට පැමිණිය නොහැකි අතර එය {{.ProposedDateTime}} දක්වා වෙනස් කිරීමට ඉල්ලා ඇත.</p><p>යෙදුමෙන් නව වේලාව පිළිගන්න, නැතහොත් සම්පූර්ණ ආපසු ගෙවීමක් සඳහා ප්‍රතික්ෂේප කරන්න.</p>'),
+('reschedule_requested', 'email', 'ta', 'high',
+ 'மருத்துவர் {{.DoctorName}} உடனான உங்கள் சந்திப்பு மாறலாம்',
+ '<p>மருத்துவர் {{.DoctorName}} {{.DateTime}} சந்திப்பில் கலந்துகொள்ள முடியாது, அதை {{.ProposedDateTime}}க்கு மாற்றக் கேட்டுள்ளார்.</p><p>செயலியில் புதிய நேரத்தை ஏற்கவும், அல்லது முழுத் திருப்பிச் செலுத்தலுக்கு நிராகரிக்கவும்.</p>'),
+
+('reschedule_requested', 'in_app', 'en', 'high', 'Visit time change requested',
+ 'Dr. {{.DoctorName}} asked to move your visit from {{.DateTime}} to {{.ProposedDateTime}}. Accept or decline (full refund).'),
+('reschedule_requested', 'in_app', 'si', 'high', 'හමුවේ වේලාව වෙනස් කිරීමට ඉල්ලීමක්',
+ 'වෛද්‍ය {{.DoctorName}} ඔබගේ හමුව {{.DateTime}} සිට {{.ProposedDateTime}} දක්වා වෙනස් කිරීමට ඉල්ලා ඇත. පිළිගන්න හෝ ප්‍රතික්ෂේප කරන්න (සම්පූර්ණ ආපසු ගෙවීම).'),
+('reschedule_requested', 'in_app', 'ta', 'high', 'சந்திப்பு நேரம் மாற்றக் கோரிக்கை',
+ 'மருத்துவர் {{.DoctorName}} உங்கள் சந்திப்பை {{.DateTime}} இலிருந்து {{.ProposedDateTime}}க்கு மாற்றக் கேட்டுள்ளார். ஏற்கவும் அல்லது நிராகரிக்கவும் (முழுத் திருப்பிச் செலுத்தல்).'),
+
+('reschedule_confirmed', 'sms', 'en', 'normal', NULL,
+ 'Your visit with Dr. {{.DoctorName}} is now at {{.DateTime}}.'),
+('reschedule_confirmed', 'sms', 'si', 'normal', NULL,
+ 'වෛද්‍ය {{.DoctorName}} සමඟ ඔබගේ හමුව දැන් {{.DateTime}}ට ය.'),
+('reschedule_confirmed', 'sms', 'ta', 'normal', NULL,
+ 'மருத்துவர் {{.DoctorName}} உடனான உங்கள் சந்திப்பு இப்போது {{.DateTime}}.'),
+
+('reschedule_confirmed', 'push', 'en', 'normal', 'Visit time updated',
+ 'Your visit with Dr. {{.DoctorName}} is now at {{.DateTime}}.'),
+('reschedule_confirmed', 'push', 'si', 'normal', 'හමුවේ වේලාව යාවත්කාලීනයි',
+ 'වෛද්‍ය {{.DoctorName}} සමඟ ඔබගේ හමුව දැන් {{.DateTime}}ට ය.'),
+('reschedule_confirmed', 'push', 'ta', 'normal', 'சந்திப்பு நேரம் புதுப்பிக்கப்பட்டது',
+ 'மருத்துவர் {{.DoctorName}} உடனான உங்கள் சந்திப்பு இப்போது {{.DateTime}}.'),
+
+('reschedule_confirmed', 'email', 'en', 'normal',
+ 'Your visit with Dr. {{.DoctorName}} is now at {{.DateTime}}',
+ '<p>The new time for your visit with Dr. {{.DoctorName}} is {{.DateTime}}.</p><p>Your payment is unchanged. The same join link still works.</p>'),
+('reschedule_confirmed', 'email', 'si', 'normal',
+ 'වෛද්‍ය {{.DoctorName}} සමඟ ඔබගේ හමුව දැන් {{.DateTime}}ට ය',
+ '<p>වෛද්‍ය {{.DoctorName}} සමඟ ඔබගේ හමුවේ නව වේලාව {{.DateTime}} ය.</p><p>ඔබගේ ගෙවීම වෙනස් නොවේ. එම සම්බන්ධ වීමේ සබැඳියම තවමත් ක්‍රියා කරයි.</p>'),
+('reschedule_confirmed', 'email', 'ta', 'normal',
+ 'மருத்துவர் {{.DoctorName}} உடனான உங்கள் சந்திப்பு இப்போது {{.DateTime}}',
+ '<p>மருத்துவர் {{.DoctorName}} உடனான உங்கள் சந்திப்பின் புதிய நேரம் {{.DateTime}}.</p><p>உங்கள் கட்டணம் மாறவில்லை. அதே இணைப்பு இணைப்பு இன்னும் வேலை செய்கிறது.</p>'),
+
+('reschedule_confirmed', 'in_app', 'en', 'normal', 'Visit time updated',
+ 'Your visit with Dr. {{.DoctorName}} is now at {{.DateTime}}.'),
+('reschedule_confirmed', 'in_app', 'si', 'normal', 'හමුවේ වේලාව යාවත්කාලීනයි',
+ 'වෛද්‍ය {{.DoctorName}} සමඟ ඔබගේ හමුව දැන් {{.DateTime}}ට ය.'),
+('reschedule_confirmed', 'in_app', 'ta', 'normal', 'சந்தිப்பு நேரம் புதுப்பிக்கப்பட்டது',
+ 'மருத்துவர் {{.DoctorName}} உடனான உங்கள் சந்திப்பு இப்போது {{.DateTime}}.');

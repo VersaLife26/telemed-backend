@@ -162,3 +162,63 @@ func NewWaitlistDTO(w WaitlistEntry) WaitlistDTO {
 		CreatedAt:      w.CreatedAt.UTC(),
 	}
 }
+
+// RescheduleRequestDTO is a reschedule request as the API returns it.
+type RescheduleRequestDTO struct {
+	ID                   uuid.UUID  `json:"id"`
+	AppointmentID        uuid.UUID  `json:"appointment_id"`
+	PatientID            uuid.UUID  `json:"patient_id"`
+	DoctorID             uuid.UUID  `json:"doctor_id"`
+	OriginalSlotID       uuid.UUID  `json:"original_slot_id"`
+	OriginalStartAt      time.Time  `json:"original_start_at"`
+	OriginalEndAt        time.Time  `json:"original_end_at"`
+	OriginalStartAtLocal string     `json:"original_start_at_local"`
+	OriginalEndAtLocal   string     `json:"original_end_at_local"`
+	ProposedSlotID       uuid.UUID  `json:"proposed_slot_id"`
+	ProposedStartAt      time.Time  `json:"proposed_start_at"`
+	ProposedEndAt        time.Time  `json:"proposed_end_at"`
+	ProposedStartAtLocal string     `json:"proposed_start_at_local"`
+	ProposedEndAtLocal   string     `json:"proposed_end_at_local"`
+	Reason               string     `json:"reason,omitempty"`
+	Status               string     `json:"status"`
+	DecidedBy            *uuid.UUID `json:"decided_by,omitempty"`
+	DecidedByRole        string     `json:"decided_by_role,omitempty"`
+	DecidedAt            *time.Time `json:"decided_at,omitempty"`
+	Version              int        `json:"version"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+// NewRescheduleRequestDTO renders a request. Reason is included for every
+// party to the booking: the patient has to decide against it, and it is
+// already scoped to this row rather than broadcast on the bus.
+func NewRescheduleRequestDTO(r RescheduleRequest, loc *time.Location) RescheduleRequestDTO {
+	d := RescheduleRequestDTO{
+		ID:                   r.ID,
+		AppointmentID:        r.AppointmentID,
+		PatientID:            r.PatientID,
+		DoctorID:             r.DoctorID,
+		OriginalSlotID:       r.OriginalSlotID,
+		OriginalStartAt:      r.OriginalStartAt.UTC(),
+		OriginalEndAt:        r.OriginalEndAt.UTC(),
+		OriginalStartAtLocal: r.OriginalStartAt.In(loc).Format(time.RFC3339),
+		OriginalEndAtLocal:   r.OriginalEndAt.In(loc).Format(time.RFC3339),
+		ProposedSlotID:       r.ProposedSlotID,
+		ProposedStartAt:      r.ProposedStartAt.UTC(),
+		ProposedEndAt:        r.ProposedEndAt.UTC(),
+		ProposedStartAtLocal: r.ProposedStartAt.In(loc).Format(time.RFC3339),
+		ProposedEndAtLocal:   r.ProposedEndAt.In(loc).Format(time.RFC3339),
+		Reason:               r.Reason,
+		Status:               string(r.Status),
+		DecidedBy:            r.DecidedBy,
+		DecidedByRole:        r.DecidedByRole,
+		Version:              r.Version,
+		CreatedAt:            r.CreatedAt.UTC(),
+		UpdatedAt:            r.UpdatedAt.UTC(),
+	}
+	if r.DecidedAt != nil {
+		at := r.DecidedAt.UTC()
+		d.DecidedAt = &at
+	}
+	return d
+}

@@ -65,6 +65,14 @@ const (
 	// client may send this token and have it broadcast; it may send
 	// "chemotherapy", which is the same shape, and have it dropped.
 	PatientRequestedReason = "patient_requested"
+
+	// rescheduleDeclinedReason is stamped when a doctor-requested move is
+	// declined or expires. The doctor's prose is not this token.
+	rescheduleDeclinedReasonCode = "reschedule_declined"
+
+	// rescheduledSlotReason is stamped on slot.released when the original
+	// booking moves to a new slot (no refund).
+	rescheduledSlotReason = "rescheduled"
 )
 
 // broadcastableReasons is the closed set. A string not in it is not a reason
@@ -78,6 +86,9 @@ var broadcastableReasons = map[string]struct{}{
 	// The only client-selectable member. Every other value a caller can put in
 	// the reason field is dropped.
 	PatientRequestedReason: {},
+
+	rescheduleDeclinedReasonCode: {},
+	rescheduledSlotReason:        {},
 }
 
 // eventReasonCode returns s when it is one of the codes above, and "" for

@@ -2593,6 +2593,106 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/QualityReportResponse' } }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/consultations/ready-for-next:
+    post:
+      tags: [consultations]
+      summary: Ask the next patient to join a few minutes early
+      description: >
+        Doctor only, after the previous call has ended. Pings only the immediate
+        next confirmed/waiting patient. Does not rewrite later slots.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/consultations/{consultationID}/ready-for-next:
+    post:
+      tags: [consultations]
+      summary: Ask the next patient to join early after this ended visit
+      description: >
+        Path id is the ended visit's appointment id. Same behaviour as
+        POST /consultations/ready-for-next. Does not rewrite later slots.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/consultations/{consultationID}/early-join:
+    get:
+      tags: [consultations]
+      summary: Patient view of a join-now offer
+      description: Path id is the appointment id.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/consultations/{consultationID}/early-join/accept:
+    post:
+      tags: [consultations]
+      summary: Patient agrees to join a few minutes early
+      description: >
+        Does not move scheduled_at. The patient joins through the existing
+        waiting-room path.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/consultations/{consultationID}/early-join/decline:
+    post:
+      tags: [consultations]
+      summary: Patient keeps the original booked time
+      description: No refund and no slot rewrite.
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /api/v1/payments:
     get:
       tags: [payments]

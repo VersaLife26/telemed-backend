@@ -232,6 +232,141 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/consultations/ready-for-next:
+    post:
+      summary: Ask the next patient to join a few minutes early
+      description: >
+        Doctor only, after the previous call has ended. Pings only the immediate
+        next patient. Does not rewrite later slots. Uses the doctor's latest
+        ended consult when no appointment id is supplied.
+      tags: [consultations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Offer sent or already pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EarlyJoinEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/consultations/{appointment_id}/ready-for-next:
+    post:
+      summary: Ask the next patient to join early after this ended visit
+      description: >
+        Path id is the ended visit's appointment id. Same behaviour as
+        POST /consultations/ready-for-next.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Offer sent or already pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EarlyJoinEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/consultations/{appointment_id}/early-join:
+    get:
+      summary: Patient view of a join-now offer
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentID'
+      responses:
+        '200':
+          description: Offer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EarlyJoinEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/consultations/{appointment_id}/early-join/accept:
+    post:
+      summary: Patient agrees to join a few minutes early
+      description: >
+        Does not move scheduled_at. The patient joins through the existing
+        waiting-room path.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EarlyJoinEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/consultations/{appointment_id}/early-join/decline:
+    post:
+      summary: Patient keeps the original booked time
+      description: No refund and no slot rewrite.
+      tags: [consultations]
+      parameters:
+        - $ref: '#/components/parameters/AppointmentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Declined
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EarlyJoinEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
   /webhooks/livekit:
     post:
       summary: LiveKit webhook receiver
@@ -328,9 +463,9 @@ components:
       type: object
       description: >-
         consultation_id is the id every OTHER endpoint on this service is keyed
-        by (/admit, /end, /consent, /waiting-room, /quality). Join is the only
-        one keyed by appointment id, so this field is what makes the rest of the
-        surface reachable for a client that started from an appointment.
+        by (/admit, /end, /consent, /waiting-room, /quality). Join, ready-for-next
+        and early-join are keyed by appointment id, so this field is what makes the
+        rest of the surface reachable for a client that started from an appointment.
       properties:
         consultation_id:
           type: string
@@ -454,3 +589,34 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/WaitingRoomStatus'
+
+    EarlyJoinOffer:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [offered, already_offered, already_waiting, declined]
+        appointment_id:
+          type: string
+          format: uuid
+        consultation_id:
+          type: string
+          format: uuid
+        scheduled_at:
+          type: string
+          format: date-time
+        offered_at:
+          type: string
+          format: date-time
+        response:
+          type: string
+          enum: [accepted, declined]
+        responded_at:
+          type: string
+          format: date-time
+
+    EarlyJoinEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/EarlyJoinOffer'

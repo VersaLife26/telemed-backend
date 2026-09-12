@@ -176,7 +176,11 @@ func setupDatabase() (func(), error) {
 		return nil, fmt.Errorf("create database: %w", err)
 	}
 
-	dsn := fmt.Sprintf("user=telemed host=%s dbname=telemed_scheduling sslmode=disable pool_max_conns=60", dir)
+	// Do not put pool_max_conns on this DSN: EnsureSchema opens it with
+	// pgx.Connect, which forwards unknown keywords to the server as runtime
+	// parameters and Postgres rejects them. MaxConns is set below via
+	// database.Connect's Config.
+	dsn := fmt.Sprintf("user=telemed host=%s dbname=telemed_scheduling sslmode=disable", dir)
 	pool, pinnedDSN, err := connectAndMigrate(dsn)
 	if err != nil {
 		stop()
@@ -292,7 +296,7 @@ func resetTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	const q = `TRUNCATE appointments, slots, waitlists, holidays, working_hours,
 	           doctor_schedule_settings, doctor_pricing, no_show_stats,
-	           consumed_events, outbox_events`
+	           consumed_events, outbox_events, reschedule_requests`
 	if _, err := pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("reset tables: %v", err)
 	}
