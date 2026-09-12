@@ -37,6 +37,10 @@ const Domain = "doctor"
 func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// --- configuration -------------------------------------------------
 	v := config.New(serviceName)
+	// 9092, the port this domain's own grpc.go names. See the note in the user
+	// module: without it both fall back to the platform default of 9090 and
+	// collide inside a single process.
+	v.SetDefault("grpc_port", 9092)
 	v.SetDefault("search_cache_ttl", 60*time.Second)
 	v.SetDefault("trusted_proxies", "")
 	v.SetDefault("scheduling_base_url", "")

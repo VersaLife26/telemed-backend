@@ -36,6 +36,13 @@ const Domain = "user"
 func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// --- configuration ---------------------------------------------------
 	v := config.New(serviceName)
+	// 9091, the port this domain's own grpc_server.go names. Without it the
+	// platform default of 9090 applies, and with EXPOSE_GRPC=true and both
+	// user and doctor composed into one process they race for the same port --
+	// whichever builds second dies with "listen tcp :9090: bind: address
+	// already in use", taking the whole container with it. scheduling and
+	// payment already declare theirs; user and doctor were missed.
+	v.SetDefault("grpc_port", 9091)
 	v.SetDefault("sms_provider", "dev")
 	v.SetDefault("jwt_key_id", "user-service-1")
 	v.SetDefault("jwt_issuer", "telemed-user-service")
