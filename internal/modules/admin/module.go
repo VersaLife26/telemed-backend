@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc/credentials"
 
 	"telemed/internal/domain/admin/adminusers"
 	"telemed/internal/domain/admin/analytics"
@@ -184,12 +185,25 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	configSvc := sysconfig.NewService(configRepo)
 	configHandler := sysconfig.NewHandler(configSvc)
 
-	// The mesh credential is still needed here even when the user directory is
-	// in-process: approving a doctor application calls doctor-service over
-	// HTTP, which is a different integration with its own token requirement.
-	meshCreds, err := buildMeshCredentials(cfg, log)
-	if err != nil {
-		return nil, fail(fmt.Errorf("admin: init mesh credentials: %w", err))
+	// The mesh credential is needed here even when the user directory is
+	// in-process, but only for one thing: approving a doctor application calls
+	// doctor-service over HTTP, which is a different integration with its own
+	// token requirement.
+	//
+	// So the requirement follows that integration rather than the domain. With
+	// DOCTOR_SERVICE_URL unset there is no outbound call to authenticate, and
+	// buildMeshCredentials' production refusal -- which exists because a
+	// credential-less client fails on every call instead of at boot -- would be
+	// refusing to start over a credential nothing in this process would present.
+	// Where the integration IS configured the prod requirement is unchanged and
+	// still fatal; that is the case the refusal was written for.
+	var meshCreds credentials.PerRPCCredentials
+	if cfg.DoctorServiceURL != "" {
+		var err error
+		meshCreds, err = buildMeshCredentials(cfg, log)
+		if err != nil {
+			return nil, fail(fmt.Errorf("admin: init mesh credentials: %w", err))
+		}
 	}
 
 	credRepo := credentialing.NewRepository(pool)
