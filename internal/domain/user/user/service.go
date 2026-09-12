@@ -41,11 +41,11 @@ const (
 // Service implements every business rule for identity, OTP auth, sessions,
 // and family profiles. It has no knowledge of HTTP or SQL syntax.
 type Service struct {
-	repo     *Repository
-	cache    cache.Cache
-	limiter  *otpLimiter
-	outbox   *events.Outbox
-	sms      SMSProvider
+	repo    *Repository
+	cache   cache.Cache
+	limiter *otpLimiter
+	outbox  *events.Outbox
+	sms     SMSProvider
 	// email is the OTP transport. sms is retained and still wired, but the
 	// OTP path does not use it while this deployment has no SMS rail -- see
 	// deliverOTP/otpAddress. Re-enabling SMS is a branch in otpAddress, not a
