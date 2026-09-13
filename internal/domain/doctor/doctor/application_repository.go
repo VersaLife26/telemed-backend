@@ -166,10 +166,15 @@ func (r *Repository) DecideApplication(
 	ctx context.Context, tx pgx.Tx, id uuid.UUID,
 	status ApplicationStatus, reason string, actorID *uuid.UUID, at time.Time,
 ) error {
+	// $2 is cast on both uses on purpose. status is VARCHAR(20), so `status =
+	// $2` deduces varchar while `$2 = 'rejected'` deduces text, and Postgres
+	// refuses the statement with 42P08 "inconsistent types deduced for
+	// parameter $2" -- every approve and reject failing as a 500. Pinning both
+	// to text makes the deduction agree with itself.
 	const q = `
 		UPDATE doctor_applications SET
-			status = $2,
-			rejection_reason = CASE WHEN $2 = 'rejected' THEN $3 ELSE rejection_reason END,
+			status = $2::text,
+			rejection_reason = CASE WHEN $2::text = 'rejected' THEN $3 ELSE rejection_reason END,
 			decided_at = $4,
 			decided_by = $5,
 			updated_at = NOW()
