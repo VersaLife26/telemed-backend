@@ -172,6 +172,7 @@ components:
         name: { type: string }
         address: { type: string }
         date_of_birth: { type: string, format: date }
+        photo_url: { type: string, nullable: true }
         language: { type: string, enum: [en, si, ta] }
         role: { type: string, enum: [patient, doctor, admin] }
         version: { type: integer }
@@ -956,6 +957,50 @@ paths:
         window, so an accidental or coerced deletion can still be reversed.
       responses:
         '204': { description: Deletion scheduled }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/users/me/photo:
+    put:
+      tags: [users]
+      summary: Upload or replace the current user's profile photograph
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [users]
+      summary: Download the current user's profile photograph
+      responses:
+        '200': { description: Image bytes }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [users]
+      summary: Remove the current user's profile photograph
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/User' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/users/me/password:
