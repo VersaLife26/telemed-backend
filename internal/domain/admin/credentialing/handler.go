@@ -180,6 +180,11 @@ func (h *Handler) updateChecklist(w http.ResponseWriter, r *http.Request) {
 type verifyRequest struct {
 	Action string `json:"action" validate:"required,oneof=approve reject"`
 	Reason string `json:"reason" validate:"required_if=Action reject,max=1000"`
+	// Version is ignored. The console used to send the checklist optimistic-lock
+	// field on this body; DecodeJSON rejects unknown fields, so Confirm approval
+	// 400'd with the toast hidden behind the dialog. Accept it so either side
+	// can deploy first. The handler does not lock on it yet.
+	Version int `json:"version"`
 }
 
 func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {
