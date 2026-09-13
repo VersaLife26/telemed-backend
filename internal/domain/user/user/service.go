@@ -83,8 +83,9 @@ func (s *Service) SetEmailSender(e EmailSender) {
 	s.email = e
 }
 
-// SetDoctorApplications attaches the doctor-service client used during OTP
-// verify. Nil leaves patient-only OTP behaviour unchanged.
+// SetDoctorApplications attaches the doctor-service client used to promote
+// approved applications (OTP, email login, and the approval consumer).
+// Nil leaves those paths as patient-only.
 func (s *Service) SetDoctorApplications(d DoctorApplications) {
 	s.doctors = d
 }
@@ -371,33 +372,7 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 		case ferr == nil:
 			u = existing
 			if approvedApp != nil {
-				changed := false
-				if u.Name == "" && approvedApp.DisplayName != "" {
-					u.Name = approvedApp.DisplayName
-					changed = true
-				}
-				if (u.Email == nil || *u.Email == "") && approvedApp.Email != "" {
-					email := approvedApp.Email
-					u.Email = &email
-					changed = true
-				}
-				if changed {
-					if perr := s.repo.UpdateProfile(ctx, tx, u); perr != nil {
-						return perr
-					}
-				}
-				if approvedApp.PasswordHash != "" {
-					if perr := s.repo.SetPasswordHash(ctx, tx, u.ID, approvedApp.PasswordHash); perr != nil {
-						return perr
-					}
-					u.PasswordHash = approvedApp.PasswordHash
-				}
-				if u.Role != RoleDoctor {
-					if serr := s.repo.SetRole(ctx, tx, u.ID, RoleDoctor); serr != nil {
-						return serr
-					}
-					u.Role = RoleDoctor
-				}
+				return s.promoteUserFromApplication(ctx, tx, u, *approvedApp)
 			}
 		case errors.Is(ferr, ErrUserNotFound):
 			// SDD 33.1's verify request is {phone, otp, device_id} only --
@@ -441,18 +416,7 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 			if createErr := s.repo.CreateUser(ctx, tx, u); createErr != nil {
 				return createErr
 			}
-			// events.UserRegistered is the canonical payload, shared with
-			// every consumer. It deliberately carries no phone number: this
-			// event fans out to admin, notification and analytics consumers,
-			// and a full phone number is PHI-adjacent (AGENT-BRIEF rule 4).
-			// Consumers that need it call GetUser over gRPC.
-			payload := events.UserRegistered{
-				UserID:    u.ID,
-				Role:      string(u.Role),
-				Language:  string(u.Language),
-				CreatedAt: u.CreatedAt,
-			}
-			return s.outbox.Enqueue(ctx, tx, events.SubjectUserRegistered, u.ID.String(), payload)
+			return s.enqueueRegistered(ctx, tx, u)
 		default:
 			return ferr
 		}
@@ -469,19 +433,9 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 		return AuthResult{}, ErrUserDeleted
 	}
 
-	if approvedApp != nil && s.doctors != nil {
-		email := ""
-		if u.Email != nil {
-			email = *u.Email
-		}
-		if email == "" {
-			email = approvedApp.Email
-		}
-		if aerr := s.doctors.Attach(ctx, approvedApp.ID, u.ID, email); aerr != nil {
-			s.log.Error().Err(aerr).
-				Str("user_id", logger.MaskID(u.ID.String())).
-				Msg("failed to attach approved doctor application after OTP")
-			return AuthResult{}, fmt.Errorf("user: activate doctor profile: %w", aerr)
+	if approvedApp != nil {
+		if aerr := s.attachApprovedDoctor(ctx, *approvedApp, u); aerr != nil {
+			return AuthResult{}, aerr
 		}
 	}
 
@@ -588,6 +542,9 @@ func (s *Service) RegisterEmail(ctx context.Context, rawEmail, password, name, d
 // LoginEmail authenticates an existing account by email and password. The
 // error for "no such email" and "wrong password" is the same, so the endpoint
 // cannot be used to enumerate registered addresses.
+//
+// An approved doctor application with no user row yet is activated here:
+// admin approval used to leave the account unusable until a phone OTP ran.
 func (s *Service) LoginEmail(ctx context.Context, rawEmail, password, deviceID string) (AuthResult, error) {
 	email := NormalizeEmail(rawEmail)
 	if !validEmail(email) {
@@ -601,23 +558,49 @@ func (s *Service) LoginEmail(ctx context.Context, rawEmail, password, deviceID s
 	}
 
 	u, err := s.repo.FindUserByEmail(ctx, s.repo.Pool(), email)
-	if errors.Is(err, ErrUserNotFound) {
-		_ = consumePasswordCheck("", password)
-		return AuthResult{}, ErrInvalidCredentials
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
 		return AuthResult{}, err
 	}
+
+	app, hasApp := s.lookupDoctorApplicationByEmail(ctx, email)
+
+	if errors.Is(err, ErrUserNotFound) {
+		if !hasApp || !applicationReadyToActivate(app) {
+			_ = consumePasswordCheck("", password)
+			return AuthResult{}, ErrInvalidCredentials
+		}
+		if !consumePasswordCheck(app.PasswordHash, password) {
+			return AuthResult{}, ErrInvalidCredentials
+		}
+		u, _, aerr := s.ensureDoctorAccount(ctx, app)
+		if aerr != nil {
+			return AuthResult{}, loginDoctorAccountError(aerr)
+		}
+		return s.issueSession(ctx, *u, deviceID, uuid.New())
+	}
+
 	if err := s.refuseIfClosed(u); err != nil {
 		return AuthResult{}, err
 	}
 
-	hash, err := s.repo.GetPasswordHash(ctx, s.repo.Pool(), u.ID)
-	if err != nil {
-		return AuthResult{}, err
+	hash, herr := s.repo.GetPasswordHash(ctx, s.repo.Pool(), u.ID)
+	if herr != nil {
+		return AuthResult{}, herr
+	}
+	if hash == "" && hasApp && app.PasswordHash != "" {
+		hash = app.PasswordHash
 	}
 	if !consumePasswordCheck(hash, password) {
 		return AuthResult{}, ErrInvalidCredentials
+	}
+	if hasApp && applicationReadyToActivate(app) {
+		if _, _, aerr := s.ensureDoctorAccount(ctx, app); aerr != nil {
+			return AuthResult{}, loginDoctorAccountError(aerr)
+		}
+		fresh, ferr := s.repo.FindUserByEmail(ctx, s.repo.Pool(), email)
+		if ferr == nil {
+			u = fresh
+		}
 	}
 	return s.issueSession(ctx, *u, deviceID, uuid.New())
 }

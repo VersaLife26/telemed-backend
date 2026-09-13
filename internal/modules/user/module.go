@@ -210,7 +210,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		svc.SetDoctorApplications(docs)
 		log.Info().Str("doctor_service_url", cfg.DoctorServiceURL).Msg("doctor application attach enabled")
 	} else {
-		log.Warn().Msg("DOCTOR_SERVICE_URL or mesh token unset; OTP will not promote approved doctor applications")
+		log.Warn().Msg("DOCTOR_SERVICE_URL or mesh token unset; approved doctor applications will not create login accounts")
 	}
 	handler := user.NewHandler(svc, tokens, deps.Redis, log)
 
@@ -232,6 +232,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// no account data (ADR-004), so it asks this domain to apply the change
 	// and waits for the user.suspended / user.reinstated fact to come back.
 	adminCommands := user.NewAdminCommandConsumer(svc, log)
+	approvedDoctors := user.NewApplicationApprovedConsumer(svc, log)
 
 	m.Workers = []modular.Worker{
 		modular.SimpleWorker("user-outbox-relay", relay.Run),
@@ -239,6 +240,10 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		{
 			Name: "user-admin-commands",
 			Run:  func(ctx context.Context) error { return adminCommands.Subscribe(ctx, deps.Broker) },
+		},
+		{
+			Name: "user-doctor-application-approved",
+			Run:  func(ctx context.Context) error { return approvedDoctors.Subscribe(ctx, deps.Broker) },
 		},
 	}
 

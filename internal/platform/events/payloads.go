@@ -220,7 +220,7 @@ type DoctorApplicationSubmitted struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// DoctorApplicationApproved tells the applicant to complete OTP on the doctor portal.
+// DoctorApplicationApproved tells user-service to provision the doctor account.
 type DoctorApplicationApproved struct {
 	ApplicationID uuid.UUID `json:"application_id"`
 	FullName      string    `json:"full_name"`

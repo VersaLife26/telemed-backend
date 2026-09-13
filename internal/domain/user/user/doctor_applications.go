@@ -20,11 +20,13 @@ import (
 // token. Nil on Service means OTP behaves as before (patient find-or-create).
 type DoctorApplications interface {
 	ApplicationByPhone(ctx context.Context, phone string) (DoctorApplication, error)
+	ApplicationByEmail(ctx context.Context, email string) (DoctorApplication, error)
+	ApplicationByID(ctx context.Context, id uuid.UUID) (DoctorApplication, error)
 	Attach(ctx context.Context, applicationID, userID uuid.UUID, email string) error
 }
 
 // DoctorApplication is the subset of the doctor-service application response
-// OTP verify needs.
+// used to provision a login account (OTP, email sign-in, and approval).
 type DoctorApplication struct {
 	ID           uuid.UUID
 	Status       string
@@ -73,6 +75,20 @@ type applicationDTO struct {
 
 func (c *HTTPDoctorApplications) ApplicationByPhone(ctx context.Context, phone string) (DoctorApplication, error) {
 	path := c.baseURL + "/api/v1/internal/doctors/applications/by-phone/" + url.PathEscape(phone)
+	return c.getApplication(ctx, path)
+}
+
+func (c *HTTPDoctorApplications) ApplicationByEmail(ctx context.Context, email string) (DoctorApplication, error) {
+	path := c.baseURL + "/api/v1/internal/doctors/applications/by-email/" + url.PathEscape(email)
+	return c.getApplication(ctx, path)
+}
+
+func (c *HTTPDoctorApplications) ApplicationByID(ctx context.Context, id uuid.UUID) (DoctorApplication, error) {
+	path := c.baseURL + "/api/v1/internal/doctors/applications/" + id.String()
+	return c.getApplication(ctx, path)
+}
+
+func (c *HTTPDoctorApplications) getApplication(ctx context.Context, path string) (DoctorApplication, error) {
 	var dto applicationDTO
 	if err := c.getJSON(ctx, path, &dto); err != nil {
 		return DoctorApplication{}, err

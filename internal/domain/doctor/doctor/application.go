@@ -254,7 +254,7 @@ func (s *Service) EligibilityByPhone(ctx context.Context, rawPhone string) (Appl
 	if errors.Is(err, ErrApplicationNotFound) {
 		return ApplicationEligibility{
 			Status:  "none",
-			Message: "Register as a doctor first. After approval you can verify with OTP.",
+			Message: "Register as a doctor first. After approval you can sign in with email and password.",
 		}, nil
 	}
 	if err != nil {
@@ -267,13 +267,13 @@ func (s *Service) EligibilityByPhone(ctx context.Context, rawPhone string) (Appl
 		out.Message = "Your application is under review. You will receive an email when it is approved."
 	case ApplicationApproved:
 		out.Status = "approved"
-		out.Message = "Your application is approved. Enter the OTP sent to your phone to activate your account."
+		out.Message = "Your application is approved. Sign in with the email and password from registration, or with OTP."
 	case ApplicationRejected:
 		out.Status = "rejected"
 		out.Message = "Your application was not approved. Contact support if you need to re-apply."
 	case ApplicationActivated:
 		out.Status = "activated"
-		out.Message = "Your doctor account is active. You can sign in with OTP."
+		out.Message = "Your doctor account is active. Sign in with email and password, or OTP."
 	default:
 		out.Status = string(app.Status)
 		out.Message = "Unknown application status."
@@ -288,6 +288,20 @@ func (s *Service) GetApplicationByPhone(ctx context.Context, rawPhone string) (A
 		return Application{}, ErrApplicationNotFound
 	}
 	return s.repo.FindOpenApplicationByPhone(ctx, phone)
+}
+
+// GetApplicationByEmail returns the open (pending/approved) application for an email.
+func (s *Service) GetApplicationByEmail(ctx context.Context, rawEmail string) (Application, error) {
+	email := strings.ToLower(strings.TrimSpace(rawEmail))
+	if email == "" {
+		return Application{}, ErrApplicationNotFound
+	}
+	return s.repo.FindOpenApplicationByEmail(ctx, email)
+}
+
+// GetApplication returns an application by id for mesh activation.
+func (s *Service) GetApplication(ctx context.Context, id uuid.UUID) (Application, error) {
+	return s.repo.GetApplication(ctx, id)
 }
 
 // VerifyApplication is the admin approve/reject decision on a public application.

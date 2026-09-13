@@ -119,6 +119,23 @@ func (r *Repository) GetApplication(ctx context.Context, id uuid.UUID) (Applicat
 	return a, nil
 }
 
+// FindOpenApplicationByEmail returns the pending or approved application for an email.
+func (r *Repository) FindOpenApplicationByEmail(ctx context.Context, email string) (Application, error) {
+	q := `SELECT ` + applicationColumns + `
+		FROM doctor_applications
+		WHERE lower(email) = lower($1) AND status IN ('pending', 'approved')
+		ORDER BY created_at DESC
+		LIMIT 1`
+	a, err := scanApplication(r.pool.QueryRow(ctx, q, email))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Application{}, ErrApplicationNotFound
+		}
+		return Application{}, fmt.Errorf("doctor: find open application by email: %w", err)
+	}
+	return a, nil
+}
+
 // FindOpenApplicationByPhone returns the pending or approved application for a phone.
 func (r *Repository) FindOpenApplicationByPhone(ctx context.Context, phone string) (Application, error) {
 	q := `SELECT ` + applicationColumns + `

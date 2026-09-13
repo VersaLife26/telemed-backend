@@ -601,6 +601,13 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
+	req.Phone = httpx.NormalizePhone(req.Phone)
+	if req.Phone == "" {
+		invalid := httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "one or more fields failed validation")
+		invalid.Fields = map[string]string{"phone": "must be a valid Sri Lankan mobile number"}
+		httpx.Error(w, r, invalid)
+		return
+	}
 	app, err := h.svc.Apply(r.Context(), ApplyInput{
 		Phone: req.Phone, Email: req.Email, Password: req.Password,
 		FirstName: req.FirstName, LastName: req.LastName,
@@ -642,6 +649,36 @@ func (h *Handler) getApplicationByPhone(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	app, err := h.svc.GetApplicationByPhone(r.Context(), phone)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, toInternalApplicationResponse(app))
+}
+
+// getApplicationByEmail handles GET /internal/doctors/applications/by-email/{email}
+func (h *Handler) getApplicationByEmail(w http.ResponseWriter, r *http.Request) {
+	email, err := url.PathUnescape(chi.URLParam(r, "email"))
+	if err != nil || strings.TrimSpace(email) == "" {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "email is required"))
+		return
+	}
+	app, err := h.svc.GetApplicationByEmail(r.Context(), email)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, toInternalApplicationResponse(app))
+}
+
+// getApplicationByID handles GET /internal/doctors/applications/{id}
+func (h *Handler) getApplicationByID(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	app, err := h.svc.GetApplication(r.Context(), id)
 	if err != nil {
 		writeError(w, r, err)
 		return

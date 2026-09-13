@@ -78,6 +78,8 @@ func (h *Handler) InternalRoutes() chi.Router {
 	r.Get("/pending", h.listPending)
 	r.Post("/{id}/verify", h.verify)
 	r.Get("/applications/by-phone/{phone}", h.getApplicationByPhone)
+	r.Get("/applications/by-email/{email}", h.getApplicationByEmail)
+	r.Get("/applications/{id}", h.getApplicationByID)
 	r.Post("/applications/{id}/verify", h.verifyApplication)
 	r.Post("/applications/{id}/attach", h.attachApplication)
 	return r
@@ -137,7 +139,7 @@ type registerRequest struct {
 }
 
 type applyRequest struct {
-	Phone                 string       `json:"phone" validate:"required,sriphone"`
+	Phone                 string       `json:"phone" validate:"required"`
 	Email                 string       `json:"email" validate:"required,email"`
 	Password              string       `json:"password" validate:"required,min=8,max=72"`
 	FirstName             string       `json:"first_name" validate:"required,min=1,max=100"`
