@@ -151,7 +151,8 @@ func (c *HTTPApplicationVerifier) ListPendingApplications(ctx context.Context) (
 		return nil, fmt.Errorf("credentialing: decode pending applications: %w", err)
 	}
 	out := make([]PendingApplication, 0, len(env.Data))
-	for _, row := range env.Data {
+	for i := range env.Data {
+		row := &env.Data[i]
 		id, err := uuid.Parse(row.ApplicationID)
 		if err != nil {
 			continue

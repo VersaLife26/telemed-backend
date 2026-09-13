@@ -101,7 +101,8 @@ func (s *Service) syncPendingApplications(ctx context.Context) {
 		log.Warn().Err(err).Msg("credentialing: sync pending applications failed")
 		return
 	}
-	for _, app := range apps {
+	for i := range apps {
+		app := &apps[i]
 		if _, err := s.repo.GetDoctor(ctx, app.ID); err == nil {
 			continue
 		} else if !errors.Is(err, ErrNotFound) {
