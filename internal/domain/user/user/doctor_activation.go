@@ -18,6 +18,10 @@ func applicationReadyToActivate(app DoctorApplication) bool {
 	return app.Status == "approved" || app.Status == "activated"
 }
 
+// ErrDoctorApplicationNotReady is returned when activation is asked for an
+// application that is still pending or otherwise not eligible.
+var ErrDoctorApplicationNotReady = errors.New("user: doctor application is not ready")
+
 func loginDoctorAccountError(err error) error {
 	if errors.Is(err, ErrPhoneTaken) || errors.Is(err, ErrEmailTaken) {
 		return ErrInvalidCredentials
@@ -129,6 +133,27 @@ func emailsCompatible(u *User, app DoctorApplication) bool {
 	return NormalizeEmail(*u.Email) == NormalizeEmail(app.Email)
 }
 
+// ActivateApprovedApplication creates the doctor login from an approved
+// public application. Called synchronously from doctor-service on admin Accept
+// and from the application_approved consumer.
+func (s *Service) ActivateApprovedApplication(ctx context.Context, applicationID uuid.UUID) error {
+	if s.doctors == nil {
+		return fmt.Errorf("user: doctor applications not configured")
+	}
+	if applicationID == uuid.Nil {
+		return fmt.Errorf("user: application id is required")
+	}
+	app, err := s.doctors.ApplicationByID(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	if !applicationReadyToActivate(app) {
+		return fmt.Errorf("%w: %s", ErrDoctorApplicationNotReady, app.Status)
+	}
+	_, err = s.ensureDoctorAccount(ctx, app)
+	return err
+}
+
 // ensureDoctorAccount creates or promotes the user for an approved application
 // and attaches the doctor profile. Idempotent once the application is activated.
 func (s *Service) ensureDoctorAccount(ctx context.Context, app DoctorApplication) (*User, error) {
@@ -221,14 +246,10 @@ func (c *ApplicationApprovedConsumer) Handle(ctx context.Context, env events.Env
 		c.log.Warn().Str("subject", string(env.Subject)).Msg("doctor.application_approved missing application_id; acknowledging")
 		return nil
 	}
-	app, err := c.svc.doctors.ApplicationByID(ctx, payload.ApplicationID)
-	if err != nil {
-		return err
-	}
-	if !applicationReadyToActivate(app) {
+	err := c.svc.ActivateApprovedApplication(ctx, payload.ApplicationID)
+	if errors.Is(err, ErrDoctorApplicationNotReady) {
 		return nil
 	}
-	_, err = c.svc.ensureDoctorAccount(ctx, app)
 	if errors.Is(err, ErrUserSuspended) || errors.Is(err, ErrUserDeleted) || errors.Is(err, ErrPhoneTaken) {
 		c.log.Warn().Err(err).
 			Str("application_id", payload.ApplicationID.String()).

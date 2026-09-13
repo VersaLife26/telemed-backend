@@ -268,4 +268,9 @@ const (
 	// developer test surface looks it up so /test/rooms exercises the real
 	// signalling stack rather than a second one standing beside it.
 	KeySignalHub = "consultation.signalhub"
+
+	// KeyDoctorAccountActivator is a doctor.AccountActivator implemented by
+	// the user domain. Doctor-service calls it synchronously on admin Accept
+	// so a login account exists before the reviewer leaves the queue.
+	KeyDoctorAccountActivator = "user.doctor_account_activator"
 )

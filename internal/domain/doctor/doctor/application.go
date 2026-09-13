@@ -323,6 +323,7 @@ func (s *Service) VerifyApplication(ctx context.Context, id uuid.UUID, approve b
 		return Application{}, err
 	}
 	if approve && app.Status == ApplicationApproved {
+		s.activateApprovedAccount(ctx, app.ID)
 		return app, nil
 	}
 	if !approve && app.Status == ApplicationRejected {
@@ -369,7 +370,25 @@ func (s *Service) VerifyApplication(ctx context.Context, id uuid.UUID, approve b
 	if err != nil {
 		return Application{}, err
 	}
-	return s.repo.GetApplication(ctx, id)
+	saved, err := s.repo.GetApplication(ctx, id)
+	if err != nil {
+		return Application{}, err
+	}
+	if approve {
+		s.activateApprovedAccount(ctx, saved.ID)
+	}
+	return saved, nil
+}
+
+func (s *Service) activateApprovedAccount(ctx context.Context, applicationID uuid.UUID) {
+	if s.accounts == nil {
+		return
+	}
+	if err := s.accounts.ActivateApprovedApplication(ctx, applicationID); err != nil {
+		s.log.Error().Err(err).
+			Str("application_id", applicationID.String()).
+			Msg("approved application but failed to create login account; event consumer will retry")
+	}
 }
 
 // AttachInput binds an approved application to a newly verified user account.

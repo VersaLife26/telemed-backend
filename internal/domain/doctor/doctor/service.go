@@ -37,6 +37,17 @@ type Service struct {
 	// carrying leave is refused rather than silently accepted -- see
 	// holidays.go for why that refusal matters.
 	holidays HolidayRegistrar
+
+	// accounts creates the login user when an admin accepts a public
+	// application. Nil leaves that to the user-service event consumer.
+	accounts AccountActivator
+}
+
+// AccountActivator provisions the doctor login account after credentialing
+// accept, so the applicant can sign in without a first OTP and appears in
+// admin Users immediately.
+type AccountActivator interface {
+	ActivateApprovedApplication(ctx context.Context, applicationID uuid.UUID) error
 }
 
 // NewService wires the service's dependencies.
@@ -57,6 +68,11 @@ func NewService(repo *Repository, pool database.Pool, outbox *events.Outbox, c c
 func (s *Service) WithHolidayRegistrar(h HolidayRegistrar) *Service {
 	s.holidays = h
 	return s
+}
+
+// SetAccountActivator attaches the user-service seam used on Accept.
+func (s *Service) SetAccountActivator(a AccountActivator) {
+	s.accounts = a
 }
 
 // ---------------------------------------------------------------------------

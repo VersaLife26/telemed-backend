@@ -208,6 +208,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 	if docs := buildDoctorApplications(cfg, log); docs != nil {
 		svc.SetDoctorApplications(docs)
+		deps.Registry.Provide(modular.KeyDoctorAccountActivator, svc)
 		log.Info().Str("doctor_service_url", cfg.DoctorServiceURL).Msg("doctor application attach enabled")
 	} else {
 		log.Warn().Msg("DOCTOR_SERVICE_URL or mesh token unset; approved doctor applications will not create login accounts")

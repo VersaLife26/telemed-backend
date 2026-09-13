@@ -121,6 +121,14 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 	doctorSvc := doctor.NewService(doctorRepo, pool, outbox, deps.Redis, enc, cfg.SearchCacheTTL, log).
 		WithHolidayRegistrar(holidayClient)
+	if v, ok := deps.Registry.Lookup(modular.KeyDoctorAccountActivator); ok {
+		if act, ok := v.(doctor.AccountActivator); ok {
+			doctorSvc.SetAccountActivator(act)
+			log.Info().Msg("doctor accept will create the login account immediately")
+		}
+	} else {
+		log.Warn().Msg("user-service activator unavailable; doctor accept will wait for the application_approved consumer")
+	}
 
 	// The doctor's own analytics. It reads a projection this service maintains
 	// off the event bus rather than calling scheduling, consultation and
