@@ -4,7 +4,7 @@ DOMAINS   := user doctor scheduling consultation payment notification record adm
 REGISTRY  ?= ghcr.io/versalife26/telemed
 VERSION   ?= 0.3.0
 
-.PHONY: help build run test integration vet lint fmt tidy image migrate
+.PHONY: help build run test integration vet lint fmt tidy image migrate seed
 
 help: ## Show this help
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n",$$1,$$2}'
@@ -38,3 +38,6 @@ image: ## Build the image
 
 migrate: ## Apply the bootstrap schemas then every domain's migrations
 	./scripts/migrate.sh
+
+seed: ## Load fake doctors, patients and appointments into a migrated dev database
+	psql "$(DATABASE_URL)" -f scripts/seed.sql
