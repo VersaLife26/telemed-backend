@@ -431,9 +431,25 @@ func run() error {
 	} else {
 		// No edge in this process: serve the domains directly, which is what a
 		// single-domain deployment behind the real gateway wants.
+		//
+		// ONE router for every module, not one Mount("/") each: chi refuses a
+		// second handler on a path it already holds, so mounting per module
+		// panicked at boot the moment a process composed two of them -- which
+		// is what the test surface is, alongside its domain.
+		direct := chi.NewRouter()
+		direct.Route("/api/v1", func(r chi.Router) {
+			for _, mod := range mods {
+				if mod.API != nil {
+					mod.API(r)
+				}
+			}
+		})
 		for _, mod := range mods {
-			srv.Router.Mount("/", domainHandlers[mod.Name])
+			if mod.Root != nil {
+				mod.Root(direct)
+			}
 		}
+		srv.Router.Mount("/", direct)
 	}
 
 	// --- workers ---------------------------------------------------------------
