@@ -135,6 +135,42 @@
       "description": "Set or change the caller's password so they can use email login after an OTP or Google session."
     },
     {
+      "name": "user-me-photo-put",
+      "pattern": "/api/v1/users/me/photo",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Upload or replace the caller's profile photograph (JPEG/PNG/WebP, max 2 MB)."
+    },
+    {
+      "name": "user-me-photo-get",
+      "pattern": "/api/v1/users/me/photo",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "generous",
+      "description": "Download the caller's profile photograph bytes."
+    },
+    {
+      "name": "user-me-photo-delete",
+      "pattern": "/api/v1/users/me/photo",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "user-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Remove the caller's profile photograph."
+    },
+    {
       "name": "user-me-delete",
       "pattern": "/api/v1/users/me",
       "methods": [
