@@ -2,9 +2,11 @@ package scheduling
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/robfig/cron/v3"
 	"github.com/rs/zerolog"
 
@@ -43,22 +45,24 @@ const NoShowGrace = 12 * time.Hour
 // Scheduler owns the cron jobs. It is constructed at boot and stopped on
 // shutdown alongside the HTTP server.
 type Scheduler struct {
-	svc  *Service
-	cron *cron.Cron
-	log  zerolog.Logger
+	svc      *Service
+	lockPool *pgxpool.Pool
+	cron     *cron.Cron
+	log      zerolog.Logger
+	jobMu    sync.Mutex
 }
 
 // NewScheduler wires the jobs to the business timezone. Every schedule below is
 // expressed in that zone, which is why the daily generation run really does
 // happen at midnight in Colombo rather than at 18:30 the previous day.
-func NewScheduler(svc *Service, loc *time.Location, log zerolog.Logger) *Scheduler {
+func NewScheduler(svc *Service, lockPool *pgxpool.Pool, loc *time.Location, log zerolog.Logger) *Scheduler {
 	c := cron.New(cron.WithLocation(loc), cron.WithChain(
 		// A generation run that overruns must not have a second copy started on
 		// top of it.
 		cron.SkipIfStillRunning(cronLogger{log}),
 		cron.Recover(cronLogger{log}),
 	))
-	return &Scheduler{svc: svc, cron: c, log: log}
+	return &Scheduler{svc: svc, lockPool: lockPool, cron: c, log: log}
 }
 
 // Register installs the schedule. Times are staggered so that the midnight
@@ -111,43 +115,49 @@ func (s *Scheduler) Start(ctx context.Context) {
 
 // withJobLock runs fn only if this replica wins the advisory lock.
 func (s *Scheduler) withJobLock(ctx context.Context, name string, key int64, fn func(context.Context) error) {
-	// The advisory lock is session-scoped, so it must be taken and released on
-	// the same connection. Acquiring it inside a transaction is the simplest way
-	// to guarantee that with a pool: commit early and the pool may hand the
-	// unlock to a different connection, leaving the original holding the lock
-	// until its lifetime expires.
-	//
-	// The cost is one idle-in-transaction session for the length of the job,
-	// which holds back the vacuum horizon. That is tens of seconds once a day
-	// for generation and archival, which is a fair price for not needing a
-	// second coordination mechanism. If a job ever runs for minutes, move it to
-	// a dedicated pooled connection instead of a transaction.
-	err := database.InTx(ctx, s.svc.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		ok, err := s.svc.repo.TryJobLock(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			s.log.Debug().Str("job", name).Msg("job already running on another replica")
-			return nil
-		}
-		defer func() {
-			if err := s.svc.repo.ReleaseJobLock(ctx, tx, key); err != nil {
-				s.log.Warn().Err(err).Str("job", name).Msg("job lock release failed")
-			}
-		}()
+	// Jobs run one at a time. The lock connection is held for the whole job
+	// while fn draws its own connections from the same pool, so N concurrent
+	// jobs pin N connections before any of them can do work. Several jobs
+	// share the */10 minute mark, and with a pool of four that deadlocked the
+	// domain permanently: every lock holder waited on a connection only a lock
+	// holder could release.
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
 
-		start := time.Now()
-		if err := fn(ctx); err != nil {
-			s.log.Error().Err(err).Str("job", name).Dur("elapsed", time.Since(start)).Msg("job failed")
-			return nil // the error is reported, not propagated: never roll back the lock release
-		}
-		s.log.Info().Str("job", name).Dur("elapsed", time.Since(start)).Msg("job completed")
-		return nil
-	})
+	// The advisory lock is session-scoped, so it is taken and released on one
+	// dedicated connection. Not a transaction: idle_in_transaction_session_timeout
+	// would kill the lock session under any job that outlives it.
+	conn, err := s.lockPool.Acquire(ctx)
 	if err != nil {
-		s.log.Error().Err(err).Str("job", name).Msg("job lock transaction failed")
+		s.log.Error().Err(err).Str("job", name).Msg("job lock connection failed")
+		return
 	}
+	defer conn.Release()
+
+	ok, err := s.svc.repo.TryJobLock(ctx, conn, key)
+	if err != nil {
+		s.log.Error().Err(err).Str("job", name).Msg("job lock failed")
+		return
+	}
+	if !ok {
+		s.log.Debug().Str("job", name).Msg("job already running on another replica")
+		return
+	}
+	defer func() {
+		if err := s.svc.repo.ReleaseJobLock(context.WithoutCancel(ctx), conn, key); err != nil {
+			// Returning a connection that still holds the lock would block this
+			// job on every replica until the connection's lifetime expires.
+			s.log.Warn().Err(err).Str("job", name).Msg("job lock release failed; closing connection")
+			_ = conn.Hijack().Close(context.WithoutCancel(ctx))
+		}
+	}()
+
+	start := time.Now()
+	if err := fn(ctx); err != nil {
+		s.log.Error().Err(err).Str("job", name).Dur("elapsed", time.Since(start)).Msg("job failed")
+		return
+	}
+	s.log.Info().Str("job", name).Dur("elapsed", time.Since(start)).Msg("job completed")
 }
 
 func (s *Scheduler) runGenerate(ctx context.Context) error {

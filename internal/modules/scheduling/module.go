@@ -132,7 +132,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 
 	if cfg.SchedulerEnabled {
-		sched := scheduling.NewScheduler(svc, loc, log)
+		sched := scheduling.NewScheduler(svc, pool, loc, log)
 		if err := sched.Register(ctx); err != nil {
 			return nil, fail(fmt.Errorf("scheduling: register scheduler: %w", err))
 		}
