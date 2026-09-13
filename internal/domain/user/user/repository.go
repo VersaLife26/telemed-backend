@@ -53,14 +53,14 @@ func (r *Repository) Pool() database.Pool { return r.pool }
 
 const userColumns = `id, phone, email, name, nic_hash, nic_hash_version, language, role, status,
 	no_show_count, keycloak_id, google_sub, email_verified_at, erasure_due_at, anonymized_at,
-	created_at, updated_at, deleted_at, version`
+	created_at, updated_at, deleted_at, version, address, date_of_birth`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	var phone *string
 	err := row.Scan(&u.ID, &phone, &u.Email, &u.Name, &u.NICHash, &u.NICHashVersion, &u.Language, &u.Role, &u.Status,
 		&u.NoShowCount, &u.KeycloakID, &u.GoogleSub, &u.EmailVerifiedAt, &u.ErasureDueAt, &u.AnonymizedAt,
-		&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version)
+		&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version, &u.Address, &u.DateOfBirth)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -219,12 +219,14 @@ func (r *Repository) CreateUser(ctx context.Context, tx dbtx, u *User) error {
 // optimistic-lock version column.
 func (r *Repository) UpdateProfile(ctx context.Context, tx dbtx, u *User) error {
 	const q = `
-		UPDATE users SET name = $1, email = $2, language = $3, updated_at = NOW(), version = version + 1
-		WHERE id = $4 AND version = $5 AND deleted_at IS NULL
+		UPDATE users SET name = $1, email = $2, phone = $3, language = $4, address = $5,
+		    date_of_birth = $6, updated_at = NOW(), version = version + 1
+		WHERE id = $7 AND version = $8 AND deleted_at IS NULL
 		RETURNING updated_at, version`
-	err := tx.QueryRow(ctx, q, u.Name, u.Email, u.Language, u.ID, u.Version).Scan(&u.UpdatedAt, &u.Version)
-	if database.IsUniqueViolation(err) {
-		return ErrEmailTaken
+	err := tx.QueryRow(ctx, q, u.Name, u.Email, nilIfEmpty(u.Phone), u.Language, u.Address, u.DateOfBirth, u.ID, u.Version).
+		Scan(&u.UpdatedAt, &u.Version)
+	if mapped := mapUniqueViolation(err); mapped != nil {
+		return mapped
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrOptimisticLock
@@ -322,6 +324,7 @@ func (r *Repository) AnonymizeDueUsers(ctx context.Context, tx dbtx, now time.Ti
 		UPDATE users
 		SET name = '[erased]', email = NULL, nic_hash = NULL, nic_hash_version = NULL,
 		    phone = 'erased:' || id::text, password_hash = NULL, google_sub = NULL, email_verified_at = NULL,
+		    address = '', date_of_birth = NULL,
 		    anonymized_at = NOW(), updated_at = NOW(), version = version + 1
 		WHERE id IN (
 			SELECT id FROM users

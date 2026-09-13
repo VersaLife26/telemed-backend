@@ -168,9 +168,13 @@ components:
       properties:
         id: { type: string, format: uuid }
         phone: { type: string }
+        email: { type: string, format: email }
         name: { type: string }
+        address: { type: string }
+        date_of_birth: { type: string, format: date }
         language: { type: string, enum: [en, si, ta] }
         role: { type: string, enum: [patient, doctor, admin] }
+        version: { type: integer }
         created_at: { type: string, format: date-time }
     FamilyMember:
       type: object

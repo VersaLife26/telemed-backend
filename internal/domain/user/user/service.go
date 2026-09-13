@@ -929,17 +929,69 @@ func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*User, erro
 
 // UpdateProfileInput carries the editable self-service fields.
 type UpdateProfileInput struct {
-	Name     string
-	Email    *string
-	Language Language
-	Version  int
+	Name        string
+	Email       *string
+	Phone       *string
+	Address     *string
+	DateOfBirth *time.Time
+	ClearDOB    bool
+	Language    Language
+	Version     int
+}
+
+// ApplyProfilePatch overlays the requested edits onto an existing user. Fields
+// left nil on the input are unchanged, so a doctor saving only their email
+// cannot wipe a patient's address, and the reverse.
+func ApplyProfilePatch(u *User, in UpdateProfileInput) {
+	u.Name = strings.TrimSpace(in.Name)
+	u.Language = in.Language
+	u.Version = in.Version
+	if in.Email != nil {
+		email := strings.TrimSpace(*in.Email)
+		if email == "" {
+			u.Email = nil
+		} else {
+			u.Email = &email
+		}
+	}
+	if in.Phone != nil {
+		u.Phone = strings.TrimSpace(*in.Phone)
+	}
+	if in.Address != nil {
+		u.Address = strings.TrimSpace(*in.Address)
+	}
+	if in.ClearDOB {
+		u.DateOfBirth = nil
+	} else if in.DateOfBirth != nil {
+		u.DateOfBirth = in.DateOfBirth
+	}
+}
+
+func hasLoginIdentity(u *User) bool {
+	if u.Phone != "" {
+		return true
+	}
+	if u.Email != nil && *u.Email != "" {
+		return true
+	}
+	return u.GoogleSub != nil && *u.GoogleSub != ""
 }
 
 // UpdateProfile applies an edit under optimistic locking; the caller must
 // supply the version they last observed.
 func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, in UpdateProfileInput) (*User, error) {
-	u := &User{ID: userID, Name: in.Name, Email: in.Email, Language: in.Language, Version: in.Version}
-	if err := s.repo.UpdateProfile(ctx, s.repo.Pool(), u); err != nil {
+	existing, err := s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
+	if err != nil {
+		return nil, err
+	}
+	if existing.DeletedAt != nil {
+		return nil, ErrUserNotFound
+	}
+	ApplyProfilePatch(existing, in)
+	if !hasLoginIdentity(existing) {
+		return nil, ErrNoLoginIdentity
+	}
+	if err := s.repo.UpdateProfile(ctx, s.repo.Pool(), existing); err != nil {
 		return nil, err
 	}
 	return s.repo.FindUserByID(ctx, s.repo.Pool(), userID)

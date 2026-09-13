@@ -96,6 +96,9 @@ var allowedByExtension = map[string]map[string]bool{
 	".jpg":  {"image/jpeg": true},
 	".jpeg": {"image/jpeg": true},
 	".png":  {"image/png": true},
+	".webp": {"image/webp": true},
+	".tif":  {"image/tiff": true},
+	".tiff": {"image/tiff": true},
 	".heic": {"image/heic": true, "application/octet-stream": true}, // HEIC often sniffs as octet-stream
 	// DICOM carries a 128-byte preamble DetectContentType does not
 	// recognise, so it always sniffs as octet-stream; the extension is the

@@ -166,7 +166,8 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (Document, error) 
 	objectKey := fmt.Sprintf("%s/%s%s", ownerID, uuid.New(), ext)
 
 	if err := s.store.Put(ctx, bucket, objectKey, bytes.NewReader(buf), int64(len(buf)), sniffed); err != nil {
-		return Document{}, httpx.ErrInternal.WithCause(fmt.Errorf("records: store upload: %w", err))
+		return Document{}, httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable,
+			"document storage is unavailable").WithCause(fmt.Errorf("records: store upload: %w", err))
 	}
 
 	doc := Document{

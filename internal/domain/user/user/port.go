@@ -25,6 +25,7 @@ var (
 	ErrEmailTaken            = errors.New("user: email already registered")
 	ErrPhoneTaken            = errors.New("user: phone already registered")
 	ErrGoogleTaken           = errors.New("user: google account already registered")
+	ErrNoLoginIdentity       = errors.New("user: keep a phone, email, or Google sign-in")
 	ErrInvalidEmail          = errors.New("user: invalid email")
 	ErrInvalidPassword       = errors.New("user: invalid password")
 	ErrInvalidCredentials    = errors.New("user: invalid credentials")

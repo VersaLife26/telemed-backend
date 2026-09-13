@@ -50,7 +50,11 @@ type User struct {
 	Phone   string // E.164, e.g. +94771234567
 	Email   *string
 	Name    string
-	NICHash *string // keyed HMAC of the NIC (see nic.go); the NIC itself is never stored
+	Address string
+	// DateOfBirth is the account holder's date of birth. Nil when they have
+	// not set one. Family members have their own DOB on family_members.
+	DateOfBirth *time.Time
+	NICHash     *string // keyed HMAC of the NIC (see nic.go); the NIC itself is never stored
 	// NICHashVersion names the NIC_HASH_PEPPER generation that produced
 	// NICHash. It is nil exactly when NICHash is nil -- a database CHECK
 	// enforces the pair (migration 000004), because a digest whose key

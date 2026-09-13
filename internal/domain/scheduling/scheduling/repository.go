@@ -2,6 +2,7 @@ package scheduling
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -425,13 +426,17 @@ func scanAppointment(row pgx.Row) (Appointment, error) {
 	// before pricing existed. Every appointment booked since carries all three.
 	var amountCents *int64
 	var currency, specialty *string
+	var intake []byte
 	err := row.Scan(&a.ID, &a.PatientID, &a.DoctorID, &a.SlotID, &a.SlotStartAt, &a.SlotEndAt,
-		&a.Status, &a.Intake, &a.FamilyMemberID, &a.PrepaymentRequired, &amountCents, &currency, &specialty,
+		&a.Status, &intake, &a.FamilyMemberID, &a.PrepaymentRequired, &amountCents, &currency, &specialty,
 		&a.PaymentID, &a.ConfirmedAt, &a.CompletedAt,
 		&a.NoShowAt, &a.CancelledAt, &a.CancelledBy, &role, &reason, &policy,
 		&a.Version, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return Appointment{}, err
+	}
+	if len(intake) > 0 {
+		a.Intake = json.RawMessage(intake)
 	}
 	if amountCents != nil {
 		a.AmountCents = *amountCents

@@ -197,6 +197,8 @@ type userResponse struct {
 	Phone       string  `json:"phone"`
 	Email       *string `json:"email,omitempty"`
 	Name        string  `json:"name"`
+	Address     string  `json:"address"`
+	DateOfBirth *string `json:"date_of_birth,omitempty"`
 	Language    string  `json:"language"`
 	Role        string  `json:"role"`
 	Status      string  `json:"status"`
@@ -207,21 +209,29 @@ type userResponse struct {
 }
 
 func toUserResponse(u User) userResponse {
-	return userResponse{
-		ID: u.ID.String(), Phone: u.Phone, Email: u.Email, Name: u.Name,
+	out := userResponse{
+		ID: u.ID.String(), Phone: u.Phone, Email: u.Email, Name: u.Name, Address: u.Address,
 		Language: string(u.Language), Role: string(u.Role), Status: string(u.Status),
 		NoShowCount: u.NoShowCount,
 		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
 		Version:     u.Version,
 	}
+	if u.DateOfBirth != nil {
+		dob := u.DateOfBirth.Format("2006-01-02")
+		out.DateOfBirth = &dob
+	}
+	return out
 }
 
 type updateProfileRequest struct {
-	Name     string  `json:"name" validate:"required,min=1,max=200"`
-	Email    *string `json:"email" validate:"omitempty,email"`
-	Language string  `json:"language" validate:"required,oneof=en si ta"`
-	Version  int     `json:"version" validate:"gte=0"`
+	Name        string  `json:"name" validate:"required,min=1,max=200"`
+	Email       *string `json:"email" validate:"omitempty,email"`
+	Phone       *string `json:"phone" validate:"omitempty,max=20"`
+	Address     *string `json:"address" validate:"omitempty,max=500"`
+	DateOfBirth *string `json:"date_of_birth" validate:"omitempty"`
+	Language    string  `json:"language" validate:"required,oneof=en si ta"`
+	Version     int     `json:"version" validate:"gte=0"`
 }
 
 type setPasswordRequest struct {
@@ -442,9 +452,46 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
-	u, err := h.svc.UpdateProfile(r.Context(), p.UserID, UpdateProfileInput{
+	in := UpdateProfileInput{
 		Name: req.Name, Email: req.Email, Language: Language(req.Language), Version: req.Version,
-	})
+	}
+	if req.Phone != nil {
+		raw := strings.TrimSpace(*req.Phone)
+		if raw == "" {
+			empty := ""
+			in.Phone = &empty
+		} else {
+			n := httpx.NormalizePhone(raw)
+			if n == "" {
+				httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "invalid phone number"))
+				return
+			}
+			in.Phone = &n
+		}
+	}
+	if req.Address != nil {
+		addr := strings.TrimSpace(*req.Address)
+		in.Address = &addr
+	}
+	if req.DateOfBirth != nil {
+		raw := strings.TrimSpace(*req.DateOfBirth)
+		if raw == "" {
+			in.ClearDOB = true
+		} else {
+			dob, err := time.Parse("2006-01-02", raw)
+			if err != nil {
+				httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeValidation, "date of birth must be YYYY-MM-DD"))
+				return
+			}
+			today := time.Now().UTC()
+			if dob.After(today) {
+				httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeValidation, "date of birth cannot be in the future"))
+				return
+			}
+			in.DateOfBirth = &dob
+		}
+	}
+	u, err := h.svc.UpdateProfile(r.Context(), p.UserID, in)
 	if err != nil {
 		httpx.Error(w, r, mapError(err))
 		return
@@ -654,6 +701,9 @@ func mapError(err error) error {
 		return httpx.ErrForbidden
 	case errors.Is(err, ErrEmailTaken), errors.Is(err, ErrPhoneTaken), errors.Is(err, ErrGoogleTaken):
 		return httpx.NewError(http.StatusConflict, httpx.CodeConflict, "already in use")
+	case errors.Is(err, ErrNoLoginIdentity):
+		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"keep a phone number, email address, or Google sign-in on the account")
 	case errors.Is(err, ErrOptimisticLock):
 		return httpx.ErrConflict
 	default:

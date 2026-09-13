@@ -3,6 +3,7 @@ package records
 import (
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -86,9 +87,15 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer closeMultipart(file)
 
+	filename := header.Filename
+	if filename != "" {
+		filename = strings.ReplaceAll(filename, "\\", "/")
+		filename = filename[strings.LastIndex(filename, "/")+1:]
+	}
+
 	doc, err := h.svc.Upload(r.Context(), UploadInput{
 		Principal: p, OwnerUserID: ownerID, DocumentType: docType,
-		Filename: header.Filename, Data: file,
+		Filename: filename, Data: file,
 		IPAddress: middleware.ClientIP(r), UserAgent: r.UserAgent(),
 	})
 	if err != nil {

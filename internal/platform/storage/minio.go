@@ -19,6 +19,7 @@ import (
 // AGPLv3 licence on the MinIO server binary itself (DECISIONS.md ADR-003).
 type MinIOStorage struct {
 	client *minio.Client
+	region string
 }
 
 var _ Storage = (*MinIOStorage)(nil)
@@ -44,7 +45,7 @@ func New(cfg Config) (*MinIOStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage: create minio client: %w", err)
 	}
-	return &MinIOStorage{client: client}, nil
+	return &MinIOStorage{client: client, region: cfg.Region}, nil
 }
 
 // EnsureBuckets creates any missing bucket from the given list and applies
@@ -78,13 +79,25 @@ func (m *MinIOStorage) Put(ctx context.Context, bucket, key string, r io.Reader,
 	// the bucket's default encryption configuration (see EnsureBuckets), and
 	// the ServerSideEncryption option on PutObjectOptions is only for
 	// client-driven SSE-C/SSE-KMS, which this platform does not use.
-	_, err := m.client.PutObject(ctx, bucket, key, r, size, minio.PutObjectOptions{
-		ContentType: contentType,
-	})
+	opts := minio.PutObjectOptions{ContentType: contentType}
+	_, err := m.client.PutObject(ctx, bucket, key, r, size, opts)
+	if err != nil && isNoSuchBucket(err) {
+		if seeker, ok := r.(io.Seeker); ok {
+			if _, seekErr := seeker.Seek(0, io.SeekStart); seekErr == nil {
+				if ensureErr := m.EnsureBuckets(ctx, []string{bucket}, m.region); ensureErr == nil {
+					_, err = m.client.PutObject(ctx, bucket, key, r, size, opts)
+				}
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("storage: put %s/%s: %w", bucket, key, err)
 	}
 	return nil
+}
+
+func isNoSuchBucket(err error) bool {
+	return minio.ToErrorResponse(err).Code == "NoSuchBucket"
 }
 
 func (m *MinIOStorage) Get(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
