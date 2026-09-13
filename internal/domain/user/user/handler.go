@@ -532,7 +532,7 @@ func (h *Handler) PutPhoto(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "multipart field \"file\" is required"))
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, MaxProfilePhotoBytes+1))
 	if err != nil {
 		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "could not read uploaded photo").WithCause(err))
