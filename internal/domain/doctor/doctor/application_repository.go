@@ -215,8 +215,8 @@ func (r *Repository) DecideApplication(
 ) error {
 	const q = `
 		UPDATE doctor_applications SET
-			status = $2,
-			rejection_reason = CASE WHEN $2 = 'rejected' THEN $3 ELSE rejection_reason END,
+			status = $2::varchar,
+			rejection_reason = CASE WHEN $2::varchar = 'rejected' THEN $3 ELSE rejection_reason END,
 			decided_at = $4,
 			decided_by = $5,
 			updated_at = NOW()
