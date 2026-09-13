@@ -207,7 +207,9 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	credSvc := credentialing.NewService(pool, credRepo, objectStore, outbox, cfg.MinIODoctorDocsBucket, cfg.DocPresignTTL)
 	if cfg.DoctorServiceURL != "" {
 		if src, ok := meshCreds.(*servicetoken.Source); ok && src != nil {
-			credSvc.SetApplicationVerifier(credentialing.NewHTTPApplicationVerifier(cfg.DoctorServiceURL, src))
+			verifier := credentialing.NewHTTPApplicationVerifier(cfg.DoctorServiceURL, src)
+			credSvc.SetApplicationVerifier(verifier)
+			credSvc.SetPendingApplicationSource(verifier)
 			log.Info().Str("doctor_service_url", cfg.DoctorServiceURL).Msg("doctor application verify wired")
 		} else {
 			log.Warn().Msg("DOCTOR_SERVICE_URL set but mesh token unavailable; application approve will not hit doctor-service")

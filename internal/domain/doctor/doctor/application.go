@@ -304,6 +304,18 @@ func (s *Service) GetApplication(ctx context.Context, id uuid.UUID) (Application
 	return s.repo.GetApplication(ctx, id)
 }
 
+// ListPendingApplications is the admin/mesh view of public applications still
+// awaiting a credentialing decision.
+func (s *Service) ListPendingApplications(ctx context.Context, page, perPage int) ([]Application, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 50
+	}
+	return s.repo.ListPendingApplications(ctx, perPage, (page-1)*perPage)
+}
+
 // VerifyApplication is the admin approve/reject decision on a public application.
 func (s *Service) VerifyApplication(ctx context.Context, id uuid.UUID, approve bool, reason string, actorID *uuid.UUID) (Application, error) {
 	app, err := s.repo.GetApplication(ctx, id)

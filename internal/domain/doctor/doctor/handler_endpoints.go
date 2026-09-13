@@ -656,6 +656,21 @@ func (h *Handler) getApplicationByPhone(w http.ResponseWriter, r *http.Request) 
 	httpx.OK(w, r, toInternalApplicationResponse(app))
 }
 
+// listPendingApplications handles GET /internal/doctors/applications/pending
+func (h *Handler) listPendingApplications(w http.ResponseWriter, r *http.Request) {
+	page, perPage, _ := httpx.Pagination(r)
+	apps, total, err := h.svc.ListPendingApplications(r.Context(), page, perPage)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out := make([]map[string]any, len(apps))
+	for i := range apps {
+		out[i] = toApplicationResponse(apps[i])
+	}
+	httpx.List(w, r, out, httpx.Meta{Page: page, PerPage: perPage, Total: total})
+}
+
 // getApplicationByEmail handles GET /internal/doctors/applications/by-email/{email}
 func (h *Handler) getApplicationByEmail(w http.ResponseWriter, r *http.Request) {
 	email, err := url.PathUnescape(chi.URLParam(r, "email"))

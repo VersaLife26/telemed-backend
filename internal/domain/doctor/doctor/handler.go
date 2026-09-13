@@ -79,6 +79,7 @@ func (h *Handler) InternalRoutes() chi.Router {
 	r.Post("/{id}/verify", h.verify)
 	r.Get("/applications/by-phone/{phone}", h.getApplicationByPhone)
 	r.Get("/applications/by-email/{email}", h.getApplicationByEmail)
+	r.Get("/applications/pending", h.listPendingApplications)
 	r.Get("/applications/{id}", h.getApplicationByID)
 	r.Post("/applications/{id}/verify", h.verifyApplication)
 	r.Post("/applications/{id}/attach", h.attachApplication)

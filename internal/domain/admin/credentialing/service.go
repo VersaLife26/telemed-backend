@@ -37,6 +37,7 @@ type Service struct {
 	bucket     string
 	presignTTL time.Duration
 	apps       ApplicationVerifier
+	pending    PendingApplicationSource
 }
 
 // Presign TTL bounds. A presigned URL is a bearer credential for a scanned NIC
@@ -69,7 +70,14 @@ func (s *Service) SetApplicationVerifier(v ApplicationVerifier) {
 	s.apps = v
 }
 
+// SetPendingApplicationSource wires the doctor-service pending list used to
+// heal the verification queue when application_submitted events were lost.
+func (s *Service) SetPendingApplicationSource(src PendingApplicationSource) {
+	s.pending = src
+}
+
 func (s *Service) ListPending(ctx context.Context, page, perPage int) ([]PresignedDoctorSummary, int64, error) {
+	s.syncPendingApplications(ctx)
 	docs, total, err := s.repo.ListPending(ctx, page, perPage)
 	if err != nil {
 		return nil, 0, err
@@ -79,6 +87,51 @@ func (s *Service) ListPending(ctx context.Context, page, perPage int) ([]Presign
 		out[i] = s.presign(ctx, docs[i])
 	}
 	return out, total, nil
+}
+
+// syncPendingApplications projects any doctor-service pending applications that
+// are missing from doctor_projection so reviewers can still open and decide them.
+func (s *Service) syncPendingApplications(ctx context.Context) {
+	if s.pending == nil {
+		return
+	}
+	apps, err := s.pending.ListPendingApplications(ctx)
+	if err != nil {
+		log := logger.FromContext(ctx)
+		log.Warn().Err(err).Msg("credentialing: sync pending applications failed")
+		return
+	}
+	for _, app := range apps {
+		if _, err := s.repo.GetDoctor(ctx, app.ID); err == nil {
+			continue
+		} else if !errors.Is(err, ErrNotFound) {
+			log := logger.FromContext(ctx)
+			log.Warn().Err(err).
+				Str("application_id", app.ID.String()).
+				Msg("credentialing: lookup during pending sync failed")
+			continue
+		}
+		summary := DoctorSummary{
+			DoctorID:        app.ID,
+			FullName:        app.FullName,
+			Email:           app.Email,
+			Phone:           app.Phone,
+			SLMCNumber:      app.SLMCNumber,
+			YearsExperience: app.YearsExperience,
+			SpecialtyCode:   app.Specialty,
+			FeeCents:        app.FeeCents,
+			RegisteredAt:    app.CreatedAt,
+		}
+		if summary.RegisteredAt.IsZero() {
+			summary.RegisteredAt = time.Now().UTC()
+		}
+		if err := s.repo.UpsertDoctorFromEvent(ctx, uuid.New(), summary); err != nil {
+			log := logger.FromContext(ctx)
+			log.Warn().Err(err).
+				Str("application_id", app.ID.String()).
+				Msg("credentialing: could not project pending application into queue")
+		}
+	}
 }
 
 // GetDoctor returns the projected summary with presigned document URLs and

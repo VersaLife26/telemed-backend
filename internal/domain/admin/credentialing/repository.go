@@ -56,6 +56,22 @@ func (r *Repository) UpsertDoctorFromEvent(ctx context.Context, eventID uuid.UUI
 	_, err := r.pool.Exec(ctx, q, d.DoctorID, eventID, d.FullName, d.Email, d.Phone, d.SLMCNumber,
 		d.YearsExperience, d.SpecialtyCode, nullInt64(d.FeeCents), d.SLMCCertificateKey, d.NICDocumentKey,
 		d.DegreeCertificateKey, d.PhotoKey, d.RegisteredAt)
+	if err != nil && database.IsUniqueViolation(err) && d.SLMCNumber != "" {
+		// A rejected projection still held the SLMC under the old global unique
+		// index (and may until migrate 000012). Free it so a re-apply can land.
+		_, freeErr := r.pool.Exec(ctx, `
+			UPDATE doctor_projection
+			SET slmc_number = slmc_number || '#rejected:' || doctor_id::text,
+			    updated_at = NOW()
+			WHERE slmc_number = $1
+			  AND verification_status = 'rejected'
+			  AND doctor_id <> $2`, d.SLMCNumber, d.DoctorID)
+		if freeErr == nil {
+			_, err = r.pool.Exec(ctx, q, d.DoctorID, eventID, d.FullName, d.Email, d.Phone, d.SLMCNumber,
+				d.YearsExperience, d.SpecialtyCode, nullInt64(d.FeeCents), d.SLMCCertificateKey, d.NICDocumentKey,
+				d.DegreeCertificateKey, d.PhotoKey, d.RegisteredAt)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("credentialing: upsert doctor projection: %w", err)
 	}

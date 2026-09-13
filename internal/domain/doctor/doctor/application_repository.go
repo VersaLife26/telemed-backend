@@ -176,6 +176,38 @@ func (r *Repository) FindOpenOrRecentApplicationByPhone(ctx context.Context, pho
 	return a, nil
 }
 
+// ListPendingApplications returns public applications awaiting admin review.
+func (r *Repository) ListPendingApplications(ctx context.Context, limit, offset int) ([]Application, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var total int64
+	if err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM doctor_applications WHERE status = 'pending'`,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("doctor: count pending applications: %w", err)
+	}
+	q := `SELECT ` + applicationColumns + `
+		FROM doctor_applications
+		WHERE status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT $1 OFFSET $2`
+	rows, err := r.pool.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("doctor: list pending applications: %w", err)
+	}
+	defer rows.Close()
+	var out []Application
+	for rows.Next() {
+		a, err := scanApplication(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, a)
+	}
+	return out, total, rows.Err()
+}
+
 // DecideApplication records approve/reject on a pending application.
 func (r *Repository) DecideApplication(
 	ctx context.Context, tx pgx.Tx, id uuid.UUID,
