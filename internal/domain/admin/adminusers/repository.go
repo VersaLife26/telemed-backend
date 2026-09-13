@@ -31,6 +31,18 @@ func NewRepository(pool database.Pool) *Repository { return &Repository{pool: po
 // admin's role is changed explicitly via Update, never silently overwritten
 // by whatever role happened to be primary on this particular token.
 func (r *Repository) EnsureByKeycloakSubject(ctx context.Context, subject, email, displayName, role string) (AdminUser, error) {
+	// An admin created from the console before their first sign-in carries the
+	// email as a placeholder subject: AccessProvider.CreateAdmin cannot know the
+	// Access user id. Re-key that row on first sign-in, or the insert below
+	// collides with idx_admin_users_email. Only placeholder rows are re-keyed,
+	// so an account that has signed in never changes subject.
+	const bind = `
+		UPDATE admin_users SET keycloak_subject = $1, updated_at = NOW()
+		WHERE lower(email) = lower($2) AND keycloak_subject = lower(email) AND deleted_at IS NULL`
+	if _, err := r.pool.Exec(ctx, bind, subject, email); err != nil {
+		return AdminUser{}, fmt.Errorf("adminusers: bind subject: %w", err)
+	}
+
 	const q = `
 		INSERT INTO admin_users (keycloak_subject, email, display_name, role, last_login_at)
 		VALUES ($1, $2, $3, $4, NOW())

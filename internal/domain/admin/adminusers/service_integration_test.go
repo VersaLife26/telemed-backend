@@ -12,6 +12,7 @@ import (
 
 	"telemed/internal/domain/admin/adminusers"
 	"telemed/internal/domain/admin/testutil"
+	mw "telemed/internal/platform/middleware"
 )
 
 // recordingIDP is a fake Keycloak that records the calls made to it, so a test
@@ -222,5 +223,35 @@ func TestAccessProviderIsADatabaseFirstNoOp(t *testing.T) {
 	}
 	if err := p.RevokeSessions(ctx, subject); err != nil {
 		t.Errorf("RevokeSessions = %v, want nil", err)
+	}
+}
+
+// TestFirstSignInRekeysAConsoleCreatedAdmin: the console stores the email as a
+// placeholder subject, and the first sign-in carries the Access user id.
+// Without the re-key the upsert collides with idx_admin_users_email and every
+// admin request 500s.
+func TestFirstSignInRekeysAConsoleCreatedAdmin(t *testing.T) {
+	svc := newService(t, adminusers.NewAccessProvider(zerolog.Nop()))
+	ctx := t.Context()
+
+	created, err := svc.Create(ctx, adminusers.CreateParams{Email: "ops@clinic.lk", Role: "ops"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	accessID := uuid.NewString()
+	got, err := svc.Ensure(ctx, mw.Principal{Subject: accessID, Email: "ops@clinic.lk", Roles: []mw.Role{"ops"}})
+	if err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+	if got.ID != created.ID || got.KeycloakSubject != accessID {
+		t.Errorf("first sign-in resolved row %s subject %q, want row %s subject %q",
+			got.ID, got.KeycloakSubject, created.ID, accessID)
+	}
+
+	// Only placeholder rows are re-keyed: another subject presenting the same
+	// email must not take over an account that has already signed in.
+	if _, err := svc.Ensure(ctx, mw.Principal{Subject: uuid.NewString(), Email: "ops@clinic.lk", Roles: []mw.Role{"ops"}}); err == nil {
+		t.Error("a second subject for a bound email resolved; want the unique-email error")
 	}
 }
