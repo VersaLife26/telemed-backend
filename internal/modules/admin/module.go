@@ -270,40 +270,44 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 	adminCIDRs := splitCSV(cfg.AdminIPAllowlist)
 	// --- routes ---------------------------------------------------------
-	m.API = func(r chi.Router) {
-		// Every route: authenticate, then the service-wide IP allowlist,
-		// then resolve/enforce the local admin account (active + per-admin
-		// IP scope), then auto-audit every state-changing request, then
-		// never let a browser or proxy cache the response. RequireRole is
-		// applied per route group below via rbac.Roles, so the exact same
-		// table drives both the tested matrix (internal/rbac) and what is
-		// actually enforced here.
-		r.Use(middleware.RequireAuth(deps.Auth))
-		r.Use(middleware.IPAllowlist(adminCIDRs, log))
-		r.Use(adminusers.RequireActiveAdminUser(adminUsersSvc, log))
-		r.Use(audit.Middleware(auditSvc, log))
-		r.Use(middleware.NoStore)
+	// cmd/telemed mounts every domain at /api/v1; the standalone admin service
+	// mounted at /api/v1/admin, and the route table and console still use that.
+	m.API = func(api chi.Router) {
+		api.Route("/admin", func(r chi.Router) {
+			// Every route: authenticate, then the service-wide IP allowlist,
+			// then resolve/enforce the local admin account (active + per-admin
+			// IP scope), then auto-audit every state-changing request, then
+			// never let a browser or proxy cache the response. RequireRole is
+			// applied per route group below via rbac.Roles, so the exact same
+			// table drives both the tested matrix (internal/rbac) and what is
+			// actually enforced here.
+			r.Use(middleware.RequireAuth(deps.Auth))
+			r.Use(middleware.IPAllowlist(adminCIDRs, log))
+			r.Use(adminusers.RequireActiveAdminUser(adminUsersSvc, log))
+			r.Use(audit.Middleware(auditSvc, log))
+			r.Use(middleware.NoStore)
 
-		// Any authenticated admin may read their own row; no GroupAdminUsers gate.
-		r.Get("/me", adminUsersHandler.Me)
+			// Any authenticated admin may read their own row; no GroupAdminUsers gate.
+			r.Get("/me", adminUsersHandler.Me)
 
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupCredentialing)...)).Mount("/doctors", credHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupCredentialing)...)).Mount("/notifications", notifHandler.Routes())
-		// "/admin-users", not "/admins". Under the /admin prefix the pair
-		// would otherwise read /admin/admins and /admin/users -- one word
-		// apart, one listing the handful of staff accounts and the other
-		// listing every patient and doctor on the platform. That is a
-		// confusion worth spending three characters to remove, on a console
-		// where the two screens look alike and only one of them is PHI.
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAdminUsers)...)).Mount("/admin-users", adminUsersHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupUsers)...)).Mount("/users", usersHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAppointments)...)).Mount("/appointments", apptHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupFinance)...)).Mount("/finance", financeHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupContent)...)).Mount("/content", contentHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupDisputes)...)).Mount("/disputes", disputesHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupConfig)...)).Mount("/configs", configHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAnalytics)...)).Mount("/analytics", analyticsHandler.Routes())
-		r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAudit)...)).Mount("/audit", auditHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupCredentialing)...)).Mount("/doctors", credHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupCredentialing)...)).Mount("/notifications", notifHandler.Routes())
+			// "/admin-users", not "/admins". Under the /admin prefix the pair
+			// would otherwise read /admin/admins and /admin/users -- one word
+			// apart, one listing the handful of staff accounts and the other
+			// listing every patient and doctor on the platform. That is a
+			// confusion worth spending three characters to remove, on a console
+			// where the two screens look alike and only one of them is PHI.
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAdminUsers)...)).Mount("/admin-users", adminUsersHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupUsers)...)).Mount("/users", usersHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAppointments)...)).Mount("/appointments", apptHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupFinance)...)).Mount("/finance", financeHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupContent)...)).Mount("/content", contentHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupDisputes)...)).Mount("/disputes", disputesHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupConfig)...)).Mount("/configs", configHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAnalytics)...)).Mount("/analytics", analyticsHandler.Routes())
+			r.With(middleware.RequireRole(rbac.Roles(rbac.GroupAudit)...)).Mount("/audit", auditHandler.Routes())
+		})
 	}
 
 	m.Health = []server.HealthCheck{
