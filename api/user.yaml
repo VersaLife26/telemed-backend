@@ -163,6 +163,60 @@ paths:
       responses:
         "204": { description: Deleted }
 
+  /users/me/photo:
+    put:
+      tags: [users]
+      summary: Upload or replace the caller's profile photograph
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { description: Photo too large }
+    get:
+      tags: [users]
+      summary: Download the caller's profile photograph
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Image bytes
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [users]
+      summary: Remove the caller's profile photograph
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /users/me/family:
     get:
       tags: [users]
@@ -273,6 +327,12 @@ components:
         phone: { type: string }
         email: { type: string, nullable: true }
         name: { type: string }
+        address: { type: string }
+        date_of_birth: { type: string, format: date, nullable: true }
+        photo_url:
+          type: string
+          nullable: true
+          description: Authenticated path to the profile photograph when one is set
         language: { type: string, enum: [en, si, ta] }
         role: { type: string }
         status: { type: string }

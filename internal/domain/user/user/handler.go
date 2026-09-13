@@ -3,7 +3,9 @@ package user
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +74,9 @@ func (h *Handler) Routes() chi.Router {
 		r.Get("/", h.GetMe)
 		r.Put("/", h.UpdateMe)
 		r.Put("/password", h.SetPassword)
+		r.Put("/photo", h.PutPhoto)
+		r.Get("/photo", h.GetPhoto)
+		r.Delete("/photo", h.DeletePhoto)
 		r.Delete("/", h.DeleteMe)
 
 		r.Route("/family", func(r chi.Router) {
@@ -199,6 +204,7 @@ type userResponse struct {
 	Name        string  `json:"name"`
 	Address     string  `json:"address"`
 	DateOfBirth *string `json:"date_of_birth,omitempty"`
+	PhotoURL    *string `json:"photo_url,omitempty"`
 	Language    string  `json:"language"`
 	Role        string  `json:"role"`
 	Status      string  `json:"status"`
@@ -220,6 +226,10 @@ func toUserResponse(u User) userResponse {
 	if u.DateOfBirth != nil {
 		dob := u.DateOfBirth.Format("2006-01-02")
 		out.DateOfBirth = &dob
+	}
+	if u.PhotoUpdatedAt != nil {
+		url := ProfilePhotoURLPath + "?v=" + strconv.FormatInt(u.PhotoUpdatedAt.Unix(), 10)
+		out.PhotoURL = &url
 	}
 	return out
 }
@@ -499,6 +509,76 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, r, toUserResponse(*u))
 }
 
+const maxProfilePhotoRequestBytes = MaxProfilePhotoBytes + (1 << 20) // file + multipart overhead
+
+func (h *Handler) PutPhoto(w http.ResponseWriter, r *http.Request) {
+	p, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, r, httpx.ErrUnauthorized)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxProfilePhotoRequestBytes)
+	if err := r.ParseMultipartForm(maxProfilePhotoRequestBytes); err != nil { //nolint:gosec // bounded by MaxBytesReader above
+		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "photo exceeds the size limit").WithCause(err))
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "multipart field \"file\" is required"))
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, MaxProfilePhotoBytes+1))
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "could not read uploaded photo").WithCause(err))
+		return
+	}
+	u, err := h.svc.SetProfilePhoto(r.Context(), p.UserID, header.Filename, data)
+	if err != nil {
+		httpx.Error(w, r, mapError(err))
+		return
+	}
+	httpx.OK(w, r, toUserResponse(*u))
+}
+
+func (h *Handler) GetPhoto(w http.ResponseWriter, r *http.Request) {
+	p, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, r, httpx.ErrUnauthorized)
+		return
+	}
+	photo, err := h.svc.GetProfilePhoto(r.Context(), p.UserID)
+	if err != nil {
+		httpx.Error(w, r, mapError(err))
+		return
+	}
+	w.Header().Set("Content-Type", photo.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(photo.Data)))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(photo.Data)
+}
+
+func (h *Handler) DeletePhoto(w http.ResponseWriter, r *http.Request) {
+	p, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, r, httpx.ErrUnauthorized)
+		return
+	}
+	u, err := h.svc.ClearProfilePhoto(r.Context(), p.UserID)
+	if err != nil {
+		httpx.Error(w, r, mapError(err))
+		return
+	}
+	httpx.OK(w, r, toUserResponse(*u))
+}
+
 func (h *Handler) SetPassword(w http.ResponseWriter, r *http.Request) {
 	p, ok := PrincipalFromContext(r.Context())
 	if !ok {
@@ -704,6 +784,12 @@ func mapError(err error) error {
 	case errors.Is(err, ErrNoLoginIdentity):
 		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
 			"keep a phone number, email address, or Google sign-in on the account")
+	case errors.Is(err, ErrInvalidProfilePhoto):
+		return httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest,
+			"profile photo must be a JPEG, PNG, or WebP image")
+	case errors.Is(err, ErrProfilePhotoTooLarge):
+		return httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest,
+			"profile photo must be 2 MB or smaller")
 	case errors.Is(err, ErrOptimisticLock):
 		return httpx.ErrConflict
 	default:

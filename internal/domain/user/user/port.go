@@ -48,6 +48,9 @@ var (
 
 	// ErrOTPDeliveryUnavailable means no OTP transport is wired at all.
 	ErrOTPDeliveryUnavailable = errors.New("user: no otp delivery transport is configured")
+
+	ErrInvalidProfilePhoto  = errors.New("user: profile photo must be a jpeg, png, or webp image")
+	ErrProfilePhotoTooLarge = errors.New("user: profile photo exceeds the size limit")
 )
 
 // EmailSender delivers one transactional email. It is the OTP transport for

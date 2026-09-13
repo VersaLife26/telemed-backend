@@ -53,14 +53,14 @@ func (r *Repository) Pool() database.Pool { return r.pool }
 
 const userColumns = `id, phone, email, name, nic_hash, nic_hash_version, language, role, status,
 	no_show_count, keycloak_id, google_sub, email_verified_at, erasure_due_at, anonymized_at,
-	created_at, updated_at, deleted_at, version, address, date_of_birth`
+	created_at, updated_at, deleted_at, version, address, date_of_birth, photo_updated_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	var phone *string
 	err := row.Scan(&u.ID, &phone, &u.Email, &u.Name, &u.NICHash, &u.NICHashVersion, &u.Language, &u.Role, &u.Status,
 		&u.NoShowCount, &u.KeycloakID, &u.GoogleSub, &u.EmailVerifiedAt, &u.ErasureDueAt, &u.AnonymizedAt,
-		&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version, &u.Address, &u.DateOfBirth)
+		&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version, &u.Address, &u.DateOfBirth, &u.PhotoUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -237,6 +237,67 @@ func (r *Repository) UpdateProfile(ctx context.Context, tx dbtx, u *User) error 
 	return nil
 }
 
+// ProfilePhoto is the raw avatar payload. It is loaded only by the photo
+// download path so ordinary profile / directory reads stay cheap.
+type ProfilePhoto struct {
+	Data        []byte
+	ContentType string
+	UpdatedAt   time.Time
+}
+
+// GetProfilePhoto returns the stored avatar, or ErrNotFound when none is set.
+func (r *Repository) GetProfilePhoto(ctx context.Context, tx dbtx, userID uuid.UUID) (*ProfilePhoto, error) {
+	const q = `
+		SELECT photo_data, photo_content_type, photo_updated_at
+		FROM users
+		WHERE id = $1 AND deleted_at IS NULL AND photo_data IS NOT NULL`
+	var photo ProfilePhoto
+	err := tx.QueryRow(ctx, q, userID).Scan(&photo.Data, &photo.ContentType, &photo.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("user: get profile photo: %w", err)
+	}
+	return &photo, nil
+}
+
+// SetProfilePhoto replaces the caller's avatar bytes.
+func (r *Repository) SetProfilePhoto(ctx context.Context, tx dbtx, userID uuid.UUID, data []byte, contentType string) (time.Time, error) {
+	const q = `
+		UPDATE users
+		SET photo_data = $2, photo_content_type = $3, photo_updated_at = NOW(),
+		    updated_at = NOW(), version = version + 1
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING photo_updated_at`
+	var updatedAt time.Time
+	err := tx.QueryRow(ctx, q, userID, data, contentType).Scan(&updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("user: set profile photo: %w", err)
+	}
+	return updatedAt, nil
+}
+
+// ClearProfilePhoto removes the caller's avatar.
+func (r *Repository) ClearProfilePhoto(ctx context.Context, tx dbtx, userID uuid.UUID) error {
+	const q = `
+		UPDATE users
+		SET photo_data = NULL, photo_content_type = NULL, photo_updated_at = NULL,
+		    updated_at = NOW(), version = version + 1
+		WHERE id = $1 AND deleted_at IS NULL`
+	tag, err := tx.Exec(ctx, q, userID)
+	if err != nil {
+		return fmt.Errorf("user: clear profile photo: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetKeycloakID records the mirrored Keycloak identity once the (best-effort,
 // non-blocking) provisioning call succeeds.
 func (r *Repository) SetKeycloakID(ctx context.Context, tx dbtx, userID uuid.UUID, keycloakID string) error {
@@ -325,6 +386,7 @@ func (r *Repository) AnonymizeDueUsers(ctx context.Context, tx dbtx, now time.Ti
 		SET name = '[erased]', email = NULL, nic_hash = NULL, nic_hash_version = NULL,
 		    phone = 'erased:' || id::text, password_hash = NULL, google_sub = NULL, email_verified_at = NULL,
 		    address = '', date_of_birth = NULL,
+		    photo_data = NULL, photo_content_type = NULL, photo_updated_at = NULL,
 		    anonymized_at = NOW(), updated_at = NOW(), version = version + 1
 		WHERE id IN (
 			SELECT id FROM users

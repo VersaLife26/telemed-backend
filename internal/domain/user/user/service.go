@@ -997,6 +997,63 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, in Update
 	return s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
 }
 
+// SetProfilePhoto validates and stores a self-service avatar.
+func (s *Service) SetProfilePhoto(ctx context.Context, userID uuid.UUID, filename string, data []byte) (*User, error) {
+	if len(data) == 0 {
+		return nil, ErrInvalidProfilePhoto
+	}
+	if len(data) > MaxProfilePhotoBytes {
+		return nil, ErrProfilePhotoTooLarge
+	}
+	ext := ProfilePhotoExtension(filename)
+	sniffed := SniffProfilePhotoContentType(data)
+	if !IsAllowedProfilePhoto(ext, sniffed) {
+		return nil, ErrInvalidProfilePhoto
+	}
+	existing, err := s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
+	if err != nil {
+		return nil, err
+	}
+	if existing.DeletedAt != nil {
+		return nil, ErrUserNotFound
+	}
+	if _, err := s.repo.SetProfilePhoto(ctx, s.repo.Pool(), userID, data, sniffed); err != nil {
+		return nil, err
+	}
+	return s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
+}
+
+// GetProfilePhoto returns the raw avatar bytes for streaming.
+func (s *Service) GetProfilePhoto(ctx context.Context, userID uuid.UUID) (*ProfilePhoto, error) {
+	existing, err := s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
+	if err != nil {
+		return nil, err
+	}
+	if existing.DeletedAt != nil {
+		return nil, ErrUserNotFound
+	}
+	photo, err := s.repo.GetProfilePhoto(ctx, s.repo.Pool(), userID)
+	if err != nil {
+		return nil, err
+	}
+	return photo, nil
+}
+
+// ClearProfilePhoto removes the caller's avatar.
+func (s *Service) ClearProfilePhoto(ctx context.Context, userID uuid.UUID) (*User, error) {
+	existing, err := s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
+	if err != nil {
+		return nil, err
+	}
+	if existing.DeletedAt != nil {
+		return nil, ErrUserNotFound
+	}
+	if err := s.repo.ClearProfilePhoto(ctx, s.repo.Pool(), userID); err != nil {
+		return nil, err
+	}
+	return s.repo.FindUserByID(ctx, s.repo.Pool(), userID)
+}
+
 // DeleteAccount soft-deletes the account and schedules PDPA erasure after
 // erasureGracePeriod, revoking every active session in the same transaction
 // so deletion takes effect immediately even though the data itself survives
