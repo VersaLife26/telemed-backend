@@ -131,12 +131,12 @@ func emailsCompatible(u *User, app DoctorApplication) bool {
 
 // ensureDoctorAccount creates or promotes the user for an approved application
 // and attaches the doctor profile. Idempotent once the application is activated.
-func (s *Service) ensureDoctorAccount(ctx context.Context, app DoctorApplication) (*User, bool, error) {
+func (s *Service) ensureDoctorAccount(ctx context.Context, app DoctorApplication) (*User, error) {
 	if s.doctors == nil {
-		return nil, false, fmt.Errorf("user: doctor applications not configured")
+		return nil, fmt.Errorf("user: doctor applications not configured")
 	}
 	if !applicationReadyToActivate(app) {
-		return nil, false, fmt.Errorf("user: doctor application is %s", app.Status)
+		return nil, fmt.Errorf("user: doctor application is %s", app.Status)
 	}
 
 	email := NormalizeEmail(app.Email)
@@ -172,18 +172,18 @@ func (s *Service) ensureDoctorAccount(ctx context.Context, app DoctorApplication
 		}
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if err := s.refuseIfClosed(u); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if err := s.attachApprovedDoctor(ctx, app, u); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if isNew {
 		s.provisionKeycloak(ctx, u)
 	}
-	return u, isNew, nil
+	return u, nil
 }
 
 // ApplicationApprovedConsumer provisions a doctor user when credentialing
@@ -228,7 +228,7 @@ func (c *ApplicationApprovedConsumer) Handle(ctx context.Context, env events.Env
 	if !applicationReadyToActivate(app) {
 		return nil
 	}
-	_, _, err = c.svc.ensureDoctorAccount(ctx, app)
+	_, err = c.svc.ensureDoctorAccount(ctx, app)
 	if errors.Is(err, ErrUserSuspended) || errors.Is(err, ErrUserDeleted) || errors.Is(err, ErrPhoneTaken) {
 		c.log.Warn().Err(err).
 			Str("application_id", payload.ApplicationID.String()).

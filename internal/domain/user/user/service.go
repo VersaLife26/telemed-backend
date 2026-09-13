@@ -572,7 +572,7 @@ func (s *Service) LoginEmail(ctx context.Context, rawEmail, password, deviceID s
 		if !consumePasswordCheck(app.PasswordHash, password) {
 			return AuthResult{}, ErrInvalidCredentials
 		}
-		u, _, aerr := s.ensureDoctorAccount(ctx, app)
+		u, aerr := s.ensureDoctorAccount(ctx, app)
 		if aerr != nil {
 			return AuthResult{}, loginDoctorAccountError(aerr)
 		}
@@ -594,7 +594,7 @@ func (s *Service) LoginEmail(ctx context.Context, rawEmail, password, deviceID s
 		return AuthResult{}, ErrInvalidCredentials
 	}
 	if hasApp && applicationReadyToActivate(app) {
-		if _, _, aerr := s.ensureDoctorAccount(ctx, app); aerr != nil {
+		if _, aerr := s.ensureDoctorAccount(ctx, app); aerr != nil {
 			return AuthResult{}, loginDoctorAccountError(aerr)
 		}
 		fresh, ferr := s.repo.FindUserByEmail(ctx, s.repo.Pool(), email)
