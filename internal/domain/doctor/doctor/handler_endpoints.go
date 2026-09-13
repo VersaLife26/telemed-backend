@@ -602,7 +602,8 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	app, err := h.svc.Apply(r.Context(), ApplyInput{
-		Phone: req.Phone, Email: req.Email, FirstName: req.FirstName, LastName: req.LastName,
+		Phone: req.Phone, Email: req.Email, Password: req.Password,
+		FirstName: req.FirstName, LastName: req.LastName,
 		DisplayName: req.DisplayName, SLMCNumber: req.SLMCNumber, Specialty: req.Specialty,
 		ExperienceYears: req.ExperienceYears, FeeCents: req.FeeCents, RequiredFeeCents: req.RequiredFeeCents,
 		Languages: toLanguages(req.Languages), LanguageOther: req.LanguageOther, Bio: req.Bio,
@@ -645,7 +646,18 @@ func (h *Handler) getApplicationByPhone(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, err)
 		return
 	}
-	httpx.OK(w, r, toApplicationResponse(app))
+	httpx.OK(w, r, toInternalApplicationResponse(app))
+}
+
+// toInternalApplicationResponse is the mesh shape for OTP activation. It
+// includes password_hash so user-service can set email/password login; the
+// admin console uses toApplicationResponse, which never exposes the hash.
+func toInternalApplicationResponse(a Application) map[string]any {
+	out := toApplicationResponse(a)
+	if a.PasswordHash != "" {
+		out["password_hash"] = a.PasswordHash
+	}
+	return out
 }
 
 // verifyApplication handles POST /internal/doctors/applications/{id}/verify

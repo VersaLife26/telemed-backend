@@ -139,6 +139,7 @@ type registerRequest struct {
 type applyRequest struct {
 	Phone                 string       `json:"phone" validate:"required,sriphone"`
 	Email                 string       `json:"email" validate:"required,email"`
+	Password              string       `json:"password" validate:"required,min=8,max=72"`
 	FirstName             string       `json:"first_name" validate:"required,min=1,max=100"`
 	LastName              string       `json:"last_name" validate:"required,min=1,max=100"`
 	DisplayName           string       `json:"display_name" validate:"omitempty,min=2,max=200"`

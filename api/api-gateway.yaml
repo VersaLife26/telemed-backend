@@ -188,10 +188,11 @@ components:
 
     DoctorApplyRequest:
       type: object
-      required: [phone, email, first_name, last_name, slmc_number, specialty, fee_lkr, required_fee_lkr, languages, medical_school, qualifications, availability_notes, practicing_locations, terms_accepted, bank]
+      required: [phone, email, password, first_name, last_name, slmc_number, specialty, fee_lkr, required_fee_lkr, languages, medical_school, qualifications, availability_notes, practicing_locations, terms_accepted, bank]
       properties:
         phone: { type: string, example: "+94771234567" }
         email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 72, description: Chosen at apply; enables email sign-in after approval and OTP activation }
         first_name: { type: string }
         last_name: { type: string }
         display_name: { type: string, description: Optional. Defaults to first_name + last_name. }

@@ -51,14 +51,18 @@ type Application struct {
 	BankEncrypted         string
 	BankName              string
 	BankBranch            string
-	Status                ApplicationStatus
-	RejectionReason       string
-	DecidedAt             *time.Time
-	DecidedBy             *uuid.UUID
-	ActivatedUserID       *uuid.UUID
-	ActivatedAt           *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// PasswordHash is bcrypt of the password chosen at apply. Never returned
+	// on admin/public JSON; internal by-phone responses include it so
+	// user-service can copy it onto the account at OTP attach.
+	PasswordHash    string
+	Status          ApplicationStatus
+	RejectionReason string
+	DecidedAt       *time.Time
+	DecidedBy       *uuid.UUID
+	ActivatedUserID *uuid.UUID
+	ActivatedAt     *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // ApplyInput is the validated public apply payload.
@@ -84,6 +88,8 @@ type ApplyInput struct {
 	PracticingLocations   []string
 	TermsAccepted         bool
 	Bank                  *BankDetails
+	// Password is plaintext from the apply form; hashed before persist.
+	Password string
 }
 
 var (
@@ -108,6 +114,13 @@ func (s *Service) Apply(ctx context.Context, in ApplyInput) (Application, error)
 		return Application{}, fmt.Errorf("%w: unknown specialty %q", ErrInvalidTransition, in.Specialty)
 	}
 	if err := validateApplyInput(in); err != nil {
+		return Application{}, err
+	}
+	if !validApplyPassword(in.Password) {
+		return Application{}, fmt.Errorf("%w: password must be 8–72 characters", ErrInvalidTransition)
+	}
+	passwordHash, err := hashApplyPassword(in.Password)
+	if err != nil {
 		return Application{}, err
 	}
 	first := strings.TrimSpace(in.FirstName)
@@ -147,6 +160,7 @@ func (s *Service) Apply(ctx context.Context, in ApplyInput) (Application, error)
 		BankEncrypted:         bankEnc,
 		BankName:              strings.TrimSpace(in.Bank.BankName),
 		BankBranch:            strings.TrimSpace(in.Bank.BranchName),
+		PasswordHash:          passwordHash,
 		Status:                ApplicationPending,
 	}
 	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {

@@ -386,6 +386,12 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 						return perr
 					}
 				}
+				if approvedApp.PasswordHash != "" {
+					if perr := s.repo.SetPasswordHash(ctx, tx, u.ID, approvedApp.PasswordHash); perr != nil {
+						return perr
+					}
+					u.PasswordHash = approvedApp.PasswordHash
+				}
 				if u.Role != RoleDoctor {
 					if serr := s.repo.SetRole(ctx, tx, u.ID, RoleDoctor); serr != nil {
 						return serr
@@ -403,6 +409,7 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 			role := RolePatient
 			name := ""
 			var emailPtr *string
+			passwordHash := ""
 			if approvedApp != nil {
 				role = RoleDoctor
 				name = approvedApp.DisplayName
@@ -410,6 +417,7 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 					email := approvedApp.Email
 					emailPtr = &email
 				}
+				passwordHash = approvedApp.PasswordHash
 			}
 			// An email identity creates an email-only account: phone stays
 			// empty, which migration 000005 allows -- it dropped NOT NULL on
@@ -419,9 +427,10 @@ func (s *Service) VerifyOTP(ctx context.Context, ident OTPIdentity, code, device
 				emailPtr = &email
 			}
 			u = &User{
-				Phone: phone,
-				Name:  name,
-				Email: emailPtr,
+				Phone:        phone,
+				Name:         name,
+				Email:        emailPtr,
+				PasswordHash: passwordHash,
 				// English default; the client sets a preference later via
 				// PUT /users/me. OTP verify carries no profile fields (SDD
 				// 33.1's verify request is {phone, otp, device_id} only).

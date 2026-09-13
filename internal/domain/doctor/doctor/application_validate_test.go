@@ -10,6 +10,7 @@ func validApplyInput() ApplyInput {
 	return ApplyInput{
 		FirstName:           "Amila",
 		LastName:            "Perera",
+		Password:            "secure-pass",
 		Languages:           []Language{LanguageEN, LanguageSI},
 		MedicalSchool:       "University of Colombo",
 		QualificationsText:  "MBBS, MD",

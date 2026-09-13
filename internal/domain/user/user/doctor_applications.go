@@ -26,11 +26,12 @@ type DoctorApplications interface {
 // DoctorApplication is the subset of the doctor-service application response
 // OTP verify needs.
 type DoctorApplication struct {
-	ID          uuid.UUID
-	Status      string
-	DisplayName string
-	Email       string
-	Phone       string
+	ID           uuid.UUID
+	Status       string
+	DisplayName  string
+	Email        string
+	Phone        string
+	PasswordHash string
 }
 
 // ErrDoctorApplicationNotFound is returned when no open application exists.
@@ -67,6 +68,7 @@ type applicationDTO struct {
 	DisplayName   string `json:"display_name"`
 	Email         string `json:"email"`
 	Phone         string `json:"phone"`
+	PasswordHash  string `json:"password_hash"`
 }
 
 func (c *HTTPDoctorApplications) ApplicationByPhone(ctx context.Context, phone string) (DoctorApplication, error) {
@@ -81,7 +83,7 @@ func (c *HTTPDoctorApplications) ApplicationByPhone(ctx context.Context, phone s
 	}
 	return DoctorApplication{
 		ID: id, Status: dto.Status, DisplayName: dto.DisplayName,
-		Email: dto.Email, Phone: dto.Phone,
+		Email: dto.Email, Phone: dto.Phone, PasswordHash: dto.PasswordHash,
 	}, nil
 }
 
