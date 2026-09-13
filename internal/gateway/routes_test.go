@@ -77,10 +77,9 @@ var wantPublicRoutes = map[string]struct{}{
 // Its routes are public, and they are NOT listed in wantPublicRoutes, because
 // enumerating them there would put them on the same footing as OTP verify --
 // a considered, permanent exception to authentication. They are not that.
-// They are a surface that must not exist at all in production, and the control
-// that keeps them out of it is config.Base.TestModeEnabled (which a
-// production ENV overrides regardless of TELEMED_TEST_MODE), plus the
-// composer dropping every one of these rules when the module was not built.
+// The control that decides whether they exist is config.Base.TestModeEnabled
+// (TELEMED_TEST_MODE), plus the composer dropping every one of these rules
+// when the module was not built.
 //
 // What the tests below assert instead is the containment: every public route
 // outside the reviewed allowlist must live under this prefix and point at this

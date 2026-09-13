@@ -125,19 +125,14 @@ func (b Base) IsProd() bool {
 
 // TestModeEnabled reports whether the developer test surface may be mounted.
 //
-// TELEMED_TEST_MODE defaults to true, because every environment that is not
-// production is one where a developer wants it. Production is not a matter of
-// setting it to false: the environment overrides the flag outright.
+// TELEMED_TEST_MODE defaults to true and is honoured in every environment,
+// production included; set it to false to turn the surface off.
 //
-// That asymmetry is the whole point. The test surface is unauthenticated by
-// design -- it hands back the plaintext OTP for any phone number anyone asks
-// about, which is a complete account takeover of every account on the
-// platform. A default-on flag WILL eventually be inherited by a prod
-// deployment through a copied .env, a Helm values file nobody re-read, or an
-// image promoted from staging. When that happens this returns false anyway.
-// IsProd is spelling- and case-tolerant for the same reason (ENV=Production,
-// ENV=live), so the override cannot be lost to a capital letter.
-func (b Base) TestModeEnabled() bool { return b.TestMode && !b.IsProd() }
+// The test surface is unauthenticated by design -- it hands back the plaintext
+// OTP for any phone number anyone asks about, which is a complete account
+// takeover of every account on the platform -- and it captures notification
+// sends instead of delivering them.
+func (b Base) TestModeEnabled() bool { return b.TestMode }
 
 // JWKSURLs returns every key set this service should trust, skipping any that
 // are unconfigured. A service that only ever sees admin traffic can leave

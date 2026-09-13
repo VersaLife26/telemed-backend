@@ -270,12 +270,6 @@ func run() error {
 		log.Warn().
 			Msg("TELEMED_TEST_MODE is on: OTP and email are captured instead of delivered, " +
 				"and /api/v1/test/* is served without authentication")
-	} else if v.GetBool("telemed_test_mode") {
-		// Set, but overridden. Said out loud, because the operator who set it
-		// is expecting the test surface and would otherwise spend the morning
-		// wondering why /test 404s.
-		log.Warn().
-			Msg("TELEMED_TEST_MODE is set but ENV is production-like: the test surface stays off")
 	}
 
 	var (

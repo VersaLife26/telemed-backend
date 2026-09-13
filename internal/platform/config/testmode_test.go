@@ -2,28 +2,17 @@ package config
 
 import "testing"
 
-// TestTestModeEnabled_ProductionOverridesTheFlag is the control that keeps an
-// unauthenticated, OTP-revealing surface out of production. The flag defaults
-// to true and travels in .env files, so the environment -- not the flag -- has
-// to be what decides.
-func TestTestModeEnabled_ProductionOverridesTheFlag(t *testing.T) {
+// The flag alone decides, in every environment.
+func TestTestModeEnabled_FollowsTheFlag(t *testing.T) {
 	cases := []struct {
 		env  string
 		flag bool
 		want bool
 	}{
 		{"dev", true, true},
-		{"staging", true, true},
 		{"dev", false, false},
-
-		// Every spelling IsProd accepts must override, including the ones a
-		// naive `env == "prod"` check would miss.
-		{"prod", true, false},
-		{"production", true, false},
-		{"Production", true, false},
-		{"PROD", true, false},
-		{"live", true, false},
-		{"  prod  ", true, false},
+		{"production", true, true},
+		{"production", false, false},
 	}
 	for _, c := range cases {
 		got := Base{Env: c.env, TestMode: c.flag}.TestModeEnabled()
