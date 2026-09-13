@@ -253,7 +253,7 @@
       "timeout_class": "write",
       "rate_limit": "strict_otp",
       "rate_limit_key_field": "phone",
-      "description": "Public doctor application before OTP. No account is created until admin approval and OTP."
+      "description": "Public doctor application. After admin approval a user account is created so the doctor can sign in with email and password."
     },
     {
       "name": "doctor-application-eligibility",

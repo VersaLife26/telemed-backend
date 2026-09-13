@@ -220,14 +220,27 @@ type DoctorApplicationSubmitted struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// DoctorApplicationApproved tells the applicant to complete OTP on the doctor portal.
+// DoctorApplicationApproved tells the applicant their login is ready.
+//
+// The two booleans decide which of three things the approval email says, and
+// getting them wrong sends a doctor to a sign-in screen that will not let them
+// in:
+//
+//   - LoginReady && PasswordApplied: sign in with the email and password from
+//     the application. The ordinary case.
+//   - LoginReady && !PasswordApplied: the applicant already had an account, and
+//     it kept its own password. Sign in with that one.
+//   - !LoginReady: no account was created (no provisioner configured). Phone
+//     OTP is the only way in.
 type DoctorApplicationApproved struct {
-	ApplicationID uuid.UUID `json:"application_id"`
-	FullName      string    `json:"full_name"`
-	Email         string    `json:"email"`
-	Phone         string    `json:"phone"`
-	Specialty     string    `json:"specialty"`
-	ApprovedAt    time.Time `json:"approved_at"`
+	ApplicationID   uuid.UUID `json:"application_id"`
+	FullName        string    `json:"full_name"`
+	Email           string    `json:"email"`
+	Phone           string    `json:"phone"`
+	Specialty       string    `json:"specialty"`
+	LoginReady      bool      `json:"login_ready"`
+	PasswordApplied bool      `json:"password_applied"`
+	ApprovedAt      time.Time `json:"approved_at"`
 }
 
 // DoctorApplicationRejected tells the applicant their application was refused.

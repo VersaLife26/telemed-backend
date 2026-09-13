@@ -92,6 +92,14 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
+// InternalRoutes is the mesh surface other domains call (mounted at
+// /api/v1/internal/users behind RequireRole(service)).
+func (h *Handler) InternalRoutes() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/doctors", h.ProvisionDoctor)
+	return r
+}
+
 // -------------------------------------------------------------- principal --
 
 type principalCtxKey struct{}
@@ -354,6 +362,42 @@ func (h *Handler) RegisterEmail(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, r, authResponse{
 		AccessToken: res.AccessToken, ExpiresIn: int(AccessTokenTTL.Seconds()),
 		RefreshToken: res.RefreshToken, User: toUserResponse(res.User),
+	})
+}
+
+type provisionDoctorRequest struct {
+	Email        string `json:"email" validate:"required,email"`
+	Phone        string `json:"phone" validate:"required,sriphone"`
+	Name         string `json:"name" validate:"omitempty,max=200"`
+	PasswordHash string `json:"password_hash" validate:"omitempty,max=128"`
+}
+
+type provisionDoctorResponse struct {
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
+	// PasswordApplied is false when the account already existed with a
+	// password of its own, which doctor-service needs in order to send the
+	// right approval email.
+	PasswordApplied bool `json:"password_applied"`
+}
+
+func (h *Handler) ProvisionDoctor(w http.ResponseWriter, r *http.Request) {
+	var req provisionDoctorRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	res, err := h.svc.ProvisionDoctor(r.Context(), ProvisionDoctorInput{
+		Email: req.Email, Phone: req.Phone, Name: req.Name, PasswordHash: req.PasswordHash,
+	})
+	if err != nil {
+		httpx.Error(w, r, mapError(err))
+		return
+	}
+	httpx.OK(w, r, provisionDoctorResponse{
+		UserID:          res.User.ID.String(),
+		Role:            string(res.User.Role),
+		PasswordApplied: res.PasswordApplied,
 	})
 }
 

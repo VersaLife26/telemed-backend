@@ -19,7 +19,7 @@ const applicationColumns = `
 	is_general_practitioner, practicing_locations, terms_accepted_at,
 	bank_encrypted, bank_name, bank_branch,
 	status, rejection_reason,
-	decided_at, decided_by, activated_user_id, activated_at, created_at, updated_at`
+	decided_at, decided_by, activated_user_id, activated_at, password_hash, created_at, updated_at`
 
 func scanApplication(row pgx.Row) (Application, error) {
 	var a Application
@@ -28,6 +28,7 @@ func scanApplication(row pgx.Row) (Application, error) {
 	var firstName, lastName *string
 	var decidedAt, activatedAt, termsAt *time.Time
 	var decidedBy, activatedUserID *uuid.UUID
+	var passwordHash *string
 	var status string
 	var pgim, gp bool
 	var requiredFee int64
@@ -39,7 +40,7 @@ func scanApplication(row pgx.Row) (Application, error) {
 		&gp, &locations, &termsAt,
 		&bankEnc, &bankName, &bankBranch,
 		&status, &rejection,
-		&decidedAt, &decidedBy, &activatedUserID, &activatedAt, &a.CreatedAt, &a.UpdatedAt,
+		&decidedAt, &decidedBy, &activatedUserID, &activatedAt, &passwordHash, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		return Application{}, err
@@ -66,6 +67,7 @@ func scanApplication(row pgx.Row) (Application, error) {
 	a.DecidedBy = decidedBy
 	a.ActivatedUserID = activatedUserID
 	a.ActivatedAt = activatedAt
+	a.PasswordHash = deref(passwordHash)
 	return a, nil
 }
 
@@ -77,13 +79,13 @@ func (r *Repository) CreateApplication(ctx context.Context, tx pgx.Tx, a *Applic
 			language_other, experience_years, fee_cents, required_fee_cents, bio,
 			pgim_board_certified, medical_school, qualifications_text, availability_notes,
 			is_general_practitioner, practicing_locations, terms_accepted_at,
-			bank_encrypted, bank_name, bank_branch, status, created_at, updated_at
+			bank_encrypted, bank_name, bank_branch, status, password_hash, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11, $12, $13, $14,
 			$15, $16, $17, $18,
 			$19, $20, $21,
-			$22, $23, $24, $25, NOW(), NOW()
+			$22, $23, $24, $25, $26, NOW(), NOW()
 		)`
 	locs := a.PracticingLocations
 	if locs == nil {
@@ -95,6 +97,7 @@ func (r *Repository) CreateApplication(ctx context.Context, tx pgx.Tx, a *Applic
 		a.PGIMBoardCertified, a.MedicalSchool, a.QualificationsText, a.AvailabilityNotes,
 		a.IsGeneralPractitioner, locs, a.TermsAcceptedAt,
 		nullString(a.BankEncrypted), a.BankName, a.BankBranch, string(a.Status),
+		nullString(a.PasswordHash),
 	)
 	if err != nil {
 		if database.IsUniqueViolation(err) {
@@ -188,6 +191,7 @@ func (r *Repository) MarkApplicationActivated(ctx context.Context, tx pgx.Tx, id
 			status = 'activated',
 			activated_user_id = $2,
 			activated_at = $3,
+			password_hash = NULL,
 			updated_at = NOW()
 		WHERE id = $1 AND status = 'approved'`
 	tag, err := tx.Exec(ctx, q, id, userID, at)

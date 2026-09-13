@@ -18,11 +18,20 @@
 package doctor
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+
+	"telemed/internal/domain/doctor/doctor"
+	"telemed/internal/domain/user/user"
 	"telemed/internal/platform/config"
 	"telemed/internal/platform/middleware"
+	"telemed/internal/platform/modular"
+	"telemed/internal/platform/servicetoken"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=$(git describe)".
@@ -65,6 +74,15 @@ type serviceConfig struct {
 	// SchedulingTimeout bounds the holiday forward. It sits on a doctor's Save
 	// button, so it is short by design.
 	SchedulingTimeout time.Duration `mapstructure:"scheduling_timeout"`
+
+	// UserServiceURL is the user-service HTTP base used after admin approval
+	// to create the doctor login. Empty falls back to the in-process
+	// provisioner when both domains share a process.
+	UserServiceURL string `mapstructure:"user_service_url"`
+
+	MeshClientID     string `mapstructure:"mesh_client_id"`
+	MeshClientSecret string `mapstructure:"mesh_client_secret"`
+	MeshTokenURL     string `mapstructure:"mesh_token_url"`
 }
 
 // ProxyCIDRs splits the trusted-proxy list, dropping empty entries so that a
@@ -87,3 +105,68 @@ func (c serviceConfig) ProxyCIDRs() []string {
 // surface: every human admin role plus the machine-to-machine "service" role
 // admin-service itself authenticates as.
 var internalRoles = append([]middleware.Role{middleware.RoleService}, middleware.AdminRoles...)
+
+type userDoctorProvisioner interface {
+	ProvisionDoctor(context.Context, user.ProvisionDoctorInput) (user.ProvisionDoctorResult, error)
+}
+
+type inProcessAccountProvisioner struct {
+	inner userDoctorProvisioner
+}
+
+func (p inProcessAccountProvisioner) ProvisionDoctor(ctx context.Context, in doctor.DoctorAccount) (doctor.ProvisionResult, error) {
+	res, err := p.inner.ProvisionDoctor(ctx, user.ProvisionDoctorInput{
+		Email: in.Email, Phone: in.Phone, Name: in.Name, PasswordHash: in.PasswordHash,
+	})
+	if err != nil {
+		return doctor.ProvisionResult{}, classifyProvisionError(err)
+	}
+	return doctor.ProvisionResult{UserID: res.User.ID, PasswordApplied: res.PasswordApplied}, nil
+}
+
+// classifyProvisionError is the in-process twin of the HTTP client's status
+// mapping: the same user-domain errors that become a 4xx over the mesh have to
+// become ErrAccountConflict here, or the same approval would be reported as
+// retryable in the monolith and permanent when the domains are split.
+func classifyProvisionError(err error) error {
+	switch {
+	case errors.Is(err, user.ErrEmailTaken),
+		errors.Is(err, user.ErrPhoneTaken),
+		errors.Is(err, user.ErrUserSuspended),
+		errors.Is(err, user.ErrUserDeleted),
+		errors.Is(err, user.ErrInvalidEmail),
+		errors.Is(err, user.ErrInvalidPhone),
+		errors.Is(err, user.ErrInvalidPassword):
+		return fmt.Errorf("%w: %v", doctor.ErrAccountConflict, err)
+	default:
+		return err
+	}
+}
+
+func accountProvisionerFromDeps(deps modular.Deps, cfg serviceConfig, log zerolog.Logger) doctor.AccountProvisioner {
+	if deps.Registry != nil {
+		if v, ok := deps.Registry.Lookup(modular.KeyDoctorAccountProvisioner); ok {
+			if svc, ok := v.(userDoctorProvisioner); ok {
+				return inProcessAccountProvisioner{inner: svc}
+			}
+		}
+	}
+	return buildHTTPAccountProvisioner(cfg, log)
+}
+
+func buildHTTPAccountProvisioner(cfg serviceConfig, log zerolog.Logger) doctor.AccountProvisioner {
+	if strings.TrimSpace(cfg.UserServiceURL) == "" {
+		return nil
+	}
+	src, err := servicetoken.New(servicetoken.Config{
+		TokenURL:     cfg.MeshTokenURL,
+		ClientID:     cfg.MeshClientID,
+		ClientSecret: cfg.MeshClientSecret,
+		RequireTLS:   false,
+	})
+	if err != nil {
+		log.Warn().Err(err).Msg("doctor login provisioner unavailable")
+		return nil
+	}
+	return doctor.NewHTTPAccountProvisioner(cfg.UserServiceURL, src)
+}

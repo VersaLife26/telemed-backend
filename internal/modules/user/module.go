@@ -25,6 +25,7 @@ import (
 	"telemed/internal/platform/config"
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
+	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/modular"
 	"telemed/internal/platform/server"
 )
@@ -221,6 +222,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	// mesh token is not re-checked on that path.
 	grpcImpl := user.NewGRPCServer(svc, log)
 	deps.Registry.Provide(modular.KeyUserDirectory, user.NewInProcessClient(grpcImpl))
+	deps.Registry.Provide(modular.KeyDoctorAccountProvisioner, svc)
 
 	// --- background workers -------------------------------------------------
 	relay := events.NewRelay(pool, deps.Broker, log,
@@ -285,7 +287,14 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 
 	// --- routes -------------------------------------------------------------
-	m.API = func(r chi.Router) { r.Mount("/", handler.Routes()) }
+	m.API = func(r chi.Router) {
+		r.Mount("/", handler.Routes())
+		r.Route("/internal/users", func(r chi.Router) {
+			r.Use(middleware.RequireAuth(deps.Auth))
+			r.Use(middleware.RequireRole(middleware.RoleService))
+			r.Mount("/", handler.InternalRoutes())
+		})
+	}
 	m.Root = func(r chi.Router) { r.Get("/.well-known/jwks.json", handler.JWKS) }
 
 	m.Health = []server.HealthCheck{{Name: "postgres", Critical: true, Check: pool.Ping}}

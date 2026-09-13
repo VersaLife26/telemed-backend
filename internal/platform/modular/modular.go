@@ -257,6 +257,10 @@ const (
 	// domain's own gRPC service implementation.
 	KeyUserDirectory = "user.directory"
 
+	// KeyDoctorAccountProvisioner is the user domain's ProvisionDoctor
+	// method, used by doctor-service after an admin approves an application.
+	KeyDoctorAccountProvisioner = "user.doctor-account-provisioner"
+
 	// KeyAdminDirectory is a middleware.RoleResolver backed by the admin
 	// domain's admin_users table. The composer attaches it to the shared
 	// authenticator so a token from an identity provider that carries no

@@ -571,7 +571,7 @@ func (c *Consumer) onDoctorApplicationApproved(ctx context.Context, env events.E
 	}
 	_, err := c.svc.Notify(ctx, NotifyRequest{
 		UserID:        p.ApplicationID,
-		TemplateKey:   TemplateDoctorApplicationApproved,
+		TemplateKey:   approvalTemplate(p),
 		Data:          TemplateData{DoctorName: p.FullName, PortalURL: portal},
 		Email:         p.Email,
 		Channels:      []Channel{ChannelEmail},
@@ -579,6 +579,24 @@ func (c *Consumer) onDoctorApplicationApproved(ctx context.Context, env events.E
 		SourceEventID: &env.ID,
 	})
 	return err
+}
+
+// approvalTemplate picks the instruction that matches the account that was
+// actually created.
+//
+// The default is the OTP wording, not the password wording: an event written
+// before this field existed decodes both booleans as false, and telling a
+// doctor to use OTP when a password would also have worked is a smaller
+// failure than telling them to use a password that does not exist.
+func approvalTemplate(p events.DoctorApplicationApproved) TemplateKey {
+	switch {
+	case p.LoginReady && p.PasswordApplied:
+		return TemplateDoctorApplicationApproved
+	case p.LoginReady:
+		return TemplateDoctorApplicationApprovedExisting
+	default:
+		return TemplateDoctorApplicationApprovedOTP
+	}
 }
 
 func (c *Consumer) onDoctorApplicationRejected(ctx context.Context, env events.Envelope) error {

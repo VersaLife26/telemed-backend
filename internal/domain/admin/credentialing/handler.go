@@ -3,6 +3,7 @@ package credentialing
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -203,9 +204,33 @@ func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {
 			"doctor has no pending checklist to decide (already decided, or checklist never started)"))
 		return
 	}
+	// Provisioning the doctor's login is part of approving, and it can fail
+	// for two very different reasons. Both are the operator's to act on, so
+	// neither may collapse into a bare 500: one says try again, the other says
+	// do not bother until you have fixed the account clash.
+	if errors.Is(err, ErrLoginConflict) {
+		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, provisionDetail(err)))
+		return
+	}
+	if errors.Is(err, ErrLoginUnavailable) {
+		httpx.Error(w, r, httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable, provisionDetail(err)))
+		return
+	}
 	if err != nil {
 		httpx.Error(w, r, err)
 		return
 	}
 	httpx.OK(w, r, toChecklistDTO(result))
+}
+
+// provisionDetail unwraps the sentence doctor-service sent for a login
+// failure. The wrapped error reads "credentialing: approved, but ...: <the
+// upstream message>"; only the tail is useful to an operator, and the prefix
+// just repeats what the HTTP status already says.
+func provisionDetail(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, ": "); i >= 0 && i+2 < len(msg) {
+		return msg[i+2:]
+	}
+	return msg
 }

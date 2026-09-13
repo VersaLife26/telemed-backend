@@ -23,6 +23,19 @@ type ApplicationVerifier interface {
 // (legacy doctor.registered rows still use the event-only approve path).
 var ErrApplicationNotFound = errors.New("credentialing: doctor application not found")
 
+// ErrLoginConflict is doctor-service reporting that the application was
+// approved but its identity cannot be given a login, and never will be
+// without someone reconciling the accounts first.
+//
+// It exists so the admin console can say that instead of a bare 500. The
+// upstream sentence is carried along, because it is the one that tells the
+// operator which account is in the way.
+var ErrLoginConflict = errors.New("credentialing: approved, but no doctor login could be created")
+
+// ErrLoginUnavailable is the retryable twin: user-service was down or broken
+// when the approval ran. Approving again is the fix.
+var ErrLoginUnavailable = errors.New("credentialing: approved, but the doctor login could not be created yet")
+
 // TokenSource mints a mesh Bearer token.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
@@ -77,11 +90,29 @@ func (c *HTTPApplicationVerifier) VerifyApplication(ctx context.Context, applica
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusNotFound {
+	switch resp.StatusCode {
+	case http.StatusNotFound:
 		return ErrApplicationNotFound
+	case http.StatusConflict:
+		return fmt.Errorf("%w: %s", ErrLoginConflict, upstreamMessage(raw))
+	case http.StatusServiceUnavailable:
+		return fmt.Errorf("%w: %s", ErrLoginUnavailable, upstreamMessage(raw))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("credentialing: doctor-service verify returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	return nil
+}
+
+// upstreamMessage pulls the human sentence out of doctor-service's error
+// envelope. It falls back to the raw body: a message that reads oddly beats
+// swallowing the only clue about why an approval failed.
+func upstreamMessage(raw []byte) string {
+	var env struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &env); err == nil && strings.TrimSpace(env.Message) != "" {
+		return strings.TrimSpace(env.Message)
+	}
+	return strings.TrimSpace(string(raw))
 }

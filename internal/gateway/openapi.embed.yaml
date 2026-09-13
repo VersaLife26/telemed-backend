@@ -188,10 +188,11 @@ components:
 
     DoctorApplyRequest:
       type: object
-      required: [phone, email, first_name, last_name, slmc_number, specialty, fee_lkr, required_fee_lkr, languages, medical_school, qualifications, availability_notes, practicing_locations, terms_accepted, bank]
+      required: [phone, email, password, first_name, last_name, slmc_number, specialty, fee_lkr, required_fee_lkr, languages, medical_school, qualifications, availability_notes, practicing_locations, terms_accepted, bank]
       properties:
         phone: { type: string, example: "+94771234567" }
         email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 72, description: Chosen at apply time. Stored as a bcrypt hash and copied onto the user account when an admin approves, so the doctor signs in with this email and password. }
         first_name: { type: string }
         last_name: { type: string }
         display_name: { type: string, description: Optional. Defaults to first_name + last_name. }
@@ -1054,7 +1055,7 @@ paths:
       tags: [doctors]
       summary: Public doctor application (before OTP)
       security: []
-      description: Collects profile details for admin review. No user account is created until approval and OTP.
+      description: Collects profile details and a chosen password for admin review. No user account exists until an admin approves; approval creates it, and the applicant then signs in with this email and password (OTP on the registered phone also works).
       requestBody:
         required: true
         content:
@@ -2402,7 +2403,13 @@ paths:
     post:
       tags: [admin]
       summary: Approve/reject a doctor application
-      description: Requires an admin role AND gateway IP allowlist membership.
+      description: >
+        Requires an admin role AND gateway IP allowlist membership.
+        Approving also creates the doctor's login from the application, so it
+        can fail after the decision is recorded: 409 means the email or phone
+        already belongs to another account and retrying will not help, while
+        503 means user-service was unreachable and approving again is the
+        retry. In both cases the application stays approved.
       parameters:
         - name: doctorID
           in: path
@@ -2423,6 +2430,8 @@ paths:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/Doctor' } }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/admin/analytics/revenue:
     get:

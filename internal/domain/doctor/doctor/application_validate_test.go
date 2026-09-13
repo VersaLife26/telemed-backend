@@ -22,6 +22,7 @@ func validApplyInput() ApplyInput {
 			AccountNumber: "1234567890",
 			AccountName:   "Amila Perera",
 		},
+		Password: "s3cret-pass",
 	}
 }
 
@@ -52,6 +53,19 @@ func TestValidateApplyInput_OtherLanguageNeedsAName(t *testing.T) {
 	in.LanguageOther = "French"
 	if err := validateApplyInput(in); err != nil {
 		t.Fatalf("named other language rejected: %v", err)
+	}
+}
+
+func TestValidateApplyInput_RequiresPassword(t *testing.T) {
+	t.Parallel()
+	in := validApplyInput()
+	in.Password = "short"
+	if err := validateApplyInput(in); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("short password: got %v, want ErrInvalidPassword", err)
+	}
+	in.Password = ""
+	if err := validateApplyInput(in); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("empty password: got %v, want ErrInvalidPassword", err)
 	}
 }
 

@@ -609,7 +609,7 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request) {
 		PGIMBoardCertified: req.PGIMBoardCertified, MedicalSchool: req.MedicalSchool,
 		QualificationsText: req.QualificationsText, AvailabilityNotes: req.AvailabilityNotes,
 		IsGeneralPractitioner: req.IsGeneralPractitioner, PracticingLocations: req.PracticingLocations,
-		TermsAccepted: req.TermsAccepted, Bank: req.Bank,
+		TermsAccepted: req.TermsAccepted, Bank: req.Bank, Password: req.Password,
 	})
 	if err != nil {
 		writeError(w, r, err)

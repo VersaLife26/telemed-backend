@@ -158,6 +158,7 @@ type applyRequest struct {
 	PracticingLocations   []string     `json:"practicing_locations" validate:"required,min=1,dive,required,max=200"`
 	TermsAccepted         bool         `json:"terms_accepted"`
 	Bank                  *BankDetails `json:"bank" validate:"required"`
+	Password              string       `json:"password" validate:"required,min=8,max=72"`
 }
 
 type applicationVerifyRequest struct {
@@ -546,6 +547,13 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, err.Error()))
 	case errors.Is(err, ErrTermsNotAccepted):
 		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "you must accept the VersaLife service retention agreement"))
+	case errors.Is(err, ErrInvalidPassword):
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation, "password must be 8–72 characters"))
+	case errors.Is(err, ErrAccountConflict):
+		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict,
+			"application was approved but no doctor login could be created: the email or phone on it already belongs to another account, or that account is closed. Retrying will not help — reconcile the accounts first, then approve again."))
+	case errors.Is(err, ErrAccountProvision):
+		httpx.Error(w, r, httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable, "application was approved but the doctor login could not be created; retry the approval"))
 	case errors.Is(err, ErrDocumentTooLarge):
 		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "each document must be 5 MB or smaller"))
 	case errors.Is(err, ErrInvalidDocumentType):

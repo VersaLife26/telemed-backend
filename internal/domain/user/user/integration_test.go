@@ -565,6 +565,101 @@ func TestIntegration_EmailPasswordRegisterAndLogin(t *testing.T) {
 	}
 }
 
+func TestIntegration_ProvisionDoctorThenLoginEmail(t *testing.T) {
+	ctx := context.Background()
+	pool := setupTestPool(t)
+	svc, _ := newTestService(t, pool)
+
+	const email = "approved.doc@example.lk"
+	const password = "s3cret-pass"
+	hash, err := hashPassword(password)
+	if err != nil {
+		t.Fatalf("hashPassword: %v", err)
+	}
+
+	res, err := svc.ProvisionDoctor(ctx, ProvisionDoctorInput{
+		Email: email, Phone: "+94771239999", Name: "Dr Approved", PasswordHash: hash,
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDoctor: %v", err)
+	}
+	u := res.User
+	if u.Role != RoleDoctor {
+		t.Fatalf("role = %s, want doctor", u.Role)
+	}
+	if !res.PasswordApplied {
+		t.Error("password_applied = false for a brand new account created with a hash")
+	}
+
+	login, err := svc.LoginEmail(ctx, email, password, "device-doc")
+	if err != nil {
+		t.Fatalf("LoginEmail after provision: %v", err)
+	}
+	if login.User.ID != u.ID {
+		t.Fatalf("login user %s != provisioned user %s", login.User.ID, u.ID)
+	}
+
+	again, err := svc.ProvisionDoctor(ctx, ProvisionDoctorInput{
+		Email: email, Phone: "+94771239999", Name: "Dr Approved", PasswordHash: hash,
+	})
+	if err != nil {
+		t.Fatalf("idempotent ProvisionDoctor: %v", err)
+	}
+	if again.User.ID != u.ID {
+		t.Fatal("second provision created a different user")
+	}
+	// The password was already set by the first call, so the second did not
+	// apply one -- the caller must not tell the doctor otherwise.
+	if again.PasswordApplied {
+		t.Error("password_applied = true on a re-provision that changed nothing")
+	}
+}
+
+// TestIntegration_ProvisionDoctorLeavesAnExistingPasswordAlone is the
+// account-takeover guard: registering an application under an address that
+// already has an account must not reset that account's password, and the
+// caller has to be told so the approval email does not promise a credential
+// that will not work.
+func TestIntegration_ProvisionDoctorLeavesAnExistingPasswordAlone(t *testing.T) {
+	ctx := context.Background()
+	pool := setupTestPool(t)
+	svc, _ := newTestService(t, pool)
+
+	const email = "was.a.patient@example.lk"
+	const ownPassword = "their-own-password"
+	const applyPassword = "from-the-apply-form"
+
+	if _, err := svc.RegisterEmail(ctx, email, ownPassword, "A Patient", "device-p"); err != nil {
+		t.Fatalf("RegisterEmail: %v", err)
+	}
+
+	applyHash, err := hashPassword(applyPassword)
+	if err != nil {
+		t.Fatalf("hashPassword: %v", err)
+	}
+	res, err := svc.ProvisionDoctor(ctx, ProvisionDoctorInput{
+		Email: email, Phone: "+94771230000", Name: "Dr Patient", PasswordHash: applyHash,
+	})
+	if err != nil {
+		t.Fatalf("ProvisionDoctor: %v", err)
+	}
+	if res.PasswordApplied {
+		t.Error("password_applied = true; the apply password was reported as usable")
+	}
+	if res.User.Role != RoleDoctor {
+		t.Errorf("role = %s, want the existing account promoted to doctor", res.User.Role)
+	}
+
+	// The original password still works...
+	if _, err := svc.LoginEmail(ctx, email, ownPassword, "device-p2"); err != nil {
+		t.Errorf("existing password stopped working after provisioning: %v", err)
+	}
+	// ...and the one from the application never did.
+	if _, err := svc.LoginEmail(ctx, email, applyPassword, "device-p3"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("apply password accepted on a pre-existing account: %v", err)
+	}
+}
+
 func TestIntegration_GoogleFindOrCreateAndLinkEmail(t *testing.T) {
 	ctx := context.Background()
 	pool := setupTestPool(t)

@@ -128,7 +128,13 @@ func (s *Service) UpdateChecklist(ctx context.Context, doctorID uuid.UUID, u Che
 // and publishes doctor.approved/doctor.rejected via the outbox for legacy
 // doctor.registered rows. Public applications are decided in doctor-service
 // (SoR); this service then updates its checklist/projection without emitting
-// doctor.approved (that fires later when OTP attach creates the doctors row).
+// doctor.approved -- doctor-service emits it itself, as part of the same
+// approve call that provisions the doctor's login and creates the doctors row.
+//
+// That provisioning happens inside VerifyApplication, so a failure to create
+// the login surfaces here as an error and the decision is not recorded
+// locally. Re-approving is the retry: doctor-service treats an
+// already-approved application as a request to finish provisioning it.
 func (s *Service) Verify(ctx context.Context, doctorID uuid.UUID, d VerifyDecision) (Checklist, error) {
 	if _, err := s.repo.GetDoctor(ctx, doctorID); err != nil {
 		return Checklist{}, err

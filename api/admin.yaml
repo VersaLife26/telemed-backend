@@ -319,6 +319,14 @@ paths:
   /doctors/{id}/verify:
     post:
       summary: Approve or reject; publishes doctor.approved/doctor.rejected via the outbox
+      description: >
+        Approving a public application also creates the doctor's login in
+        user-service, from the password chosen on the apply form. That happens
+        after the decision is committed, so it can fail on its own: 409 means
+        the identity clashes with an existing account and retrying is pointless
+        until the accounts are reconciled; 503 means user-service was
+        unreachable and approving again is the retry. The application stays
+        approved either way.
       parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
       requestBody:
         content:
@@ -336,6 +344,11 @@ paths:
             application/json:
               schema: { type: object, properties: { data: { $ref: '#/components/schemas/Checklist' } } }
         "409": { $ref: '#/components/responses/Conflict' }
+        "503":
+          description: Approved, but the doctor login could not be created yet. Retry the approval.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /users:
     get:

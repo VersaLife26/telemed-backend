@@ -101,11 +101,16 @@ const (
 	TemplateOTPCode                    TemplateKey = "otp_code"
 	TemplateDoctorApplicationSubmitted TemplateKey = "doctor_application_submitted"
 	TemplateDoctorApplicationApproved  TemplateKey = "doctor_application_approved"
-	TemplateDoctorApplicationRejected  TemplateKey = "doctor_application_rejected"
-	TemplateRescheduleRequested        TemplateKey = "reschedule_requested"
-	TemplateRescheduleConfirmed        TemplateKey = "reschedule_confirmed"
-	TemplateDoctorRunningLate          TemplateKey = "doctor_running_late"
-	TemplateEarlyJoinOffered           TemplateKey = "early_join_offered"
+	// Approved, but the applicant already had an account and kept its
+	// password; and approved with no login created at all, where phone OTP is
+	// still the only way in. Same event, three different instructions.
+	TemplateDoctorApplicationApprovedExisting TemplateKey = "doctor_application_approved_existing"
+	TemplateDoctorApplicationApprovedOTP      TemplateKey = "doctor_application_approved_otp"
+	TemplateDoctorApplicationRejected         TemplateKey = "doctor_application_rejected"
+	TemplateRescheduleRequested               TemplateKey = "reschedule_requested"
+	TemplateRescheduleConfirmed               TemplateKey = "reschedule_confirmed"
+	TemplateDoctorRunningLate                 TemplateKey = "doctor_running_late"
+	TemplateEarlyJoinOffered                  TemplateKey = "early_join_offered"
 )
 
 // Notification is one rendered, addressed message and its delivery state.

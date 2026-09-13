@@ -37,6 +37,10 @@ type Service struct {
 	// carrying leave is refused rather than silently accepted -- see
 	// holidays.go for why that refusal matters.
 	holidays HolidayRegistrar
+
+	// accounts creates the users row on admin approval. Nil keeps the
+	// legacy OTP-only activation path.
+	accounts AccountProvisioner
 }
 
 // NewService wires the service's dependencies.
@@ -56,6 +60,13 @@ func NewService(repo *Repository, pool database.Pool, outbox *events.Outbox, c c
 // takes are enough.
 func (s *Service) WithHolidayRegistrar(h HolidayRegistrar) *Service {
 	s.holidays = h
+	return s
+}
+
+// WithAccountProvisioner attaches the user-service seam used after an
+// admin approves a public application.
+func (s *Service) WithAccountProvisioner(p AccountProvisioner) *Service {
+	s.accounts = p
 	return s
 }
 

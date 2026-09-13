@@ -50,6 +50,10 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	_ = v.BindEnv("search_cache_ttl")
 	_ = v.BindEnv("scheduling_base_url")
 	_ = v.BindEnv("scheduling_timeout")
+	_ = v.BindEnv("user_service_url")
+	_ = v.BindEnv("mesh_client_id")
+	_ = v.BindEnv("mesh_client_secret")
+	_ = v.BindEnv("mesh_token_url")
 
 	var cfg serviceConfig
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -121,6 +125,12 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 	doctorSvc := doctor.NewService(doctorRepo, pool, outbox, deps.Redis, enc, cfg.SearchCacheTTL, log).
 		WithHolidayRegistrar(holidayClient)
+	if p := accountProvisionerFromDeps(deps, cfg, log); p != nil {
+		doctorSvc.WithAccountProvisioner(p)
+		log.Info().Msg("doctor login provisioner wired; admin approve creates the user account")
+	} else {
+		log.Warn().Msg("no doctor login provisioner; approved applicants must complete OTP before they can sign in")
+	}
 
 	// The doctor's own analytics. It reads a projection this service maintains
 	// off the event bus rather than calling scheduling, consultation and

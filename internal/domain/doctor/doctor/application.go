@@ -57,6 +57,7 @@ type Application struct {
 	DecidedBy             *uuid.UUID
 	ActivatedUserID       *uuid.UUID
 	ActivatedAt           *time.Time
+	PasswordHash          string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -84,6 +85,7 @@ type ApplyInput struct {
 	PracticingLocations   []string
 	TermsAccepted         bool
 	Bank                  *BankDetails
+	Password              string
 }
 
 var (
@@ -120,6 +122,10 @@ func (s *Service) Apply(ctx context.Context, in ApplyInput) (Application, error)
 	if err != nil {
 		return Application{}, err
 	}
+	passwordHash, err := hashApplyPassword(in.Password)
+	if err != nil {
+		return Application{}, err
+	}
 
 	now := time.Now().UTC()
 	app := Application{
@@ -147,6 +153,7 @@ func (s *Service) Apply(ctx context.Context, in ApplyInput) (Application, error)
 		BankEncrypted:         bankEnc,
 		BankName:              strings.TrimSpace(in.Bank.BankName),
 		BankBranch:            strings.TrimSpace(in.Bank.BranchName),
+		PasswordHash:          passwordHash,
 		Status:                ApplicationPending,
 	}
 	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -253,13 +260,13 @@ func (s *Service) EligibilityByPhone(ctx context.Context, rawPhone string) (Appl
 		out.Message = "Your application is under review. You will receive an email when it is approved."
 	case ApplicationApproved:
 		out.Status = "approved"
-		out.Message = "Your application is approved. Enter the OTP sent to your phone to activate your account."
+		out.Message = "Your application is approved. Sign in with the email and password from your application, or with OTP."
 	case ApplicationRejected:
 		out.Status = "rejected"
 		out.Message = "Your application was not approved. Contact support if you need to re-apply."
 	case ApplicationActivated:
 		out.Status = "activated"
-		out.Message = "Your doctor account is active. You can sign in with OTP."
+		out.Message = "Your doctor account is active. Sign in with email and password, or with OTP."
 	default:
 		out.Status = string(app.Status)
 		out.Message = "Unknown application status."
@@ -282,8 +289,14 @@ func (s *Service) VerifyApplication(ctx context.Context, id uuid.UUID, approve b
 	if err != nil {
 		return Application{}, err
 	}
-	if approve && app.Status == ApplicationApproved {
-		return app, nil
+	if approve && (app.Status == ApplicationApproved || app.Status == ApplicationActivated) {
+		// Re-approving is how an admin retries a provisioning failure. The
+		// decision is already recorded, so nothing is re-decided and nothing is
+		// re-announced -- only the half that did not finish runs again.
+		if err := s.activateApprovedAccount(ctx, app, false); err != nil {
+			return Application{}, err
+		}
+		return s.repo.GetApplication(ctx, id)
 	}
 	if !approve && app.Status == ApplicationRejected {
 		return app, nil
@@ -297,39 +310,124 @@ func (s *Service) VerifyApplication(ctx context.Context, id uuid.UUID, approve b
 
 	now := time.Now().UTC()
 	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		status := ApplicationApproved
-		subject := events.SubjectDoctorApplicationApproved
-		var payload any
 		if approve {
-			payload = events.DoctorApplicationApproved{
-				ApplicationID: app.ID,
-				FullName:      app.DisplayName,
-				Email:         app.Email,
-				Phone:         app.Phone,
-				Specialty:     app.Specialty,
-				ApprovedAt:    now,
-			}
-		} else {
-			status = ApplicationRejected
-			subject = events.SubjectDoctorApplicationRejected
-			payload = events.DoctorApplicationRejected{
-				ApplicationID: app.ID,
-				FullName:      app.DisplayName,
-				Email:         app.Email,
-				Phone:         app.Phone,
-				Reason:        reason,
-				RejectedAt:    now,
-			}
+			// No doctor.application_approved here. That event carries the "sign
+			// in with X" instruction, and which instruction is right is not
+			// known until user-service has answered -- which cannot happen
+			// inside this transaction, and must not happen before it either: a
+			// login provisioned for an application that then failed to commit
+			// would be a doctor-role account with no decision behind it.
+			// activateApprovedAccount enqueues it, transactionally, once.
+			return s.repo.DecideApplication(ctx, tx, id, ApplicationApproved, reason, actorID, now)
 		}
-		if err := s.repo.DecideApplication(ctx, tx, id, status, reason, actorID, now); err != nil {
+		if err := s.repo.DecideApplication(ctx, tx, id, ApplicationRejected, reason, actorID, now); err != nil {
 			return err
 		}
-		return s.outbox.Enqueue(ctx, tx, subject, id.String(), payload)
+		return s.outbox.Enqueue(ctx, tx, events.SubjectDoctorApplicationRejected, id.String(), events.DoctorApplicationRejected{
+			ApplicationID: app.ID,
+			FullName:      app.DisplayName,
+			Email:         app.Email,
+			Phone:         app.Phone,
+			Reason:        reason,
+			RejectedAt:    now,
+		})
 	})
 	if err != nil {
 		return Application{}, err
 	}
-	return s.repo.GetApplication(ctx, id)
+	app, err = s.repo.GetApplication(ctx, id)
+	if err != nil {
+		return Application{}, err
+	}
+	if approve {
+		if err := s.activateApprovedAccount(ctx, app, true); err != nil {
+			return Application{}, err
+		}
+		return s.repo.GetApplication(ctx, id)
+	}
+	return app, nil
+}
+
+// activateApprovedAccount creates the users row and the doctors row so the
+// applicant can sign in immediately after an admin approves, and queues the
+// approval email describing the credential that will actually work.
+//
+// justDecided distinguishes the first approval from an admin re-approving to
+// retry. It only matters on the no-provisioner path, which has no Attach to
+// hang exactly-once delivery off: without it, every retry would send the
+// applicant another copy of the same email.
+func (s *Service) activateApprovedAccount(ctx context.Context, app Application, justDecided bool) error {
+	if app.Status == ApplicationActivated {
+		return nil
+	}
+	if app.Status != ApplicationApproved {
+		return ErrApplicationNotReady
+	}
+	if s.accounts == nil {
+		s.log.Error().Str("application_id", app.ID.String()).
+			Msg("account provisioner unset; approved doctor has no login until OTP")
+		if !justDecided {
+			return nil
+		}
+		return s.announceApproved(ctx, nil, app, false, false)
+	}
+	res, err := s.accounts.ProvisionDoctor(ctx, DoctorAccount{
+		Email:        app.Email,
+		Phone:        app.Phone,
+		Name:         app.DisplayName,
+		PasswordHash: app.PasswordHash,
+	})
+	if err != nil {
+		// A conflict is a fact about the identity, not a blip. Passing it
+		// through unwrapped is what stops the admin console telling an
+		// operator to retry something that can only ever fail.
+		if errors.Is(err, ErrAccountConflict) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrAccountProvision, err)
+	}
+	if _, err := s.Attach(ctx, AttachInput{
+		ApplicationID: app.ID,
+		UserID:        res.UserID,
+		Email:         app.Email,
+		// Queued inside Attach's transaction, so the email is enqueued if and
+		// only if the application is marked activated. Attach refuses a second
+		// activation, which makes that exactly once.
+		Announce: &ApprovalNotice{LoginReady: true, PasswordApplied: res.PasswordApplied},
+	}); err != nil {
+		if errors.Is(err, ErrAccountConflict) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrAccountProvision, err)
+	}
+	return nil
+}
+
+// ApprovalNotice is what the approval email should tell the applicant.
+type ApprovalNotice struct {
+	LoginReady      bool
+	PasswordApplied bool
+}
+
+// announceApproved queues doctor.application_approved. tx may be nil, in which
+// case the enqueue gets a transaction of its own.
+func (s *Service) announceApproved(ctx context.Context, tx pgx.Tx, app Application, loginReady, passwordApplied bool) error {
+	payload := events.DoctorApplicationApproved{
+		ApplicationID:   app.ID,
+		FullName:        app.DisplayName,
+		Email:           app.Email,
+		Phone:           app.Phone,
+		Specialty:       app.Specialty,
+		LoginReady:      loginReady,
+		PasswordApplied: passwordApplied,
+		ApprovedAt:      time.Now().UTC(),
+	}
+	if tx != nil {
+		return s.outbox.Enqueue(ctx, tx, events.SubjectDoctorApplicationApproved, app.ID.String(), payload)
+	}
+	return database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return s.outbox.Enqueue(ctx, tx, events.SubjectDoctorApplicationApproved, app.ID.String(), payload)
+	})
 }
 
 // AttachInput binds an approved application to a newly verified user account.
@@ -337,6 +435,10 @@ type AttachInput struct {
 	ApplicationID uuid.UUID
 	UserID        uuid.UUID
 	Email         string
+	// Announce queues the approval email in the same transaction that marks
+	// the application activated. Nil on the OTP path, where the applicant was
+	// already emailed at approval time.
+	Announce *ApprovalNotice
 }
 
 // Attach creates the doctors row from an approved application and publishes doctor.approved.
@@ -428,7 +530,13 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 			Languages:  languagesToStrings(d.Languages),
 			ApprovedAt: now,
 		}
-		return s.outbox.Enqueue(ctx, tx, events.SubjectDoctorApproved, d.ID.String(), payload)
+		if err := s.outbox.Enqueue(ctx, tx, events.SubjectDoctorApproved, d.ID.String(), payload); err != nil {
+			return err
+		}
+		if in.Announce == nil {
+			return nil
+		}
+		return s.announceApproved(ctx, tx, app, in.Announce.LoginReady, in.Announce.PasswordApplied)
 	})
 	if err != nil {
 		return Doctor{}, err
@@ -441,6 +549,9 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 func validateApplyInput(in ApplyInput) error {
 	if !in.TermsAccepted {
 		return ErrTermsNotAccepted
+	}
+	if !validApplyPassword(in.Password) {
+		return ErrInvalidPassword
 	}
 	if len(in.Languages) == 0 {
 		return fmt.Errorf("%w: at least one language is required", ErrInvalidTransition)
