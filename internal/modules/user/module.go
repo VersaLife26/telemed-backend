@@ -206,12 +206,18 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	} else {
 		log.Warn().Msg("GOOGLE_CLIENT_ID unset; google sign-in disabled")
 	}
+	// Always publish the account activator so doctor domain can wire itself.
+	deps.Registry.Provide(modular.KeyDoctorAccountActivator, svc)
 	if docs := buildDoctorApplications(cfg, log); docs != nil {
 		svc.SetDoctorApplications(docs)
-		deps.Registry.Provide(modular.KeyDoctorAccountActivator, svc)
-		log.Info().Str("doctor_service_url", cfg.DoctorServiceURL).Msg("doctor application attach enabled")
+		log.Info().Str("doctor_service_url", cfg.DoctorServiceURL).Msg("doctor application attach enabled via HTTP")
+	} else if v, ok := deps.Registry.Lookup(modular.KeyDoctorApplications); ok {
+		if inProc, ok := v.(user.DoctorApplications); ok {
+			svc.SetDoctorApplications(inProc)
+			log.Info().Msg("doctor applications wired in-process from doctor domain")
+		}
 	} else {
-		log.Warn().Msg("DOCTOR_SERVICE_URL or mesh token unset; approved doctor applications will not create login accounts")
+		log.Info().Msg("doctor applications awaiting in-process registration from doctor domain")
 	}
 	handler := user.NewHandler(svc, tokens, deps.Redis, log)
 

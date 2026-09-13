@@ -205,7 +205,16 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 	credRepo := credentialing.NewRepository(pool)
 	credSvc := credentialing.NewService(pool, credRepo, objectStore, outbox, cfg.MinIODoctorDocsBucket, cfg.DocPresignTTL)
-	if cfg.DoctorServiceURL != "" {
+	if v, ok := deps.Registry.Lookup(modular.KeyDoctorApplicationVerifier); ok {
+		if verifier, ok := v.(interface {
+			credentialing.ApplicationVerifier
+			credentialing.PendingApplicationSource
+		}); ok {
+			credSvc.SetApplicationVerifier(verifier)
+			credSvc.SetPendingApplicationSource(verifier)
+			log.Info().Msg("doctor application verify wired in-process from doctor domain")
+		}
+	} else if cfg.DoctorServiceURL != "" {
 		if src, ok := meshCreds.(*servicetoken.Source); ok && src != nil {
 			verifier := credentialing.NewHTTPApplicationVerifier(cfg.DoctorServiceURL, src)
 			credSvc.SetApplicationVerifier(verifier)

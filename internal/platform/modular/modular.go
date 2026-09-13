@@ -273,4 +273,12 @@ const (
 	// the user domain. Doctor-service calls it synchronously on admin Accept
 	// so a login account exists before the reviewer leaves the queue.
 	KeyDoctorAccountActivator = "user.doctor_account_activator"
+
+	// KeyDoctorApplications is a user.DoctorApplications implementation
+	// backed by the doctor domain's doctor.Service for in-process account creation/attach.
+	KeyDoctorApplications = "doctor.applications"
+
+	// KeyDoctorApplicationVerifier is an implementation of credentialing.ApplicationVerifier
+	// and credentialing.PendingApplicationSource backed by doctor.Service.
+	KeyDoctorApplicationVerifier = "doctor.application_verifier"
 )

@@ -20,6 +20,7 @@ import (
 	"telemed/internal/domain/doctor/analytics"
 	"telemed/internal/domain/doctor/availability"
 	"telemed/internal/domain/doctor/doctor"
+	"telemed/internal/domain/user/user"
 	doctorv1 "telemed/internal/pb/doctor/v1"
 	"telemed/internal/platform/config"
 	"telemed/internal/platform/events"
@@ -121,10 +122,20 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 	doctorSvc := doctor.NewService(doctorRepo, pool, outbox, deps.Redis, enc, cfg.SearchCacheTTL, log).
 		WithHolidayRegistrar(holidayClient)
+	inProcApps := NewInProcessDoctorApplications(doctorSvc)
+	inProcVerifier := NewInProcessApplicationVerifier(doctorSvc)
+
+	deps.Registry.Provide(modular.KeyDoctorApplications, inProcApps)
+	deps.Registry.Provide(modular.KeyDoctorApplicationVerifier, inProcVerifier)
+
 	if v, ok := deps.Registry.Lookup(modular.KeyDoctorAccountActivator); ok {
 		if act, ok := v.(doctor.AccountActivator); ok {
 			doctorSvc.SetAccountActivator(act)
 			log.Info().Msg("doctor accept will create the login account immediately")
+		}
+		if userSvc, ok := v.(interface{ SetDoctorApplications(user.DoctorApplications) }); ok {
+			userSvc.SetDoctorApplications(inProcApps)
+			log.Info().Msg("doctor applications wired in-process to user domain")
 		}
 	} else {
 		log.Warn().Msg("user-service activator unavailable; doctor accept will wait for the application_approved consumer")
