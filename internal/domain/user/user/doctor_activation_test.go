@@ -93,3 +93,45 @@ func TestApplicationApprovedConsumer_PendingApplicationIsAcknowledged(t *testing
 		t.Fatalf("Handle: %v", err)
 	}
 }
+
+func TestDoctorSession_IssuesTokenWithDoctorID(t *testing.T) {
+	issuer := newTestIssuer(t)
+	expectedDoctorID := uuid.New()
+	doctorUser := User{
+		ID:    uuid.New(),
+		Phone: "+94771234567",
+		Name:  "Dr. Nimal Perera",
+		Role:  RoleDoctor,
+	}
+
+	svc := &Service{
+		tokens:  issuer,
+		doctors: &stubDoctorApps{app: DoctorApplication{ID: expectedDoctorID}},
+		log:     zerolog.Nop(),
+	}
+
+	docID := svc.resolveDoctorID(context.Background(), doctorUser.ID)
+	if docID != expectedDoctorID {
+		t.Fatalf("resolveDoctorID = %v, want %v", docID, expectedDoctorID)
+	}
+
+	token, _, err := issuer.IssueAccessToken(doctorUser, docID)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+
+	principal, err := issuer.Verify(token)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if principal.DoctorID != expectedDoctorID {
+		t.Errorf("DoctorID = %v, want %v", principal.DoctorID, expectedDoctorID)
+	}
+	if principal.Role != RoleDoctor {
+		t.Errorf("Role = %v, want %v", principal.Role, RoleDoctor)
+	}
+	if principal.UserID != doctorUser.ID {
+		t.Errorf("UserID = %v, want %v", principal.UserID, doctorUser.ID)
+	}
+}
