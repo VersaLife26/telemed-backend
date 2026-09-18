@@ -82,8 +82,8 @@ type CommissionRule struct {
 type editorCommissionSet struct {
 	DefaultCommissionPercent int `json:"default_commission_percent"`
 	Rules                    []struct {
-		Specialty          string `json:"specialty"`
-		CommissionPercent  int    `json:"commission_percent"`
+		Specialty         string `json:"specialty"`
+		CommissionPercent int    `json:"commission_percent"`
 	} `json:"rules"`
 }
 
@@ -117,7 +117,7 @@ func EditorCommissionSet(rule CommissionRule) map[string]any {
 	rules := make([]map[string]any, 0, len(rule.BySpecialty))
 	for specialty, percent := range rule.BySpecialty {
 		rules = append(rules, map[string]any{
-			"specialty":           specialty,
+			"specialty":          specialty,
 			"commission_percent": percent,
 		})
 	}
