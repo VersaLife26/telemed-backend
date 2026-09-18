@@ -134,6 +134,14 @@ components:
         status: { type: string, enum: [active, suspended] }
         registered_at: { type: string, format: date-time }
 
+    UserActivity:
+      type: object
+      properties:
+        occurred_at: { type: string, format: date-time }
+        kind: { type: string, description: "user.registered, user.suspend_requested, appointment.confirmed, ..." }
+        summary: { type: string, description: "Account or booking phrase. Never clinical content." }
+        reference_id: { type: string, format: uuid, nullable: true }
+
     Appointment:
       type: object
       properties:
@@ -367,6 +375,28 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { data: { $ref: '#/components/schemas/User' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/activity:
+    get:
+      summary: Recent account and booking events for one user
+      description: >
+        Assembled from user_projection, audit_logs, and appointments_projection.
+        Never includes symptoms, diagnosis, or prescription content.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/UserActivity' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
         "404": { $ref: '#/components/responses/NotFound' }
 
   /users/{id}/suspend:

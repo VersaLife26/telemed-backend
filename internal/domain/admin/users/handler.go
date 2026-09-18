@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"telemed/internal/domain/admin/adminusers"
 	"telemed/internal/platform/httpx"
@@ -15,11 +16,12 @@ type Handler struct{ svc *Service }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-// Routes mounts GET /, GET /{id}, POST /{id}/suspend, POST /{id}/reinstate.
-// Impersonation is deliberately absent -- see docs/DESIGN.md.
+// Routes mounts GET /, GET /{id}, GET /{id}/activity, POST /{id}/suspend,
+// POST /{id}/reinstate. Impersonation is deliberately absent -- see docs/DESIGN.md.
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
+	r.Get("/{id}/activity", h.activity)
 	r.Get("/{id}", h.get)
 	r.Post("/{id}/suspend", h.suspend)
 	r.Post("/{id}/reinstate", h.reinstate)
@@ -53,6 +55,49 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	dtos := make([]userDTO, len(items))
 	for i, u := range items {
 		dtos[i] = toDTO(u)
+	}
+	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
+}
+
+type activityDTO struct {
+	OccurredAt  time.Time `json:"occurred_at"`
+	Kind        string    `json:"kind"`
+	Summary     string    `json:"summary"`
+	ReferenceID *string   `json:"reference_id"`
+}
+
+func toActivityDTO(e ActivityEntry) activityDTO {
+	d := activityDTO{
+		OccurredAt: e.OccurredAt,
+		Kind:       e.Kind,
+		Summary:    e.Summary,
+	}
+	if e.ReferenceID != nil && *e.ReferenceID != uuid.Nil {
+		id := e.ReferenceID.String()
+		d.ReferenceID = &id
+	}
+	return d
+}
+
+func (h *Handler) activity(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	page, perPage, _ := httpx.Pagination(r)
+	items, total, err := h.svc.Activity(r.Context(), id, page, perPage)
+	if errors.Is(err, ErrNotFound) {
+		httpx.Error(w, r, httpx.ErrNotFound)
+		return
+	}
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	dtos := make([]activityDTO, len(items))
+	for i := range items {
+		dtos[i] = toActivityDTO(items[i])
 	}
 	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
 }

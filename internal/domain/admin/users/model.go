@@ -52,6 +52,16 @@ type ListFilter struct {
 	PerPage int
 }
 
+// ActivityEntry is one row of GET /users/{id}/activity. It is assembled from
+// this service's own tables (user_projection, audit_logs,
+// appointments_projection) and must never carry clinical content.
+type ActivityEntry struct {
+	OccurredAt  time.Time
+	Kind        string
+	Summary     string
+	ReferenceID *uuid.UUID
+}
+
 // The command this service publishes as admin.user_suspend_requested /
 // admin.user_reinstate_requested is events.AdminUserStatusRequested, the
 // canonical type shared with user-service, which is the consumer that applies

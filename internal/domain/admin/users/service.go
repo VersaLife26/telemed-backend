@@ -34,6 +34,16 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]User, int64, error)
 	return s.repo.List(ctx, f)
 }
 
+// Activity returns recent account and booking events for a projected user.
+// Missing user → ErrNotFound (404), not an empty page: an empty page means
+// the account exists and nothing has been logged yet.
+func (s *Service) Activity(ctx context.Context, id uuid.UUID, page, perPage int) ([]ActivityEntry, int64, error) {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return nil, 0, err
+	}
+	return s.repo.ListActivity(ctx, id, page, perPage)
+}
+
 func (s *Service) Suspend(ctx context.Context, userID, adminID uuid.UUID, reason string) error {
 	if _, err := s.repo.Get(ctx, userID); err != nil {
 		return err
