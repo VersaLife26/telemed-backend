@@ -730,10 +730,26 @@ func (s *Service) provisionKeycloak(ctx context.Context, u *User) {
 	u.KeycloakID = &kcID
 }
 
+func (s *Service) resolveDoctorID(ctx context.Context, userID uuid.UUID) uuid.UUID {
+	if s.doctors == nil {
+		return uuid.Nil
+	}
+	docID, err := s.doctors.DoctorIDByUserID(ctx, userID)
+	if err != nil {
+		s.log.Debug().Err(err).Str("user_id", userID.String()).Msg("user: could not resolve doctor profile id for token")
+		return uuid.Nil
+	}
+	return docID
+}
+
 // issueSession mints a fresh access/refresh pair, starting a new rotation
 // family.
 func (s *Service) issueSession(ctx context.Context, u User, deviceID string, familyID uuid.UUID) (AuthResult, error) {
-	access, accessExp, err := s.tokens.IssueAccessToken(u)
+	var docID uuid.UUID
+	if u.Role == RoleDoctor {
+		docID = s.resolveDoctorID(ctx, u.ID)
+	}
+	access, accessExp, err := s.tokens.IssueAccessToken(u, docID)
 	if err != nil {
 		return AuthResult{}, err
 	}
@@ -823,7 +839,11 @@ func (s *Service) Refresh(ctx context.Context, rawToken, deviceID string) (AuthR
 			return nil
 		}
 
-		access, accessExp, err := s.tokens.IssueAccessToken(*u)
+		var docID uuid.UUID
+		if u.Role == RoleDoctor {
+			docID = s.resolveDoctorID(ctx, u.ID)
+		}
+		access, accessExp, err := s.tokens.IssueAccessToken(*u, docID)
 		if err != nil {
 			return err
 		}

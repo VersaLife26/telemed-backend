@@ -62,3 +62,30 @@ func TestHTTPDoctorApplications_ApplicationByIDNotFound(t *testing.T) {
 		t.Fatalf("got %v, want ErrDoctorApplicationNotFound", err)
 	}
 }
+
+func TestHTTPDoctorApplications_DoctorIDByUserID(t *testing.T) {
+	userID := uuid.New()
+	doctorID := uuid.New()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"doctor_id": doctorID.String(),
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewHTTPDoctorApplications(srv.URL, staticToken{})
+	got, err := c.DoctorIDByUserID(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("DoctorIDByUserID: %v", err)
+	}
+	if got != doctorID {
+		t.Fatalf("got %s, want %s", got, doctorID)
+	}
+	if !strings.Contains(gotPath, "/by-user/"+userID.String()) {
+		t.Fatalf("path = %s", gotPath)
+	}
+}

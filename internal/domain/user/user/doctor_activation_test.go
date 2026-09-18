@@ -43,6 +43,13 @@ func (s *stubDoctorApps) Attach(_ context.Context, applicationID, _ uuid.UUID, _
 	return nil
 }
 
+func (s *stubDoctorApps) DoctorIDByUserID(context.Context, uuid.UUID) (uuid.UUID, error) {
+	if s.err != nil {
+		return uuid.Nil, s.err
+	}
+	return s.app.ID, nil
+}
+
 func TestApplicationApprovedConsumer_NoClientIsNoop(t *testing.T) {
 	c := NewApplicationApprovedConsumer(&Service{log: zerolog.Nop()}, zerolog.Nop())
 	env := envelopeFor(t, events.SubjectDoctorApplicationApproved, events.DoctorApplicationApproved{

@@ -77,6 +77,7 @@ func (h *Handler) InternalRoutes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/pending", h.listPending)
 	r.Post("/{id}/verify", h.verify)
+	r.Get("/by-user/{userID}", h.getByUserID)
 	r.Get("/applications/by-phone/{phone}", h.getApplicationByPhone)
 	r.Get("/applications/by-email/{email}", h.getApplicationByEmail)
 	r.Get("/applications/pending", h.listPendingApplications)

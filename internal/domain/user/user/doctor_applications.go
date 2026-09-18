@@ -23,6 +23,7 @@ type DoctorApplications interface {
 	ApplicationByEmail(ctx context.Context, email string) (DoctorApplication, error)
 	ApplicationByID(ctx context.Context, id uuid.UUID) (DoctorApplication, error)
 	Attach(ctx context.Context, applicationID, userID uuid.UUID, email string) error
+	DoctorIDByUserID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
 }
 
 // DoctorApplication is the subset of the doctor-service application response
@@ -113,6 +114,21 @@ func (c *HTTPDoctorApplications) Attach(ctx context.Context, applicationID, user
 		return err
 	}
 	return c.postJSON(ctx, path, body, nil)
+}
+
+func (c *HTTPDoctorApplications) DoctorIDByUserID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	path := c.baseURL + "/api/v1/internal/doctors/by-user/" + userID.String()
+	var dto struct {
+		DoctorID string `json:"doctor_id"`
+	}
+	if err := c.getJSON(ctx, path, &dto); err != nil {
+		return uuid.Nil, err
+	}
+	id, err := uuid.Parse(dto.DoctorID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("user: parse doctor_id: %w", err)
+	}
+	return id, nil
 }
 
 func (c *HTTPDoctorApplications) getJSON(ctx context.Context, path string, out any) error {

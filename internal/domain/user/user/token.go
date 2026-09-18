@@ -45,6 +45,7 @@ type claims struct {
 	Email             string `json:"email"`
 	Locale            string `json:"locale"`
 	UserID            string `json:"telemed_user_id"`
+	DoctorID          string `json:"telemed_doctor_id,omitempty"`
 }
 
 // TokenIssuer signs and verifies the platform's access tokens with an RSA
@@ -100,8 +101,10 @@ func parseRSAPrivateKeyPEM(raw string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-// IssueAccessToken mints a 15-minute RS256 access token for u.
-func (t *TokenIssuer) IssueAccessToken(u User) (string, time.Time, error) {
+// IssueAccessToken mints a 15-minute RS256 access token for u. If doctorID is
+// supplied, the telemed_doctor_id claim is populated so downstream domains can
+// identify the doctor profile without redundant user-to-doctor lookups.
+func (t *TokenIssuer) IssueAccessToken(u User, doctorID ...uuid.UUID) (string, time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(AccessTokenTTL)
 
@@ -118,6 +121,9 @@ func (t *TokenIssuer) IssueAccessToken(u User) (string, time.Time, error) {
 		PhoneNumber:       u.Phone,
 		Locale:            string(u.Language),
 		UserID:            u.ID.String(),
+	}
+	if len(doctorID) > 0 && doctorID[0] != uuid.Nil {
+		c.DoctorID = doctorID[0].String()
 	}
 	c.RealmAccess.Roles = []string{string(u.Role)}
 	if u.Email != nil {
@@ -199,9 +205,10 @@ func preferredUsername(u User) string {
 // VerifiedPrincipal is the authenticated caller, extracted from a token this
 // issuer signed.
 type VerifiedPrincipal struct {
-	UserID uuid.UUID
-	Role   Role
-	Phone  string
+	UserID   uuid.UUID
+	DoctorID uuid.UUID
+	Role     Role
+	Phone    string
 }
 
 // Verify parses and validates a bearer token against this issuer's own
@@ -234,11 +241,15 @@ func (t *TokenIssuer) Verify(raw string) (VerifiedPrincipal, error) {
 	if err != nil {
 		return VerifiedPrincipal{}, fmt.Errorf("user: token missing telemed_user_id: %w", err)
 	}
+	var docID uuid.UUID
+	if c.DoctorID != "" {
+		docID, _ = uuid.Parse(c.DoctorID)
+	}
 	var role Role
 	if len(c.RealmAccess.Roles) > 0 {
 		role = Role(c.RealmAccess.Roles[0])
 	}
-	return VerifiedPrincipal{UserID: id, Role: role, Phone: c.PhoneNumber}, nil
+	return VerifiedPrincipal{UserID: id, DoctorID: docID, Role: role, Phone: c.PhoneNumber}, nil
 }
 
 // JWK is the RFC 7517 JSON representation of the RSA public key, served at

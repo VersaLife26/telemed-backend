@@ -56,6 +56,43 @@ func TestTokenIssuer_IssueAndVerifyRoundtrip(t *testing.T) {
 	}
 }
 
+func TestTokenIssuer_DoctorIDClaim(t *testing.T) {
+	issuer := newTestIssuer(t)
+	doctorID := uuid.New()
+	u := User{
+		ID:    uuid.New(),
+		Phone: "+94771234567",
+		Name:  "Dr. Nimal",
+		Role:  RoleDoctor,
+	}
+
+	// 1. Without doctorID: telemed_doctor_id is not set
+	tokNoDoc, _, err := issuer.IssueAccessToken(u)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+	pNoDoc, err := issuer.Verify(tokNoDoc)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if pNoDoc.DoctorID != uuid.Nil {
+		t.Errorf("DoctorID = %v, want nil", pNoDoc.DoctorID)
+	}
+
+	// 2. With doctorID: telemed_doctor_id is set and verified
+	tokWithDoc, _, err := issuer.IssueAccessToken(u, doctorID)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+	pWithDoc, err := issuer.Verify(tokWithDoc)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if pWithDoc.DoctorID != doctorID {
+		t.Errorf("DoctorID = %v, want %v", pWithDoc.DoctorID, doctorID)
+	}
+}
+
 func TestTokenIssuer_EmailOnlyPreferredUsername(t *testing.T) {
 	issuer := newTestIssuer(t)
 	email := "ada@example.lk"

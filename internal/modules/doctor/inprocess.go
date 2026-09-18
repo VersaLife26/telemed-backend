@@ -63,6 +63,10 @@ func (a *InProcessDoctorApplications) Attach(ctx context.Context, applicationID,
 	return err
 }
 
+func (a *InProcessDoctorApplications) DoctorIDByUserID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	return a.svc.ResolveDoctorID(ctx, userID)
+}
+
 func toUserDoctorApplication(app doctor.Application) user.DoctorApplication {
 	return user.DoctorApplication{
 		ID:           app.ID,

@@ -912,3 +912,18 @@ func safeContentDispositionName(name string) string {
 	}
 	return name
 }
+
+// getByUserID handles GET /internal/doctors/by-user/{userID}.
+func (h *Handler) getByUserID(w http.ResponseWriter, r *http.Request) {
+	userID, err := httpx.PathUUID(r, "userID", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	doc, err := h.svc.GetMine(r.Context(), userID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, map[string]string{"doctor_id": doc.ID.String()})
+}
