@@ -175,12 +175,9 @@ paths:
                   description: 0 means no cap.
                 holidays:
                   type: array
-                  maxItems: 0
                   description: >
-                    Accepted so the payload parses; a non-empty list is refused
-                    with 422. Holidays are owned by scheduling-service, which
-                    holds the holidays table and whose slot generator is the
-                    only thing a holiday affects.
+                    Forwarded additively to scheduling-service (upsert on
+                    doctor_id + date). Omit when not adding leave.
                   items:
                     type: object
                     properties:

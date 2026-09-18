@@ -274,11 +274,10 @@ components:
     WorkingHours:
       type: object
       description: >
-        The availability editor's save payload. `holidays` is accepted so the
-        request parses but must be empty: holidays are owned by
-        scheduling-service, which holds the holidays table and is the only thing
-        a holiday affects. A non-empty list is refused with 422 rather than
-        silently dropped.
+        The availability editor's save payload. `holidays` is forwarded
+        additively to scheduling-service (upsert on doctor_id + date). Omit the
+        field when not adding leave; this array is never the doctor's complete
+        leave set.
       properties:
         working_hours:
           type: array
@@ -294,7 +293,6 @@ components:
         max_per_day: { type: integer, minimum: 0, maximum: 100 }
         holidays:
           type: array
-          maxItems: 0
           items:
             type: object
             properties:
@@ -2603,6 +2601,39 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/ScheduleSettings' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/me/analytics:
+    get:
+      tags: [doctors]
+      summary: Practice overview for the calling doctor
+      description: Requires role `doctor`. Rates are fractions in 0..1.
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/me/analytics/peak-hours:
+    get:
+      tags: [doctors]
+      summary: Peak booking hours for the calling doctor
+      description: Requires role `doctor`.
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/me/earnings:
+    get:
+      tags: [doctors]
+      summary: Earnings and payouts for the calling doctor
+      description: Requires role `doctor`. From the doctor-service analytics projection.
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/doctors/me/documents:

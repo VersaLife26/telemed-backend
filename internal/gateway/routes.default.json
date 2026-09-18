@@ -379,6 +379,51 @@
       "description": "Read back the slot-shape settings saved by the availability editor (slot duration, buffer, daily cap, timezone). It is a separate endpoint from GET /doctors/me/availability because that one responds with a bare working-hours array and widening it to an object would break the doctor app's parser; without this the settings would be write-only, and the editor would show defaults on a second device with no way to know they are wrong."
     },
     {
+      "name": "doctor-me-analytics",
+      "pattern": "/api/v1/doctors/me/analytics",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The calling doctor's practice overview: completed sessions, no-show and cancellation rates, ratings. Named so it is not swallowed by GET /doctors/{doctorID}."
+    },
+    {
+      "name": "doctor-me-analytics-peak-hours",
+      "pattern": "/api/v1/doctors/me/analytics/peak-hours",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Hour-of-week booking heatmap for the calling doctor. Sparse by_hour_of_week plus a dense 24-cell by_hour_of_day collapse."
+    },
+    {
+      "name": "doctor-me-earnings",
+      "pattern": "/api/v1/doctors/me/earnings",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Gross, commission, net and payout history for the calling doctor, from the doctor-service analytics projection."
+    },
+    {
       "name": "doctor-documents-post",
       "pattern": "/api/v1/doctors/me/documents",
       "methods": [
