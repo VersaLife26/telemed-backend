@@ -98,7 +98,8 @@ func (v *InProcessApplicationVerifier) ListPendingApplications(ctx context.Conte
 		return nil, err
 	}
 	out := make([]credentialing.PendingApplication, len(apps))
-	for i, a := range apps {
+	for i := range apps {
+		a := &apps[i]
 		out[i] = credentialing.PendingApplication{
 			ID:              a.ID,
 			FullName:        a.DisplayName,
