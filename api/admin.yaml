@@ -441,6 +441,28 @@ paths:
                   data: { type: array, items: { $ref: '#/components/schemas/Appointment' } }
                   meta: { $ref: '#/components/schemas/Meta' }
 
+  /appointments/{id}/audit:
+    get:
+      summary: Admin actions recorded against one appointment
+      description: >
+        Rows from audit_logs for this appointment, oldest first. Patient- and
+        doctor-initiated changes are not included.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/perPage'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+                  meta: { $ref: '#/components/schemas/Meta' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
   /appointments/{id}/force-cancel:
     post:
       summary: Publishes admin.appointment_force_cancel_requested (async)

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"telemed/internal/domain/admin/adminusers"
+	"telemed/internal/domain/admin/audit"
 	"telemed/internal/platform/httpx"
 )
 
@@ -24,6 +25,7 @@ func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
 	r.Get("/double-bookings", h.doubleBookings)
+	r.Get("/{id}/audit", h.audit)
 	r.Get("/{id}", h.get)
 	r.Post("/{id}/force-cancel", h.forceCancel)
 	r.Post("/resolve-double-booking", h.resolveDoubleBooking)
@@ -98,6 +100,29 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, r, toDTO(a))
+}
+
+func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	page, perPage, _ := httpx.Pagination(r)
+	entries, total, err := h.svc.Audit(r.Context(), id, page, perPage)
+	if errors.Is(err, ErrNotFound) {
+		httpx.Error(w, r, httpx.ErrNotFound)
+		return
+	}
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	dtos := make([]audit.EntryDTO, len(entries))
+	for i := range entries {
+		dtos[i] = audit.ToDTO(entries[i])
+	}
+	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
 }
 
 type reasonRequest struct {

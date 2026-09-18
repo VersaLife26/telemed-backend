@@ -64,6 +64,9 @@ type ListFilter struct {
 	To           time.Time
 	Page         int
 	PerPage      int
+	// OldestFirst flips List from id DESC (the audit page) to id ASC (a
+	// single-resource trail, which the console reads top-to-bottom).
+	OldestFirst bool
 }
 
 // VerifyRequest scopes a chain walk. FromID lets a very large table be

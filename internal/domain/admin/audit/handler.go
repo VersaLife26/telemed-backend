@@ -57,9 +57,9 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
-// entryDTO is the wire shape. Kept separate from the domain Entry so a
+// EntryDTO is the wire shape. Kept separate from the domain Entry so a
 // column rename in the repository never silently changes the public API.
-type entryDTO struct {
+type EntryDTO struct {
 	ID           int64     `json:"id"`
 	ActorID      string    `json:"actor_id,omitempty"`
 	ActorRole    string    `json:"actor_role"`
@@ -76,8 +76,9 @@ type entryDTO struct {
 	RowHash      string    `json:"row_hash"`
 }
 
-func toDTO(e Entry) entryDTO {
-	d := entryDTO{
+// ToDTO maps a persisted row onto the public JSON shape.
+func ToDTO(e Entry) EntryDTO {
+	d := EntryDTO{
 		ID: e.ID, ActorRole: e.ActorRole, Action: e.Action,
 		ResourceType: e.ResourceType, ResourceID: e.ResourceID,
 		IP: e.IP, UserAgent: e.UserAgent, RequestID: e.RequestID,
@@ -137,9 +138,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dtos := make([]entryDTO, len(entries))
+	dtos := make([]EntryDTO, len(entries))
 	for i := range entries {
-		dtos[i] = toDTO(entries[i])
+		dtos[i] = ToDTO(entries[i])
 	}
 	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
 }

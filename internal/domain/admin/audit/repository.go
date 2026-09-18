@@ -103,8 +103,8 @@ func marshalNullable(v any) (json.RawMessage, error) {
 	return b, nil
 }
 
-// List returns a page of entries matching f, newest first, plus the total
-// matching row count for pagination metadata.
+// List returns a page of entries matching f, newest first unless OldestFirst
+// is set, plus the total matching row count for pagination metadata.
 func (r *Repository) List(ctx context.Context, f ListFilter) ([]Entry, int64, error) {
 	where, args := buildFilter(f)
 
@@ -124,13 +124,17 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]Entry, int64, er
 		return nil, 0, fmt.Errorf("audit: count: %w", err)
 	}
 
+	order := "DESC"
+	if f.OldestFirst {
+		order = "ASC"
+	}
 	listQ := fmt.Sprintf(`
 		SELECT id, actor_id, actor_role, action, resource_type, resource_id,
 		       old_value, new_value, `+ipColumn+`, user_agent, request_id, created_at,
 		       prev_hash, row_hash
 		FROM audit_logs%s
-		ORDER BY id DESC
-		LIMIT $%d OFFSET $%d`, where, len(args)+1, len(args)+2)
+		ORDER BY id %s
+		LIMIT $%d OFFSET $%d`, where, order, len(args)+1, len(args)+2)
 
 	rows, err := r.pool.Query(ctx, listQ, append(args, perPage, offset)...)
 	if err != nil {

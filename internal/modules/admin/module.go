@@ -251,7 +251,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	usersProjector := users.NewProjector(usersRepo, userDirectory, log)
 
 	apptRepo := appointments.NewRepository(pool)
-	apptSvc := appointments.NewService(pool, apptRepo, outbox)
+	apptSvc := appointments.NewService(pool, apptRepo, outbox, auditSvc)
 	apptHandler := appointments.NewHandler(apptSvc)
 
 	financeRepo := finance.NewRepository(pool)

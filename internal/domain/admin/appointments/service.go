@@ -14,13 +14,14 @@ import (
 // Service implements list/search plus the two commands scheduling-service
 // must apply on this service's behalf.
 type Service struct {
-	pool   database.Pool
-	repo   *Repository
-	outbox *events.Outbox
+	pool     database.Pool
+	repo     *Repository
+	outbox   *events.Outbox
+	auditLog *audit.Service
 }
 
-func NewService(pool database.Pool, repo *Repository, outbox *events.Outbox) *Service {
-	return &Service{pool: pool, repo: repo, outbox: outbox}
+func NewService(pool database.Pool, repo *Repository, outbox *events.Outbox, auditLog *audit.Service) *Service {
+	return &Service{pool: pool, repo: repo, outbox: outbox, auditLog: auditLog}
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Appointment, error) {
@@ -29,6 +30,20 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Appointment, error) {
 
 func (s *Service) List(ctx context.Context, f ListFilter) ([]Appointment, int64, error) {
 	return s.repo.List(ctx, f)
+}
+
+// Audit returns admin actions recorded against this appointment, oldest first.
+func (s *Service) Audit(ctx context.Context, id uuid.UUID, page, perPage int) ([]audit.Entry, int64, error) {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return nil, 0, err
+	}
+	return s.auditLog.List(ctx, audit.ListFilter{
+		ResourceType: "appointment",
+		ResourceID:   id.String(),
+		Page:         page,
+		PerPage:      perPage,
+		OldestFirst:  true,
+	})
 }
 
 // ForceCancel publishes admin.appointment_force_cancel_requested.
