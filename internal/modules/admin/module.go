@@ -231,8 +231,14 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	notifSvc := notifications.NewService(notifRepo, log)
 	notifHandler := notifications.NewHandler(notifSvc)
 
+	financeRepo := finance.NewRepository(pool)
+	financeSvc := finance.NewService(pool, financeRepo, outbox, configSvc)
+	financeHandler := finance.NewHandler(financeSvc)
+	financeProjector := finance.NewProjector(financeRepo, log)
+
 	disputesRepo := disputes.NewRepository(pool)
 	disputesSvc := disputes.NewService(disputesRepo, userDirectory)
+	disputesSvc.SetRefundOpener(financeSvc)
 	disputesHandler := disputes.NewHandler(disputesSvc)
 
 	contentRepo := content.NewRepository(pool)
@@ -254,10 +260,6 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	apptSvc := appointments.NewService(pool, apptRepo, outbox, auditSvc)
 	apptHandler := appointments.NewHandler(apptSvc)
 
-	financeRepo := finance.NewRepository(pool)
-	financeSvc := finance.NewService(pool, financeRepo, outbox, configSvc)
-	financeHandler := finance.NewHandler(financeSvc)
-
 	// --- background workers ----------------------------------------------
 	// The outbox relay runs in every replica. Row-level SKIP LOCKED makes that
 	// safe, and it means no single "worker" pod to lose.
@@ -273,6 +275,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	go runProjector(log, "admin-notifications", func() error { return notifSvc.Subscribe(ctx, deps.Broker) })
 	go runProjector(log, "analytics", func() error { return analyticsProjector.Subscribe(ctx, deps.Broker) })
 	go runProjector(log, "users", func() error { return usersProjector.Subscribe(ctx, deps.Broker) })
+	go runProjector(log, "finance", func() error { return financeProjector.Subscribe(ctx, deps.Broker) })
 	go func() {
 		if err := refresher.RunHourly(ctx); err != nil {
 			log.Error().Err(err).Msg("analytics refresher stopped")

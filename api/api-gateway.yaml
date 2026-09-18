@@ -2299,6 +2299,55 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/Doctor' } }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/admin/holidays:
+    post:
+      tags: [admin]
+      summary: Register leave or a platform-wide holiday
+      description: Requires an admin role AND gateway IP allowlist. scheduling-service owns the table.
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/slots/{slotID}/block:
+    post:
+      tags: [admin]
+      summary: Block, retire or restore a slot
+      parameters:
+        - name: slotID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/finance/promo-codes:
+    get:
+      tags: [admin]
+      summary: List promo codes
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      summary: Issue a promo code
+      responses:
+        '201': { description: Created }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/finance/promo-codes/{code}:
+    delete:
+      tags: [admin]
+      summary: Deactivate a promo code
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Removed }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/admin/analytics/revenue:
     get:
       tags: [admin]

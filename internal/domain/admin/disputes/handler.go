@@ -224,13 +224,10 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 type assignRequest struct {
-	AssigneeID string `json:"assignee_id" validate:"required,uuid4"`
+	AssigneeID string `json:"assignee_id" validate:"omitempty,uuid4"`
+	AssignedTo string `json:"assigned_to" validate:"omitempty,uuid4"`
 	Version    int    `json:"version" validate:"required,min=1"`
-	// Force is honoured only for super_admin (see Actor.CanForce) and is
-	// recorded as dispute.force_reassigned. Any other role sending it gets
-	// the ordinary 403, because Actor.CanForce -- not this field -- is what
-	// decides.
-	Force bool `json:"force"`
+	Force      bool   `json:"force"`
 }
 
 func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
@@ -244,7 +241,15 @@ func (h *Handler) assign(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
-	assignee, _ := parseUUID(body.AssigneeID)
+	raw := body.AssigneeID
+	if raw == "" {
+		raw = body.AssignedTo
+	}
+	if raw == "" {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "assignee_id is required"))
+		return
+	}
+	assignee, _ := parseUUID(raw)
 
 	actor := actorFrom(r)
 	actor.CanForce = actor.CanForce && body.Force

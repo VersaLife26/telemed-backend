@@ -188,6 +188,18 @@ func (h *Handler) createPromoCode(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, r, code)
 }
 
+func (h *Handler) ListPromoCodes(w http.ResponseWriter, r *http.Request) {
+	h.listPromoCodes(w, r)
+}
+
+func (h *Handler) CreatePromoCode(w http.ResponseWriter, r *http.Request) {
+	h.createPromoCode(w, r)
+}
+
+func (h *Handler) DeactivatePromoCode(w http.ResponseWriter, r *http.Request) {
+	h.deactivatePromoCode(w, r)
+}
+
 func (h *Handler) listPromoCodes(w http.ResponseWriter, r *http.Request) {
 	page, perPage, offset := httpx.Pagination(r)
 	includeInactive := r.URL.Query().Get("include_inactive") == "true"

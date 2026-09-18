@@ -22,19 +22,27 @@ type Directory interface {
 	User(ctx context.Context, userID uuid.UUID) (directory.User, error)
 }
 
+// RefundOpener records a pending finance refund when a dispute asks for money.
+type RefundOpener interface {
+	OpenFromDispute(ctx context.Context, disputeID, appointmentID uuid.UUID, amountCents *int64, reason string) error
+}
+
 // ErrUnknownParty means the patient or doctor named on a dispute does not
 // exist, or is not the kind of user the field claims.
 var ErrUnknownParty = errors.New("disputes: the named patient or doctor does not exist")
 
 type Service struct {
-	repo *Repository
-	dir  Directory
+	repo    *Repository
+	dir     Directory
+	refunds RefundOpener
 }
 
 // NewService takes the directory so Create can check who a dispute is about.
 // A nil directory disables the check, which is only correct in a test that is
 // about something else -- cmd/server always passes one.
 func NewService(repo *Repository, dir Directory) *Service { return &Service{repo: repo, dir: dir} }
+
+func (s *Service) SetRefundOpener(r RefundOpener) { s.refunds = r }
 
 func (s *Service) Create(ctx context.Context, p CreateParams) (Dispute, error) {
 	// SECURITY-REVIEW F23: patient_id and doctor_id arrived from the request
@@ -61,6 +69,11 @@ func (s *Service) Create(ctx context.Context, p CreateParams) (Dispute, error) {
 	d, err := s.repo.Create(ctx, p)
 	if err != nil {
 		return Dispute{}, err
+	}
+	if p.RefundRequested && s.refunds != nil {
+		if err := s.refunds.OpenFromDispute(ctx, d.ID, d.AppointmentID, d.RefundAmountCents, d.Description); err != nil {
+			return Dispute{}, err
+		}
 	}
 	audit.Stage(ctx, audit.Draft{
 		Action: "dispute.opened", ResourceType: "dispute", ResourceID: d.ID.String(),

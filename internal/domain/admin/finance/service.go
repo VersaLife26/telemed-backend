@@ -98,11 +98,28 @@ func (s *Service) CurrentCommissionRule(ctx context.Context) (CommissionRule, in
 		}
 		return CommissionRule{}, 0, err
 	}
-	var rule CommissionRule
-	if err := json.Unmarshal(cfg.Value, &rule); err != nil {
+	rule, err := DecodeCommissionValue(cfg.Value)
+	if err != nil {
 		return CommissionRule{}, 0, err
 	}
 	return rule, cfg.Version, nil
+}
+
+// CurrentCommissionConfig is the same read with the versioned row, so the
+// console can render SystemConfig metadata (who, when) next to the editor.
+func (s *Service) CurrentCommissionConfig(ctx context.Context) (sysconfig.Config, CommissionRule, error) {
+	cfg, err := s.configs.Get(ctx, commissionRulesKey)
+	if err != nil {
+		if errors.Is(err, sysconfig.ErrNotFound) {
+			return sysconfig.Config{Key: commissionRulesKey}, CommissionRule{}, nil
+		}
+		return sysconfig.Config{}, CommissionRule{}, err
+	}
+	rule, err := DecodeCommissionValue(cfg.Value)
+	if err != nil {
+		return sysconfig.Config{}, CommissionRule{}, err
+	}
+	return cfg, rule, nil
 }
 
 // SetCommissionRule creates a new commission_rules version (sysconfig never
@@ -123,6 +140,9 @@ func (s *Service) SetCommissionRule(ctx context.Context, caller middleware.Princ
 // window. payment-service is expected to compute and execute the batch and
 // publish payout.sent per doctor.
 func (s *Service) TriggerPayoutBatch(ctx context.Context, adminID uuid.UUID, from, to time.Time) error {
+	if err := s.repo.UpsertPayoutBatchRequest(ctx, from, to); err != nil {
+		return err
+	}
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		return s.outbox.Enqueue(ctx, tx, events.SubjectAdminPayoutBatchRequested, "", events.AdminPayoutBatchRequested{
 			From: from, To: to, AdminID: adminID,
@@ -155,4 +175,67 @@ func (s *Service) ApproveRefund(ctx context.Context, adminID, paymentID uuid.UUI
 		NewValue: map[string]any{"amount_cents": amountCents, "reason": reason},
 	})
 	return nil
+}
+
+func (s *Service) ListRefunds(ctx context.Context, status string, page, perPage int) ([]RefundRequest, int64, error) {
+	return s.repo.ListRefunds(ctx, status, page, perPage)
+}
+
+func (s *Service) ListPayoutBatches(ctx context.Context, page, perPage int) ([]PayoutBatch, int64, error) {
+	return s.repo.ListPayoutBatches(ctx, page, perPage)
+}
+
+func (s *Service) CommissionHistory(ctx context.Context) ([]sysconfig.Config, error) {
+	return s.configs.History(ctx, commissionRulesKey)
+}
+
+// OpenFromDispute records a pending refund for the payments console when a
+// dispute asks for money back. Missing payment (consult unpaid) is a no-op:
+// there is nothing to refund yet.
+func (s *Service) OpenFromDispute(ctx context.Context, disputeID, appointmentID uuid.UUID, amountCents *int64, reason string) error {
+	pay, err := s.repo.PaymentByAppointment(ctx, appointmentID)
+	if err != nil {
+		return nil
+	}
+	cents := pay.AmountCents
+	if amountCents != nil && *amountCents > 0 {
+		cents = *amountCents
+	}
+	if cents <= 0 {
+		return nil
+	}
+	_, err = s.repo.InsertRefund(ctx, RefundRequest{
+		PaymentID: pay.PaymentID, AppointmentID: appointmentID, DisputeID: disputeID,
+		AmountCents: cents, Currency: pay.Currency, Reason: reason,
+	})
+	return err
+}
+
+func (s *Service) DecideRefund(ctx context.Context, actorID, refundID uuid.UUID, decision, note string) error {
+	req, err := s.repo.GetRefund(ctx, refundID)
+	if err != nil {
+		return err
+	}
+	if req.Status != "pending" {
+		return fmt.Errorf("finance: refund %s is already %s", refundID, req.Status)
+	}
+	switch decision {
+	case "approved":
+		if err := s.ApproveRefund(ctx, actorID, req.PaymentID, req.AmountCents, note); err != nil {
+			return err
+		}
+		_, err = s.repo.DecideRefund(ctx, refundID, actorID, "approved")
+		return err
+	case "rejected":
+		if _, err := s.repo.DecideRefund(ctx, refundID, actorID, "rejected"); err != nil {
+			return err
+		}
+		audit.Stage(ctx, audit.Draft{
+			Action: "finance.refund_rejected", ResourceType: "payment", ResourceID: req.PaymentID.String(),
+			NewValue: map[string]any{"reason": note},
+		})
+		return nil
+	default:
+		return fmt.Errorf("finance: decision must be approved or rejected")
+	}
 }

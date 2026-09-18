@@ -68,29 +68,29 @@ type BookingDay struct {
 
 // DoctorUtilizationDay is one row of doctor_utilization_daily.
 type DoctorUtilizationDay struct {
-	Day            time.Time
-	DoctorID       uuid.UUID
-	CompletedCount int64
-	NoShowCount    int64
-	CancelledCount int64
-	TotalCount     int64
+	Day            time.Time `json:"day"`
+	DoctorID       uuid.UUID `json:"doctor_id"`
+	CompletedCount int64     `json:"completed_count"`
+	NoShowCount    int64     `json:"no_show_count"`
+	CancelledCount int64     `json:"cancelled_count"`
+	TotalCount     int64     `json:"total_count"`
 }
 
 // DoctorTotals aggregates DoctorUtilizationDay across a date range for the
 // "top doctors" view.
 type DoctorTotals struct {
-	DoctorID       uuid.UUID
-	CompletedCount int64
-	NoShowCount    int64
-	CancelledCount int64
-	TotalCount     int64
+	DoctorID       uuid.UUID `json:"doctor_id"`
+	CompletedCount int64     `json:"completed_count"`
+	NoShowCount    int64     `json:"no_show_count"`
+	CancelledCount int64     `json:"cancelled_count"`
+	TotalCount     int64     `json:"total_count"`
 }
 
 // DistrictDay is one row of district_activity_daily.
 type DistrictDay struct {
-	Day          time.Time
-	District     string
-	BookingCount int64
+	Day          time.Time `json:"day"`
+	District     string    `json:"district"`
+	BookingCount int64     `json:"booking_count"`
 }
 
 // DashboardSummary is the aggregate payload for GET /analytics/dashboard —

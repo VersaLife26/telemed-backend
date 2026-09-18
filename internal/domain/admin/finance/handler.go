@@ -2,6 +2,7 @@ package finance
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"telemed/internal/domain/admin/adminusers"
 	"telemed/internal/domain/admin/audit"
 	"telemed/internal/domain/admin/csvx"
+	"telemed/internal/domain/admin/sysconfig"
 	"telemed/internal/platform/httpx"
 	"telemed/internal/platform/logger"
 	"telemed/internal/platform/middleware"
@@ -40,6 +42,10 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/commission-rules", h.getCommissionRule)
 	r.Put("/commission-rules", h.setCommissionRule)
 	r.Post("/payouts/run", h.runPayoutBatch)
+	r.Get("/payout-batches", h.listPayoutBatches)
+	r.Get("/commission-rules/history", h.commissionHistory)
+	r.Get("/refunds", h.listRefunds)
+	r.Post("/refunds/{id}/decision", h.decideRefund)
 	r.Post("/refunds", h.approveRefund)
 	return r
 }
@@ -203,18 +209,19 @@ func exportError(err error) error {
 }
 
 func (h *Handler) getCommissionRule(w http.ResponseWriter, r *http.Request) {
-	rule, version, err := h.svc.CurrentCommissionRule(r.Context())
+	cfg, rule, err := h.svc.CurrentCommissionConfig(r.Context())
 	if err != nil {
 		httpx.Error(w, r, err)
 		return
 	}
-	httpx.OK(w, r, map[string]any{"rule": rule, "version": version})
+	httpx.OK(w, r, commissionConfigDTO(cfg, rule))
 }
 
 type commissionRuleRequest struct {
-	DefaultPercent int            `json:"default_percent" validate:"required,min=0,max=100"`
-	BySpecialty    map[string]int `json:"by_specialty"`
-	EffectiveFrom  *time.Time     `json:"effective_from"`
+	DefaultPercent int             `json:"default_percent" validate:"omitempty,min=0,max=100"`
+	BySpecialty    map[string]int  `json:"by_specialty"`
+	EffectiveFrom  *time.Time      `json:"effective_from"`
+	Value          json.RawMessage `json:"value"`
 }
 
 func (h *Handler) setCommissionRule(w http.ResponseWriter, r *http.Request) {
@@ -223,38 +230,200 @@ func (h *Handler) setCommissionRule(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
+	rule := CommissionRule{DefaultPercent: body.DefaultPercent, BySpecialty: body.BySpecialty}
+	if len(body.Value) > 0 {
+		parsed, err := DecodeCommissionValue(body.Value)
+		if err != nil {
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "value must be a commission rule document"))
+			return
+		}
+		rule = parsed
+	}
+	if rule.DefaultPercent < 0 || rule.DefaultPercent > 100 {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "default commission percent must be 0-100"))
+		return
+	}
 	actor, _ := adminusers.FromContext(r.Context())
 	var effectiveFrom time.Time
 	if body.EffectiveFrom != nil {
 		effectiveFrom = *body.EffectiveFrom
 	}
 
-	cfg, err := h.svc.SetCommissionRule(r.Context(), middleware.MustPrincipal(r.Context()), actor.ID, CommissionRule{DefaultPercent: body.DefaultPercent, BySpecialty: body.BySpecialty}, effectiveFrom)
+	cfg, err := h.svc.SetCommissionRule(r.Context(), middleware.MustPrincipal(r.Context()), actor.ID, rule, effectiveFrom)
 	if err != nil {
 		httpx.Error(w, r, err)
 		return
 	}
-	httpx.Created(w, r, map[string]any{"version": cfg.Version, "effective_from": cfg.EffectiveFrom})
+	httpx.Created(w, r, commissionConfigDTO(cfg, rule))
+}
+
+func commissionConfigDTO(cfg sysconfig.Config, rule CommissionRule) map[string]any {
+	out := map[string]any{
+		"key":            commissionRulesKey,
+		"value":          EditorCommissionSet(rule),
+		"version":        cfg.Version,
+		"effective_from": cfg.EffectiveFrom,
+		"created_at":     cfg.CreatedAt,
+	}
+	if cfg.UpdatedBy != uuid.Nil {
+		out["updated_by"] = cfg.UpdatedBy.String()
+	} else {
+		out["updated_by"] = nil
+	}
+	return out
 }
 
 type payoutBatchRequest struct {
-	From time.Time `json:"from" validate:"required"`
-	To   time.Time `json:"to" validate:"required,gtfield=From"`
+	From *time.Time `json:"from"`
+	To   *time.Time `json:"to"`
 }
 
 func (h *Handler) runPayoutBatch(w http.ResponseWriter, r *http.Request) {
 	var body payoutBatchRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := httpx.DecodeJSON(w, r, &body); err != nil {
+			httpx.Error(w, r, err)
+			return
+		}
+	}
+	to := time.Now().UTC()
+	from := to.Add(-24 * time.Hour)
+	if body.To != nil {
+		to = *body.To
+	}
+	if body.From != nil {
+		from = *body.From
+	}
+	if !to.After(from) {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "to must be after from"))
+		return
+	}
+	actor, _ := adminusers.FromContext(r.Context())
+
+	if err := h.svc.TriggerPayoutBatch(r.Context(), actor.ID, from, to); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	httpx.JSON(w, r, http.StatusAccepted, httpx.Envelope{Data: map[string]string{"status": "payout_batch_requested"}})
+}
+
+func (h *Handler) listPayoutBatches(w http.ResponseWriter, r *http.Request) {
+	page, perPage, _ := httpx.Pagination(r)
+	items, total, err := h.svc.ListPayoutBatches(r.Context(), page, perPage)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	dtos := make([]payoutBatchDTO, len(items))
+	for i, b := range items {
+		dtos[i] = toPayoutBatchDTO(b)
+	}
+	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
+}
+
+func (h *Handler) commissionHistory(w http.ResponseWriter, r *http.Request) {
+	items, err := h.svc.CommissionHistory(r.Context())
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	dtos := make([]map[string]any, len(items))
+	for i, cfg := range items {
+		rule, decodeErr := DecodeCommissionValue(cfg.Value)
+		if decodeErr != nil {
+			httpx.Error(w, r, decodeErr)
+			return
+		}
+		dtos[i] = commissionConfigDTO(cfg, rule)
+	}
+	httpx.OK(w, r, dtos)
+}
+
+func (h *Handler) listRefunds(w http.ResponseWriter, r *http.Request) {
+	page, perPage, _ := httpx.Pagination(r)
+	items, total, err := h.svc.ListRefunds(r.Context(), r.URL.Query().Get("status"), page, perPage)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	dtos := make([]refundDTO, len(items))
+	for i, item := range items {
+		dtos[i] = toRefundDTO(item)
+	}
+	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
+}
+
+type refundDecisionRequest struct {
+	Decision string `json:"decision" validate:"required,oneof=approved rejected"`
+	Note     string `json:"note" validate:"required,min=15,max=1000"`
+}
+
+func (h *Handler) decideRefund(w http.ResponseWriter, r *http.Request) {
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	var body refundDecisionRequest
 	if err := httpx.DecodeJSON(w, r, &body); err != nil {
 		httpx.Error(w, r, err)
 		return
 	}
 	actor, _ := adminusers.FromContext(r.Context())
-
-	if err := h.svc.TriggerPayoutBatch(r.Context(), actor.ID, body.From, body.To); err != nil {
+	if err := h.svc.DecideRefund(r.Context(), actor.ID, id, body.Decision, body.Note); err != nil {
 		httpx.Error(w, r, err)
 		return
 	}
-	httpx.JSON(w, r, http.StatusAccepted, httpx.Envelope{Data: map[string]string{"status": "payout_batch_requested"}})
+	httpx.JSON(w, r, http.StatusAccepted, httpx.Envelope{Data: map[string]string{"status": "refund_" + body.Decision}})
+}
+
+type refundDTO struct {
+	ID            string     `json:"id"`
+	PaymentID     string     `json:"payment_id"`
+	AppointmentID string     `json:"appointment_id,omitempty"`
+	DisputeID     string     `json:"dispute_id,omitempty"`
+	AmountCents   int64      `json:"amount_cents"`
+	Currency      string     `json:"currency"`
+	Reason        string     `json:"reason"`
+	Status        string     `json:"status"`
+	RequestedAt   time.Time  `json:"requested_at"`
+	DecidedAt     *time.Time `json:"decided_at"`
+	DecidedBy     string     `json:"decided_by,omitempty"`
+}
+
+func toRefundDTO(req RefundRequest) refundDTO {
+	d := refundDTO{
+		ID: req.ID.String(), PaymentID: req.PaymentID.String(), AmountCents: req.AmountCents,
+		Currency: req.Currency, Reason: req.Reason, Status: req.Status, RequestedAt: req.RequestedAt,
+		DecidedAt: req.DecidedAt,
+	}
+	if req.AppointmentID != uuid.Nil {
+		d.AppointmentID = req.AppointmentID.String()
+	}
+	if req.DisputeID != uuid.Nil {
+		d.DisputeID = req.DisputeID.String()
+	}
+	if req.DecidedBy != uuid.Nil {
+		d.DecidedBy = req.DecidedBy.String()
+	}
+	return d
+}
+
+type payoutBatchDTO struct {
+	ID          string     `json:"id"`
+	Status      string     `json:"status"`
+	DoctorCount int        `json:"doctor_count"`
+	TotalCents  int64      `json:"total_cents"`
+	Currency    string     `json:"currency"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at"`
+}
+
+func toPayoutBatchDTO(b PayoutBatch) payoutBatchDTO {
+	return payoutBatchDTO{
+		ID: b.ID.String(), Status: b.Status, DoctorCount: b.DoctorCount,
+		TotalCents: b.TotalCents, Currency: b.Currency, CreatedAt: b.CreatedAt, CompletedAt: b.CompletedAt,
+	}
 }
 
 type refundRequest struct {

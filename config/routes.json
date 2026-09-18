@@ -1494,6 +1494,55 @@
       "description": "Administrator declines a pending reschedule. Cancels the original booking with a full refund."
     },
     {
+      "name": "admin-holidays-post",
+      "pattern": "/api/v1/admin/holidays",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Staff-set leave or a platform-wide holiday. Named ahead of admin-catchall so scheduling-service owns the holidays table."
+    },
+    {
+      "name": "admin-slots-block",
+      "pattern": "/api/v1/admin/slots/{slotID}/block",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Staff withhold, retire or restore a generated slot. Named ahead of admin-catchall."
+    },
+    {
+      "name": "admin-finance-promo-codes",
+      "pattern": "/api/v1/admin/finance/promo-codes",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "upstream": "payment-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "List and issue promo codes from the admin console. payment-service owns the table; this path exists so the console BFF (admin prefix only) can reach it."
+    },
+    {
+      "name": "admin-finance-promo-codes-delete",
+      "pattern": "/api/v1/admin/finance/promo-codes/{code}",
+      "methods": [
+        "DELETE"
+      ],
+      "upstream": "payment-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Deactivate a promo code from the admin console."
+    },
+    {
       "name": "admin-catchall",
       "pattern": "/api/v1/admin/*",
       "upstream": "admin-service",

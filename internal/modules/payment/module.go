@@ -213,6 +213,12 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 			r.Mount("/payments", handler.Routes())
 			r.Mount("/payouts", handler.PayoutRoutes())
+			r.Route("/admin/finance/promo-codes", func(r chi.Router) {
+				r.Use(middleware.RequireRole(middleware.RoleSuperAdmin, middleware.RoleFinance))
+				r.Get("/", handler.ListPromoCodes)
+				r.Post("/", handler.CreatePromoCode)
+				r.Delete("/{code}", handler.DeactivatePromoCode)
+			})
 		})
 	}
 
