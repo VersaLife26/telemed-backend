@@ -347,8 +347,8 @@ func (h *Handler) listRefunds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dtos := make([]refundDTO, len(items))
-	for i, item := range items {
-		dtos[i] = toRefundDTO(item)
+	for i := range items {
+		dtos[i] = toRefundDTO(items[i])
 	}
 	httpx.List(w, r, dtos, httpx.Meta{Page: page, PerPage: perPage, Total: total})
 }

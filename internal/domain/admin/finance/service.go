@@ -195,7 +195,10 @@ func (s *Service) CommissionHistory(ctx context.Context) ([]sysconfig.Config, er
 func (s *Service) OpenFromDispute(ctx context.Context, disputeID, appointmentID uuid.UUID, amountCents *int64, reason string) error {
 	pay, err := s.repo.PaymentByAppointment(ctx, appointmentID)
 	if err != nil {
-		return nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
 	}
 	cents := pay.AmountCents
 	if amountCents != nil && *amountCents > 0 {
