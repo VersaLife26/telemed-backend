@@ -236,6 +236,7 @@ func TestIntentRejectsBadRequests(t *testing.T) {
 		{"missing appointment_id", map[string]any{}, http.StatusUnprocessableEntity},
 		{"appointment_id not a uuid", map[string]any{"appointment_id": "not-a-uuid"}, http.StatusUnprocessableEntity},
 		{"unknown provider", map[string]any{"appointment_id": p.AppointmentID.String(), "provider": "paypal"}, http.StatusUnprocessableEntity},
+		{"unconfigured rail", map[string]any{"appointment_id": p.AppointmentID.String(), "provider": "payhere"}, http.StatusNotImplemented},
 		{"unknown field", map[string]any{"appointment_id": p.AppointmentID.String(), "amount_cents": 1}, http.StatusBadRequest},
 		{"non sri lankan phone", map[string]any{"appointment_id": p.AppointmentID.String(), "phone": "+14155550123"}, http.StatusUnprocessableEntity},
 	}

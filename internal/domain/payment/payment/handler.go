@@ -436,6 +436,9 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error, op str
 		log.Error().Err(err).Str("op", op).Msg("payment provider unavailable")
 		httpx.Error(w, r, httpx.NewError(http.StatusBadGateway, httpx.CodeProviderError,
 			"the payment provider is not responding; please try again").WithCause(err))
+	case errors.Is(err, ErrProviderNotConfigured):
+		httpx.Error(w, r, httpx.NewError(http.StatusNotImplemented, httpx.CodeProviderError,
+			"that payment method is not available on this server").WithCause(err))
 	default:
 		log.Error().Err(err).Str("op", op).Msg("payment request failed")
 		httpx.Error(w, r, httpx.ErrInternal.WithCause(err))
