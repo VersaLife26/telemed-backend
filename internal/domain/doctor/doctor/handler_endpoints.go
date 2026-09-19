@@ -182,6 +182,82 @@ func (h *Handler) updateMine(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, r, toOwnDoctorResponse(d))
 }
 
+const maxProfilePhotoRequestBytes = MaxProfilePhotoBytes + (1 << 20)
+
+func (h *Handler) putPhoto(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, maxProfilePhotoRequestBytes)
+	if err := r.ParseMultipartForm(maxProfilePhotoRequestBytes); err != nil { //nolint:gosec // bounded by MaxBytesReader above
+		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "photo exceeds the size limit").WithCause(err))
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "multipart field \"file\" is required"))
+		return
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, MaxProfilePhotoBytes+1))
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "could not read uploaded photo").WithCause(err))
+		return
+	}
+	d, err := h.svc.SetProfilePhoto(r.Context(), p.UserID, header.Filename, data)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, toOwnDoctorResponse(d))
+}
+
+func (h *Handler) getMinePhoto(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	d, err := h.svc.GetMine(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	h.writePhoto(w, r, d.ID)
+}
+
+func (h *Handler) getPhoto(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, r, httpx.ErrNotFound)
+		return
+	}
+	h.writePhoto(w, r, id)
+}
+
+func (h *Handler) writePhoto(w http.ResponseWriter, r *http.Request, doctorID uuid.UUID) {
+	photo, err := h.svc.GetProfilePhoto(r.Context(), doctorID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", photo.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(photo.Data)))
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(photo.Data)
+}
+
+func (h *Handler) deletePhoto(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	d, err := h.svc.ClearProfilePhoto(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, toOwnDoctorResponse(d))
+}
+
 // getAvailability handles GET /doctors/me/availability.
 func (h *Handler) getAvailability(w http.ResponseWriter, r *http.Request) {
 	p := middleware.MustPrincipal(r.Context())

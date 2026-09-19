@@ -55,6 +55,9 @@ func (h *Handler) Routes() chi.Router {
 		r.Use(middleware.RequireAuth(h.auth))
 		r.Get("/", h.getMine)
 		r.Put("/", h.updateMine)
+		r.Put("/photo", h.putPhoto)
+		r.Get("/photo", h.getMinePhoto)
+		r.Delete("/photo", h.deletePhoto)
 		r.Get("/availability", h.getAvailability)
 		r.Put("/availability", h.setAvailability)
 		r.Get("/schedule-settings", h.getScheduleSettings)
@@ -64,6 +67,7 @@ func (h *Handler) Routes() chi.Router {
 		}
 	})
 
+	r.With(middleware.OptionalAuth(h.auth)).Get("/{id}/photo", h.getPhoto)
 	r.With(middleware.OptionalAuth(h.auth)).Get("/{id}", h.getByID)
 	r.With(middleware.OptionalAuth(h.auth)).Get("/{id}/reviews", h.listReviews)
 	r.With(middleware.RequireAuth(h.auth)).Post("/{id}/reviews", h.createReview)
@@ -135,7 +139,7 @@ type registerRequest struct {
 	FeeCents       int64           `json:"fee_lkr" validate:"gte=0"`
 	Languages      []string        `json:"languages" validate:"required,min=1,dive,oneof=en si ta other"`
 	Bio            string          `json:"bio" validate:"max=2000"`
-	PhotoURL       string          `json:"photo_url" validate:"omitempty,url"`
+	PhotoURL       string          `json:"photo_url" validate:"omitempty,max=2048"`
 	Qualifications []Qualification `json:"qualifications" validate:"omitempty,dive"`
 	Bank           *BankDetails    `json:"bank" validate:"omitempty"`
 }
@@ -184,7 +188,7 @@ type updateRequest struct {
 	FeeCents           int64           `json:"fee_lkr" validate:"gte=0"`
 	Languages          []string        `json:"languages" validate:"required,min=1,dive,oneof=en si ta other"`
 	Bio                string          `json:"bio" validate:"max=2000"`
-	PhotoURL           string          `json:"photo_url" validate:"omitempty,url"`
+	PhotoURL           string          `json:"photo_url" validate:"omitempty,max=2048"`
 	Qualifications     []Qualification `json:"qualifications" validate:"omitempty,dive"`
 	AcceptsNewPatients bool            `json:"accepts_new_patients"`
 	Bank               *BankDetails    `json:"bank" validate:"omitempty"`
@@ -539,6 +543,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Error(w, r, httpx.ErrNotFound)
 	case errors.Is(err, ErrApplicationNotReady):
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "application is not approved for activation"))
+	case errors.Is(err, ErrInvalidProfilePhoto):
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"profile photo must be a JPEG, PNG, or WebP image"))
+	case errors.Is(err, ErrProfilePhotoTooLarge):
+		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest,
+			"profile photo must be 2 MB or smaller"))
 	case errors.Is(err, ErrNotFound):
 		httpx.Error(w, r, httpx.ErrNotFound)
 	case errors.Is(err, ErrSLMCTaken):

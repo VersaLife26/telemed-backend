@@ -439,6 +439,50 @@
       "description": "Attach a credential document (SLMC certificate, NIC, degree certificate, photo) to the calling doctor's application. The body carries only the object key -- bytes go straight to object storage -- so this is a write, not an upload."
     },
     {
+      "name": "doctor-me-photo-put",
+      "pattern": "/api/v1/doctors/me/photo",
+      "methods": ["PUT"],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": ["doctor"],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Upload or replace the calling doctor's directory portrait (JPEG/PNG/WebP, max 2 MB)."
+    },
+    {
+      "name": "doctor-me-photo-get",
+      "pattern": "/api/v1/doctors/me/photo",
+      "methods": ["GET"],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": ["doctor"],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Download the calling doctor's directory portrait."
+    },
+    {
+      "name": "doctor-me-photo-delete",
+      "pattern": "/api/v1/doctors/me/photo",
+      "methods": ["DELETE"],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": ["doctor"],
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Remove the calling doctor's directory portrait."
+    },
+    {
+      "name": "doctor-photo",
+      "pattern": "/api/v1/doctors/{doctorID}/photo",
+      "methods": ["GET"],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": ["doctor", "patient"],
+      "timeout_class": "fast",
+      "rate_limit": "moderate",
+      "description": "Directory portrait for a doctor."
+    },
+    {
       "name": "doctor-detail",
       "pattern": "/api/v1/doctors/{doctorID}",
       "methods": [

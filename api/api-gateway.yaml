@@ -2651,6 +2651,63 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/Doctor' } }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/doctors/me/photo:
+    put:
+      tags: [doctors]
+      summary: Upload or replace the calling doctor's directory portrait
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [doctors]
+      summary: Download the calling doctor's directory portrait
+      responses:
+        '200': { description: Image bytes }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [doctors]
+      summary: Remove the calling doctor's directory portrait
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/Doctor' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/doctors/{doctorID}/photo:
+    get:
+      tags: [doctors]
+      summary: Directory portrait for a doctor
+      parameters:
+        - name: doctorID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Image bytes }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/v1/doctors/me/schedule-settings:
     get:
       tags: [doctors]

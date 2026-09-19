@@ -253,6 +253,58 @@ func (s *Service) ResolveDoctorID(ctx context.Context, userID uuid.UUID) (uuid.U
 	return d.ID, nil
 }
 
+// SetProfilePhoto validates and stores the calling doctor's directory portrait.
+func (s *Service) SetProfilePhoto(ctx context.Context, userID uuid.UUID, filename string, data []byte) (Doctor, error) {
+	if len(data) == 0 {
+		return Doctor{}, ErrInvalidProfilePhoto
+	}
+	if len(data) > MaxProfilePhotoBytes {
+		return Doctor{}, ErrProfilePhotoTooLarge
+	}
+	ext := ProfilePhotoExtension(filename)
+	sniffed := SniffProfilePhotoContentType(data)
+	if !IsAllowedProfilePhoto(ext, sniffed) {
+		return Doctor{}, ErrInvalidProfilePhoto
+	}
+	owned, err := s.repo.GetByUserID(ctx, userID)
+	if err != nil {
+		return Doctor{}, err
+	}
+	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		updatedAt, err := s.repo.SetProfilePhoto(ctx, tx, owned.ID, data, sniffed)
+		if err != nil {
+			return err
+		}
+		owned.PhotoURL = ProfilePhotoPath(owned.ID, updatedAt)
+		owned.Version++
+		return nil
+	})
+	if err != nil {
+		return Doctor{}, err
+	}
+	return s.repo.GetByUserID(ctx, userID)
+}
+
+// GetProfilePhoto returns the directory portrait for a doctor id.
+func (s *Service) GetProfilePhoto(ctx context.Context, doctorID uuid.UUID) (*ProfilePhoto, error) {
+	return s.repo.GetProfilePhoto(ctx, doctorID)
+}
+
+// ClearProfilePhoto removes the calling doctor's directory portrait.
+func (s *Service) ClearProfilePhoto(ctx context.Context, userID uuid.UUID) (Doctor, error) {
+	owned, err := s.repo.GetByUserID(ctx, userID)
+	if err != nil {
+		return Doctor{}, err
+	}
+	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return s.repo.ClearProfilePhoto(ctx, tx, owned.ID)
+	})
+	if err != nil {
+		return Doctor{}, err
+	}
+	return s.repo.GetByUserID(ctx, userID)
+}
+
 // ---------------------------------------------------------------------------
 // Profile update
 // ---------------------------------------------------------------------------

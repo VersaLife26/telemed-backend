@@ -121,6 +121,71 @@ paths:
                   data: { $ref: '#/components/schemas/Doctor' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /doctors/me/photo:
+    put:
+      tags: [doctors]
+      summary: Upload or replace my directory portrait
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+    get:
+      tags: [doctors]
+      summary: Download my directory portrait
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [doctors]
+      summary: Remove my directory portrait
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Doctor' }
+
+  /doctors/{id}/photo:
+    get:
+      tags: [doctors]
+      summary: Public directory portrait
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /doctors/me/availability:
     get:
       tags: [doctors]

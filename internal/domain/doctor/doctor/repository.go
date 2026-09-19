@@ -275,6 +275,73 @@ func (r *Repository) UpdateVerificationStatus(
 	return nil
 }
 
+// ProfilePhoto is the raw directory portrait. Loaded only by the photo
+// download path so search and profile reads stay cheap.
+type ProfilePhoto struct {
+	Data        []byte
+	ContentType string
+	UpdatedAt   time.Time
+}
+
+// GetProfilePhoto returns the stored portrait, or ErrNotFound when none is set.
+func (r *Repository) GetProfilePhoto(ctx context.Context, doctorID uuid.UUID) (*ProfilePhoto, error) {
+	const q = `
+		SELECT photo_data, photo_content_type, photo_updated_at
+		FROM doctors
+		WHERE id = $1 AND deleted_at IS NULL AND photo_data IS NOT NULL`
+	var photo ProfilePhoto
+	err := r.pool.QueryRow(ctx, q, doctorID).Scan(&photo.Data, &photo.ContentType, &photo.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("doctor: get profile photo: %w", err)
+	}
+	return &photo, nil
+}
+
+// SetProfilePhoto replaces the directory portrait and writes photo_url to the
+// public download path so listings can cache-bust without embedding bytes.
+func (r *Repository) SetProfilePhoto(ctx context.Context, tx pgx.Tx, doctorID uuid.UUID, data []byte, contentType string) (time.Time, error) {
+	const q = `
+		UPDATE doctors
+		SET photo_data = $2, photo_content_type = $3, photo_updated_at = NOW(),
+		    updated_at = NOW(), version = version + 1
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING photo_updated_at`
+	var updatedAt time.Time
+	err := tx.QueryRow(ctx, q, doctorID, data, contentType).Scan(&updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("doctor: set profile photo: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE doctors SET photo_url = $2 WHERE id = $1 AND deleted_at IS NULL`,
+		doctorID, ProfilePhotoPath(doctorID, updatedAt)); err != nil {
+		return time.Time{}, fmt.Errorf("doctor: set profile photo url: %w", err)
+	}
+	return updatedAt, nil
+}
+
+// ClearProfilePhoto removes the directory portrait.
+func (r *Repository) ClearProfilePhoto(ctx context.Context, tx pgx.Tx, doctorID uuid.UUID) error {
+	const q = `
+		UPDATE doctors
+		SET photo_data = NULL, photo_content_type = NULL, photo_updated_at = NULL,
+		    photo_url = '', updated_at = NOW(), version = version + 1
+		WHERE id = $1 AND deleted_at IS NULL`
+	tag, err := tx.Exec(ctx, q, doctorID)
+	if err != nil {
+		return fmt.Errorf("doctor: clear profile photo: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // IncrementConsultationCount is called from the appointment.completed
 // consumer, guarded by the caller's idempotency check on appointment_id
 // (see events_consumer.go).
