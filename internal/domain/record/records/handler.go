@@ -42,12 +42,16 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/folders", h.createFolder)
 	r.Patch("/folders/{id}", h.updateFolder)
 	r.Delete("/folders/{id}", h.deleteFolder)
-	r.Get("/{id}", h.get)
-	r.Patch("/{id}", h.updateDocument)
-	r.Get("/{id}/download", h.download)
-	r.Get("/{id}/content", h.content)
-	r.Delete("/{id}", h.delete)
-	r.Post("/{id}/share", h.share)
+	// Document ids are UUIDs. Without the regexp, GET /records/folders is
+	// captured as GET /records/{id} with id="folders" and the client sees
+	// "id must be a valid UUID" instead of the folder listing.
+	const docID = "/{id:[0-9a-fA-F-]{36}}"
+	r.Get(docID, h.get)
+	r.Patch(docID, h.updateDocument)
+	r.Get(docID+"/download", h.download)
+	r.Get(docID+"/content", h.content)
+	r.Delete(docID, h.delete)
+	r.Post(docID+"/share", h.share)
 	return r
 }
 
