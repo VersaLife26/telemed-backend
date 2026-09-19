@@ -22,6 +22,7 @@ import (
 	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/scan"
 	"telemed/internal/platform/storage"
+	"telemed/internal/platform/usernames"
 
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/modular"
@@ -98,6 +99,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 
 	recordsRepo := records.NewRepository()
 	recordsSvc := records.NewService(recordsRepo, pool, objStore, scanner, fhirClient, outbox, accessSvc, log)
+	recordsSvc.SetNameResolver(usernames.FromRegistry(deps.Registry, log))
 	recordsHandler := records.NewHandler(recordsSvc, accessSvc)
 
 	prescriptionsRepo := prescriptions.NewRepository()

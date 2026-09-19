@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"telemed/internal/platform/storage"
 )
 
 // fakeStorage records what was presigned and with what TTL.
@@ -19,7 +21,7 @@ type fakeStorage struct {
 	fail bool
 }
 
-func (f *fakeStorage) PresignedGet(_ context.Context, bucket, key string, ttl time.Duration) (string, error) {
+func (f *fakeStorage) PresignedGet(_ context.Context, bucket, key string, ttl time.Duration, _ ...storage.PresignGetOptions) (string, error) {
 	f.calls = append(f.calls, struct {
 		bucket, key string
 		ttl         time.Duration

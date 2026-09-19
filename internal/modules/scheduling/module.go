@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -23,6 +24,7 @@ import (
 	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/modular"
 	"telemed/internal/platform/server"
+	"telemed/internal/platform/usernames"
 )
 
 // Domain is the name this module registers under.
@@ -111,6 +113,16 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		Metrics:    schedMetrics,
 	})
 	handler := scheduling.NewHandler(svc, cfg.KeycloakIssuer)
+	if names := usernames.FromRegistry(deps.Registry, log); names != nil {
+		handler.SetNameResolver(names)
+	}
+	if v, ok := deps.Registry.Lookup(modular.KeyDoctorDirectory); ok {
+		if n, ok := v.(interface {
+			Names(context.Context, []uuid.UUID) map[uuid.UUID]string
+		}); ok {
+			handler.SetDoctorNameResolver(n)
+		}
+	}
 	// --- background workers ------------------------------------------------
 	// The outbox relay runs in every replica. Row-level SKIP LOCKED makes that
 	// safe, and it means no single "worker" pod to lose.

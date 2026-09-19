@@ -1351,6 +1351,82 @@
       "description": "Download a medical record."
     },
     {
+      "name": "records-patients",
+      "pattern": "/api/v1/records/patients",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Patients whose vault the calling doctor can currently read (active treating relationship or unexpired share), with display names."
+    },
+    {
+      "name": "records-folders-list",
+      "pattern": "/api/v1/records/folders",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Child folders of one level of a vault, plus the breadcrumb path. owner_user_id reads another vault under the same access check as GET /records."
+    },
+    {
+      "name": "records-folders-create",
+      "pattern": "/api/v1/records/folders",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Create a vault folder. The owner, or a treating doctor under the upload grant."
+    },
+    {
+      "name": "records-folder-update",
+      "pattern": "/api/v1/records/folders/{folderID}",
+      "methods": [
+        "PATCH",
+        "DELETE"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Rename, move or delete (empty only) a vault folder. Owning patient only; a move never leaves the vault."
+    },
+    {
+      "name": "records-update",
+      "pattern": "/api/v1/records/{recordID}",
+      "methods": [
+        "PATCH"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "write",
+      "rate_limit": "moderate",
+      "description": "Rename a vault document or file it into another folder of the same vault. Owning patient only."
+    },
+    {
+      "name": "records-content-get",
+      "pattern": "/api/v1/records/{recordID}/content",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "record-service",
+      "auth": "authenticated",
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "A vault document's bytes for in-app preview, authorised and access-logged like /download."
+    },
+    {
       "name": "drugs-search",
       "pattern": "/api/v1/drugs",
       "methods": [

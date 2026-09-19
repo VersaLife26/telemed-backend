@@ -41,6 +41,7 @@ type Service struct {
 	fhirCli fhir.Client
 	outbox  *events.Outbox
 	access  *access.Service
+	names   NameResolver
 	log     zerolog.Logger
 }
 
@@ -82,6 +83,7 @@ func accessResourceFor(t DocumentType) access.ResourceType {
 type UploadInput struct {
 	Principal    middleware.Principal
 	OwnerUserID  uuid.UUID // zero value means "the caller's own vault"
+	FolderID     *uuid.UUID
 	DocumentType DocumentType
 	Filename     string
 	Data         io.Reader
@@ -111,6 +113,12 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (Document, error) 
 			Principal: in.Principal, OwnerUserID: ownerID, Resource: accessResourceFor(in.DocumentType),
 			ResourceID: ownerID, Action: access.ActionUpload, IPAddress: in.IPAddress, UserAgent: in.UserAgent,
 		}); err != nil {
+			return Document{}, err
+		}
+	}
+
+	if in.FolderID != nil {
+		if _, err := s.folderInVault(ctx, *in.FolderID, ownerID); err != nil {
 			return Document{}, err
 		}
 	}
@@ -174,7 +182,7 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (Document, error) 
 		ID: uuid.New(), OwnerUserID: ownerID, UploadedBy: in.Principal.UserID,
 		DocumentType: in.DocumentType, Bucket: bucket, ObjectKey: objectKey,
 		Filename: in.Filename, ContentType: sniffed, SizeBytes: int64(len(buf)),
-		ChecksumSHA256: checksum, ScanStatus: scanStatus,
+		ChecksumSHA256: checksum, ScanStatus: scanStatus, FolderID: in.FolderID,
 	}
 
 	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -227,7 +235,7 @@ func (s *Service) attachFHIRReference(ctx context.Context, doc Document) {
 
 // List returns one page of a vault. Listing another user's vault requires
 // the same authorization as viewing one of its documents.
-func (s *Service) List(ctx context.Context, caller middleware.Principal, ownerUserID uuid.UUID, docType DocumentType, page, perPage int, ip, ua string) ([]Document, int64, error) {
+func (s *Service) List(ctx context.Context, caller middleware.Principal, ownerUserID uuid.UUID, docType DocumentType, folder FolderScope, page, perPage int, ip, ua string) ([]Document, int64, error) {
 	if ownerUserID == uuid.Nil {
 		ownerUserID = caller.UserID
 	}
@@ -253,7 +261,7 @@ func (s *Service) List(ctx context.Context, caller middleware.Principal, ownerUs
 	if perPage < 1 || perPage > 100 {
 		perPage = 20
 	}
-	docs, total, err := s.repo.ListByOwner(ctx, s.pool, ListFilter{OwnerUserID: ownerUserID, DocumentType: docType, Page: page, PerPage: perPage})
+	docs, total, err := s.repo.ListByOwner(ctx, s.pool, ListFilter{OwnerUserID: ownerUserID, DocumentType: docType, Folder: folder, Page: page, PerPage: perPage})
 	if err != nil {
 		return nil, 0, httpx.ErrInternal.WithCause(err)
 	}
@@ -281,7 +289,10 @@ func (s *Service) Get(ctx context.Context, caller middleware.Principal, id uuid.
 
 // Download authorizes and returns a short-lived presigned URL rather than
 // proxying file bytes through this service.
-func (s *Service) Download(ctx context.Context, caller middleware.Principal, id uuid.UUID, ip, ua string) (string, Document, error) {
+//
+// attachment=true adds response-content-disposition so the browser saves the
+// file; the default is inline so a preview can use the URL as a media source.
+func (s *Service) Download(ctx context.Context, caller middleware.Principal, id uuid.UUID, ip, ua string, attachment bool) (string, Document, error) {
 	doc, ok, err := s.repo.GetByID(ctx, s.pool, id)
 	if err != nil {
 		return "", Document{}, httpx.ErrInternal.WithCause(err)
@@ -299,7 +310,11 @@ func (s *Service) Download(ctx context.Context, caller middleware.Principal, id 
 		return "", Document{}, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeUnprocessable, "this file was flagged by the virus scanner and cannot be downloaded")
 	}
 
-	url, err := s.store.PresignedGet(ctx, doc.Bucket, doc.ObjectKey, storage.RecordPresignTTL)
+	var opts []storage.PresignGetOptions
+	if attachment {
+		opts = []storage.PresignGetOptions{{ResponseContentDisposition: storage.AttachmentDisposition(doc.Filename)}}
+	}
+	url, err := s.store.PresignedGet(ctx, doc.Bucket, doc.ObjectKey, storage.RecordPresignTTL, opts...)
 	if err != nil {
 		return "", Document{}, httpx.ErrInternal.WithCause(err)
 	}

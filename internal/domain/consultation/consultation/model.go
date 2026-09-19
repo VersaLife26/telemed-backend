@@ -270,6 +270,11 @@ type JoinResult struct {
 	RecordingMode string `json:"recording_mode"`
 
 	ICEServers []ICEServer `json:"ice_servers"`
+
+	// CounterpartName is the other party's display name: the patient's name
+	// when the caller is the doctor, the doctor's name when the caller is
+	// the patient.
+	CounterpartName string `json:"counterpart_name,omitempty"`
 }
 
 // Recording modes reported by JoinResult.

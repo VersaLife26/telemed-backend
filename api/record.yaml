@@ -31,6 +31,7 @@ paths:
                 file: { type: string, format: binary }
                 document_type: { $ref: '#/components/schemas/DocumentType' }
                 owner_user_id: { type: string, format: uuid, description: "defaults to the caller; requires authorization if set to someone else" }
+                folder_id: { type: string, format: uuid, description: "a folder in the same vault; omitted files into the root" }
       responses:
         '201': { description: uploaded, content: { application/json: { schema: { $ref: '#/components/schemas/DocumentEnvelope' } } } }
         '400': { $ref: '#/components/responses/Error' }
@@ -47,6 +48,7 @@ paths:
       parameters:
         - { name: document_type, in: query, schema: { $ref: '#/components/schemas/DocumentType' } }
         - { name: owner_user_id, in: query, schema: { type: string, format: uuid } }
+        - { name: folder_id, in: query, schema: { type: string }, description: '"root", a folder UUID, or absent for every folder' }
         - { name: page, in: query, schema: { type: integer, default: 1 } }
         - { name: per_page, in: query, schema: { type: integer, default: 20, maximum: 100 } }
       responses:
@@ -71,6 +73,22 @@ paths:
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/AuditUnavailable' }
+    patch:
+      summary: Rename a document or move it to another folder of the same vault (owner only)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filename: { type: string, maxLength: 255 }
+                folder_id: { type: string, description: empty string = vault root }
+      responses:
+        '200': { description: ok }
+        '403': { $ref: '#/components/responses/Error' }
     delete:
       summary: Soft-delete a document (owner or admin only)
       security: [{ bearerAuth: [] }]
@@ -80,11 +98,93 @@ paths:
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
+  /records/patients:
+    get:
+      summary: Patients whose vault the calling doctor can currently read (doctor only)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { type: object, properties: { user_id: { type: string, format: uuid }, name: { type: string } } } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /records/folders:
+    get:
+      summary: Child folders of one vault level, plus the breadcrumb path
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: owner_user_id, in: query, schema: { type: string, format: uuid } }
+        - { name: parent_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: ok }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create a folder (owner, or a treating doctor under the upload grant)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 120 }
+                parent_id: { type: string }
+                owner_user_id: { type: string, format: uuid }
+      responses:
+        '201': { description: created }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /records/folders/{id}:
+    patch:
+      summary: Rename or move a folder within its vault (owner only)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+                parent_id: { type: string, description: empty string = vault root }
+      responses:
+        '200': { description: ok }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Delete an empty folder (owner only)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: deleted }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /records/{id}/content:
+    get:
+      summary: Stream a document's bytes inline for preview (authorised and logged as a download)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      responses:
+        '200': { description: the file, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
   /records/{id}/download:
     get:
       summary: Get a 15-minute presigned download URL
       security: [{ bearerAuth: [] }]
-      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      parameters:
+        - { $ref: '#/components/parameters/DocumentId' }
+        - name: disposition
+          in: query
+          schema: { type: string, enum: [inline, attachment] }
+          description: >
+            attachment forces a download filename via response-content-disposition.
+            The default is inline so a preview can use the URL as a media or PDF source.
       responses:
         '200':
           description: ok
@@ -451,6 +551,7 @@ components:
         checksum_sha256: { type: string }
         scan_status: { type: string, enum: [pending, clean, infected, skipped] }
         fhir_reference_id: { type: string }
+        folder_id: { type: string, format: uuid }
         created_at: { type: string, format: date-time }
 
     DocumentEnvelope:

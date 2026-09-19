@@ -1,8 +1,11 @@
 package records
 
 import (
+	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +37,15 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/upload", h.upload)
 	r.Get("/", h.list)
 	r.Get("/shares", h.listShares)
+	r.Get("/patients", h.patients)
+	r.Get("/folders", h.listFolders)
+	r.Post("/folders", h.createFolder)
+	r.Patch("/folders/{id}", h.updateFolder)
+	r.Delete("/folders/{id}", h.deleteFolder)
 	r.Get("/{id}", h.get)
+	r.Patch("/{id}", h.updateDocument)
 	r.Get("/{id}/download", h.download)
+	r.Get("/{id}/content", h.content)
 	r.Delete("/{id}", h.delete)
 	r.Post("/{id}/share", h.share)
 	return r
@@ -80,6 +90,16 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 		ownerID = id
 	}
 
+	var folderID *uuid.UUID
+	if raw := r.FormValue("folder_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "folder_id must be a valid UUID"))
+			return
+		}
+		folderID = &id
+	}
+
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "multipart field \"file\" is required").WithCause(err))
@@ -94,7 +114,7 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	doc, err := h.svc.Upload(r.Context(), UploadInput{
-		Principal: p, OwnerUserID: ownerID, DocumentType: docType,
+		Principal: p, OwnerUserID: ownerID, FolderID: folderID, DocumentType: docType,
 		Filename: filename, Data: file,
 		IPAddress: middleware.ClientIP(r), UserAgent: r.UserAgent(),
 	})
@@ -122,9 +142,14 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "invalid document_type filter"))
 		return
 	}
+	folder, err := folderScopeParam(r)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
 	page, perPage, _ := httpx.Pagination(r)
 
-	docs, total, err := h.svc.List(r.Context(), p, ownerID, docType, page, perPage, middleware.ClientIP(r), r.UserAgent())
+	docs, total, err := h.svc.List(r.Context(), p, ownerID, docType, folder, page, perPage, middleware.ClientIP(r), r.UserAgent())
 	if err != nil {
 		httpx.Error(w, r, err)
 		return
@@ -158,7 +183,7 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
-	url, doc, err := h.svc.Download(r.Context(), p, id, middleware.ClientIP(r), r.UserAgent())
+	url, doc, err := h.svc.Download(r.Context(), p, id, middleware.ClientIP(r), r.UserAgent(), strings.EqualFold(r.URL.Query().Get("disposition"), "attachment"))
 	if err != nil {
 		httpx.Error(w, r, err)
 		return
@@ -245,6 +270,221 @@ func (h *Handler) revokeShare(w http.ResponseWriter, r *http.Request) {
 	httpx.NoContent(w, r)
 }
 
+// folderScopeParam reads ?folder_id=: absent lists every folder, "root" the
+// vault root, and a UUID that one folder.
+func folderScopeParam(r *http.Request) (FolderScope, error) {
+	raw := r.URL.Query().Get("folder_id")
+	switch raw {
+	case "":
+		return FolderScope{}, nil
+	case "root":
+		return FolderScope{Set: true}, nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return FolderScope{}, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "folder_id must be \"root\" or a valid UUID")
+	}
+	return FolderScope{Set: true, ID: &id}, nil
+}
+
+// optionalUUID parses a JSON placement field: nil leaves the item where it
+// is, "" means the vault root, anything else must be a folder id.
+func optionalUUID(raw *string, field string) (Placement, error) {
+	if raw == nil {
+		return Placement{}, nil
+	}
+	if *raw == "" {
+		return Placement{Set: true}, nil
+	}
+	id, err := uuid.Parse(*raw)
+	if err != nil {
+		return Placement{}, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, field+" must be empty or a valid UUID")
+	}
+	return Placement{Set: true, ID: &id}, nil
+}
+
+func (h *Handler) patients(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	refs, err := h.svc.Patients(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	out := make([]patientResponse, len(refs))
+	for i, ref := range refs {
+		out[i] = patientResponse{UserID: ref.UserID.String(), Name: ref.Name}
+	}
+	httpx.OK(w, r, out)
+}
+
+func (h *Handler) listFolders(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	ownerID := p.UserID
+	if raw, ok, err := httpx.QueryUUID(r, "owner_user_id"); err != nil {
+		httpx.Error(w, r, err)
+		return
+	} else if ok {
+		ownerID = raw
+	}
+	var parentID *uuid.UUID
+	if raw, ok, err := httpx.QueryUUID(r, "parent_id"); err != nil {
+		httpx.Error(w, r, err)
+		return
+	} else if ok {
+		parentID = &raw
+	}
+	listing, err := h.svc.ListFolders(r.Context(), p, ownerID, parentID, middleware.ClientIP(r), r.UserAgent())
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	out := folderListingResponse{Folders: make([]folderResponse, len(listing.Folders)), Path: make([]folderResponse, len(listing.Path))}
+	for i := range listing.Folders {
+		out.Folders[i] = toFolderResponse(listing.Folders[i])
+	}
+	for i := range listing.Path {
+		out.Path[i] = toFolderResponse(listing.Path[i])
+	}
+	httpx.OK(w, r, out)
+}
+
+type createFolderRequest struct {
+	Name        string  `json:"name" validate:"required"`
+	ParentID    *string `json:"parent_id"`
+	OwnerUserID *string `json:"owner_user_id"`
+}
+
+func (h *Handler) createFolder(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	var req createFolderRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	parent, err := optionalUUID(req.ParentID, "parent_id")
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	var ownerID uuid.UUID
+	if req.OwnerUserID != nil && *req.OwnerUserID != "" {
+		if ownerID, err = uuid.Parse(*req.OwnerUserID); err != nil {
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "owner_user_id must be a valid UUID"))
+			return
+		}
+	}
+	f, err := h.svc.CreateFolder(r.Context(), p, ownerID, parent.ID, req.Name, middleware.ClientIP(r), r.UserAgent())
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	httpx.Created(w, r, toFolderResponse(f))
+}
+
+type updateFolderRequest struct {
+	Name     *string `json:"name"`
+	ParentID *string `json:"parent_id"`
+}
+
+func (h *Handler) updateFolder(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	var req updateFolderRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	move, err := optionalUUID(req.ParentID, "parent_id")
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	f, err := h.svc.UpdateFolder(r.Context(), p, id, req.Name, move, middleware.ClientIP(r), r.UserAgent())
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	httpx.OK(w, r, toFolderResponse(f))
+}
+
+func (h *Handler) deleteFolder(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	if err := h.svc.DeleteFolder(r.Context(), p, id, middleware.ClientIP(r), r.UserAgent()); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	httpx.NoContent(w, r)
+}
+
+type updateDocumentRequest struct {
+	Filename *string `json:"filename"`
+	FolderID *string `json:"folder_id"`
+}
+
+func (h *Handler) updateDocument(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	var req updateDocumentRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	move, err := optionalUUID(req.FolderID, "folder_id")
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	doc, err := h.svc.UpdateDocument(r.Context(), p, id, req.Filename, move, middleware.ClientIP(r), r.UserAgent())
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	httpx.OK(w, r, toDocumentResponse(doc))
+}
+
+// content streams a document's bytes for in-app preview.
+//
+// Everything that reaches storage passed the extension/sniff allowlist, which
+// admits no HTML, SVG or script, and the sandbox CSP below means that even a
+// file that slipped through would render with no script and an opaque
+// origin.
+func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	id, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	body, doc, err := h.svc.Content(r.Context(), p, id, middleware.ClientIP(r), r.UserAgent())
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	defer func() { _ = body.Close() }()
+
+	w.Header().Set("Content-Type", PreviewContentType(doc.ContentType, doc.Filename))
+	w.Header().Set("Content-Length", strconv.FormatInt(doc.SizeBytes, 10))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": doc.Filename}))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, body)
+}
+
 // --- response shapes ---------------------------------------------------
 
 type documentResponse struct {
@@ -258,16 +498,51 @@ type documentResponse struct {
 	ChecksumSHA256  string `json:"checksum_sha256"`
 	ScanStatus      string `json:"scan_status"`
 	FHIRReferenceID string `json:"fhir_reference_id,omitempty"`
+	FolderID        string `json:"folder_id,omitempty"`
 	CreatedAt       string `json:"created_at"`
 }
 
+type folderResponse struct {
+	ID          string `json:"id"`
+	OwnerUserID string `json:"owner_user_id"`
+	ParentID    string `json:"parent_id,omitempty"`
+	Name        string `json:"name"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+func toFolderResponse(f Folder) folderResponse {
+	out := folderResponse{
+		ID: f.ID.String(), OwnerUserID: f.OwnerUserID.String(), Name: f.Name,
+		CreatedAt: f.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: f.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if f.ParentID != nil {
+		out.ParentID = f.ParentID.String()
+	}
+	return out
+}
+
+type folderListingResponse struct {
+	Folders []folderResponse `json:"folders"`
+	Path    []folderResponse `json:"path"`
+}
+
+type patientResponse struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+}
+
 func toDocumentResponse(d Document) documentResponse {
-	return documentResponse{
+	out := documentResponse{
 		ID: d.ID.String(), OwnerUserID: d.OwnerUserID.String(), UploadedBy: d.UploadedBy.String(),
 		DocumentType: string(d.DocumentType), Filename: d.Filename, ContentType: d.ContentType,
 		SizeBytes: d.SizeBytes, ChecksumSHA256: d.ChecksumSHA256, ScanStatus: string(d.ScanStatus),
 		FHIRReferenceID: d.FHIRReferenceID, CreatedAt: d.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 	}
+	if d.FolderID != nil {
+		out.FolderID = d.FolderID.String()
+	}
+	return out
 }
 
 type shareResponse struct {

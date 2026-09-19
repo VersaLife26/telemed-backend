@@ -105,6 +105,19 @@ func TestOnlyThePatientsOwnTokenReachesWaiting(t *testing.T) {
 	require.Equal(t, StatusScheduled, stored.Status)
 }
 
+// TestJoin_ForeignPatientIsForbidden is the room-security assertion for this
+// work: authorizeParty only admits the appointment's own patient or doctor,
+// so a different patient must get 403 on join. Room security is already
+// enforced server-side; this test pins that it stays that way.
+func TestJoin_ForeignPatientIsForbidden(t *testing.T) {
+	svc, st, _, _ := newTestService(t, Options{})
+	patientID, doctorID := uuid.New(), uuid.New()
+	c := seedConsultation(t, st, patientID, doctorID)
+
+	_, err := svc.Join(context.Background(), patientPrincipal(uuid.New()), c.AppointmentID)
+	require.ErrorIs(t, err, ErrForbidden)
+}
+
 // TestZeroIdentityIsNeverAParty pins the guard that keeps authorizeParty honest.
 //
 // It is the same class of bug as scheduling's "an empty actor_id means admin":

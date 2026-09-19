@@ -93,6 +93,37 @@ func (r *Repository) HasActiveTreatingRelationship(ctx context.Context, db dbtx,
 	return exists, nil
 }
 
+// ReachablePatients lists the patients whose vault doctorID may currently
+// read: an active treating relationship under the same window
+// HasActiveTreatingRelationship applies, or an unexpired, unrevoked share.
+func (r *Repository) ReachablePatients(ctx context.Context, db dbtx, doctorID uuid.UUID, now time.Time) ([]uuid.UUID, error) {
+	const q = `
+		SELECT patient_id FROM treating_relationships
+		WHERE doctor_id = $1
+		  AND COALESCE(started_at, ended_at) <= $2
+		  AND COALESCE(ended_at, started_at) >  $3
+		UNION
+		SELECT patient_id FROM record_shares
+		WHERE doctor_id = $1 AND revoked_at IS NULL AND expires_at > $4`
+	rows, err := db.Query(ctx, q, doctorID, now.Add(treatingFutureGrace), now.Add(-TreatingAccessWindow), now)
+	if err != nil {
+		return nil, fmt.Errorf("access: list reachable patients: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("access: scan reachable patient: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("access: reachable patients rows: %w", err)
+	}
+	return out, nil
+}
+
 // TreatingRelationshipByAppointment fetches the relationship for one
 // appointment, used to verify a doctor issuing a prescription actually owns
 // that appointment and that the consultation has concluded.

@@ -199,33 +199,36 @@ func (f *FilesystemStorage) Stat(_ context.Context, bucket, key string) (ObjectI
 // embedded in the presigned URL cannot be forged or extended by the holder --
 // the same defensive posture a real S3 presigned URL has, scaled down to what
 // a filesystem fake needs to demonstrate correctly.
-func (f *FilesystemStorage) sign(bucket, key, op string, expires time.Time) string {
+func (f *FilesystemStorage) sign(bucket, key, op, disp string, expires time.Time) string {
 	mac := hmac.New(sha256.New, f.secret)
 	// hash.Hash.Write (which Fprintf calls into) is documented to never
 	// return an error; the write result is discarded deliberately, not
 	// overlooked.
-	_, _ = fmt.Fprintf(mac, "%s|%s|%s|%d", bucket, key, op, expires.Unix())
+	_, _ = fmt.Fprintf(mac, "%s|%s|%s|%s|%d", bucket, key, op, disp, expires.Unix())
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (f *FilesystemStorage) presign(bucket, key, op string, ttl time.Duration) string {
+func (f *FilesystemStorage) presign(bucket, key, op, disp string, ttl time.Duration) string {
 	expires := time.Now().Add(ttl)
-	sig := f.sign(bucket, key, op, expires)
+	sig := f.sign(bucket, key, op, disp, expires)
 	v := url.Values{}
 	v.Set("bucket", bucket)
 	v.Set("key", key)
 	v.Set("op", op)
 	v.Set("expires", fmt.Sprintf("%d", expires.Unix()))
 	v.Set("sig", sig)
+	if disp != "" {
+		v.Set("disp", disp)
+	}
 	return f.baseURL + "?" + v.Encode()
 }
 
-func (f *FilesystemStorage) PresignedGet(_ context.Context, bucket, key string, ttl time.Duration) (string, error) {
-	return f.presign(bucket, key, "GET", ttl), nil
+func (f *FilesystemStorage) PresignedGet(_ context.Context, bucket, key string, ttl time.Duration, opts ...PresignGetOptions) (string, error) {
+	return f.presign(bucket, key, "GET", firstPresignOpt(opts).ResponseContentDisposition, ttl), nil
 }
 
 func (f *FilesystemStorage) PresignedPut(_ context.Context, bucket, key string, ttl time.Duration) (string, error) {
-	return f.presign(bucket, key, "PUT", ttl), nil
+	return f.presign(bucket, key, "PUT", "", ttl), nil
 }
 
 // VerifyPresigned checks a URL produced by PresignedGet/PresignedPut. It is
@@ -245,7 +248,7 @@ func (f *FilesystemStorage) VerifyPresigned(rawQuery string) (bucket, key, op st
 	if time.Now().After(expires) {
 		return "", "", "", errors.New("storage: presigned url expired")
 	}
-	want := f.sign(bucket, key, op, expires)
+	want := f.sign(bucket, key, op, v.Get("disp"), expires)
 	if !hmac.Equal([]byte(want), []byte(v.Get("sig"))) {
 		return "", "", "", errors.New("storage: presigned url signature invalid")
 	}

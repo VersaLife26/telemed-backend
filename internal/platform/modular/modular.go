@@ -269,6 +269,11 @@ const (
 	// signalling stack rather than a second one standing beside it.
 	KeySignalHub = "consultation.signalhub"
 
+	// KeyDoctorDirectory is a Names(ctx, []uuid.UUID) map[uuid.UUID]string
+	// resolver backed by the doctor domain's doctors table. Scheduling and
+	// consultation use it to label a patient's counterpart_name.
+	KeyDoctorDirectory = "doctor.directory"
+
 	// KeyDoctorAccountActivator is a doctor.AccountActivator implemented by
 	// the user domain. Doctor-service calls it synchronously on admin Accept
 	// so a login account exists before the reviewer leaves the queue.

@@ -118,8 +118,12 @@ func (m *MinIOStorage) Get(ctx context.Context, bucket, key string) (io.ReadClos
 	return obj, nil
 }
 
-func (m *MinIOStorage) PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration) (string, error) {
-	u, err := m.client.PresignedGetObject(ctx, bucket, key, ttl, url.Values{})
+func (m *MinIOStorage) PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration, opts ...PresignGetOptions) (string, error) {
+	reqParams := url.Values{}
+	if disp := firstPresignOpt(opts).ResponseContentDisposition; disp != "" {
+		reqParams.Set("response-content-disposition", disp)
+	}
+	u, err := m.client.PresignedGetObject(ctx, bucket, key, ttl, reqParams)
 	if err != nil {
 		return "", fmt.Errorf("storage: presign get %s/%s: %w", bucket, key, err)
 	}

@@ -69,7 +69,7 @@ func TestUpload_ThenDownload_FullRoundTrip(t *testing.T) {
 		t.Errorf("Filename = %q", got.Filename)
 	}
 
-	url, _, err := svc.Download(ctx, patient, doc.ID, "203.0.113.5", "integration-test")
+	url, _, err := svc.Download(ctx, patient, doc.ID, "203.0.113.5", "integration-test", false)
 	if err != nil {
 		t.Fatalf("Download: %v", err)
 	}
@@ -272,13 +272,13 @@ func TestAdminCannotReachAPatientDocumentButCanReachACredential(t *testing.T) {
 			}
 		})
 		t.Run(string(role)+" cannot download a patient document", func(t *testing.T) {
-			url, _, err := svc.Download(ctx, admin, report.ID, "203.0.113.20", "test")
+			url, _, err := svc.Download(ctx, admin, report.ID, "203.0.113.20", "test", false)
 			if err == nil {
 				t.Errorf("Download() returned a presigned URL to a patient's medical document: %q", url)
 			}
 		})
 		t.Run(string(role)+" cannot list a patient vault", func(t *testing.T) {
-			if _, _, err := svc.List(ctx, admin, patient.UserID, "", 1, 20, "203.0.113.20", "test"); err == nil {
+			if _, _, err := svc.List(ctx, admin, patient.UserID, "", FolderScope{}, 1, 20, "203.0.113.20", "test"); err == nil {
 				t.Error("List() succeeded")
 			}
 		})
@@ -296,10 +296,10 @@ func TestAdminCannotReachAPatientDocumentButCanReachACredential(t *testing.T) {
 			if _, err := svc.Get(ctx, admin, credential.ID, "203.0.113.20", "test"); err != nil {
 				t.Errorf("Get() on a credential document failed: the doctor-verification queue is broken: %v", err)
 			}
-			if _, _, err := svc.Download(ctx, admin, credential.ID, "203.0.113.20", "test"); err != nil {
+			if _, _, err := svc.Download(ctx, admin, credential.ID, "203.0.113.20", "test", false); err != nil {
 				t.Errorf("Download() on a credential document failed: a reviewer cannot open the certificate: %v", err)
 			}
-			if _, _, err := svc.List(ctx, admin, doctorUser.UserID, DocumentTypeCredential, 1, 20, "203.0.113.20", "test"); err != nil {
+			if _, _, err := svc.List(ctx, admin, doctorUser.UserID, DocumentTypeCredential, FolderScope{}, 1, 20, "203.0.113.20", "test"); err != nil {
 				t.Errorf("List(document_type=credential) failed: the verification queue cannot enumerate what was uploaded: %v", err)
 			}
 		})

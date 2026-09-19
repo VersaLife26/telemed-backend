@@ -4,6 +4,8 @@
 package records
 
 import (
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -65,19 +67,44 @@ type Document struct {
 	ChecksumSHA256  string
 	ScanStatus      ScanStatus
 	FHIRReferenceID string
+	FolderID        *uuid.UUID
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	DeletedAt       *time.Time
 	Version         int
 }
 
+// Folder is one directory in a patient's vault. ParentID nil is the root.
+type Folder struct {
+	ID          uuid.UUID
+	OwnerUserID uuid.UUID
+	ParentID    *uuid.UUID
+	Name        string
+	CreatedBy   uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Version     int
+}
+
+// FolderScope says which folder a document listing is restricted to.
+type FolderScope struct {
+	// Set false to list across every folder (the pre-folder behaviour).
+	Set bool
+	// ID nil with Set true means the vault root.
+	ID *uuid.UUID
+}
+
 // ListFilter narrows a document listing.
 type ListFilter struct {
 	OwnerUserID  uuid.UUID
 	DocumentType DocumentType // empty = any
+	Folder       FolderScope
 	Page         int
 	PerPage      int
 }
+
+// MaxFolderNameLength mirrors the CHECK constraint on folders.name.
+const MaxFolderNameLength = 120
 
 // MaxUploadBytes is the hard cap on a single upload, enforced before a byte
 // of the body is read into memory.
@@ -106,6 +133,14 @@ var allowedByExtension = map[string]map[string]bool{
 	".dcm":  {"application/octet-stream": true, "application/dicom": true},
 	".mp4":  {"video/mp4": true},
 	".webm": {"video/webm": true},
+	// Only an ID3-tagged MP3 has a signature DetectContentType recognises;
+	// a bare MPEG frame stream sniffs as octet-stream.
+	".mp3": {"audio/mpeg": true, "application/octet-stream": true},
+	// An .m4a whose compatible brands include an mp4 brand sniffs as
+	// video/mp4; one that lists only "M4A " is not recognised at all.
+	".m4a": {"video/mp4": true, "application/octet-stream": true},
+	".wav": {"audio/wave": true},
+	".ogg": {"application/ogg": true},
 }
 
 // IsAllowedUpload reports whether ext (lowercase, with leading dot) paired
@@ -116,4 +151,29 @@ func IsAllowedUpload(ext, sniffedContentType string) bool {
 		return false
 	}
 	return allowed[sniffedContentType]
+}
+
+// previewTypes names a playable type for the extensions whose bytes
+// DetectContentType cannot identify, so a browser handed the stream knows
+// what to do with it.
+var previewTypes = map[string]string{
+	".mp3": "audio/mpeg",
+	".m4a": "audio/mp4",
+	".wav": "audio/wav",
+	".ogg": "audio/ogg",
+	".dcm": "application/dicom",
+}
+
+// PreviewContentType is the Content-Type a document is served with inline:
+// the sniffed type, unless the sniff was generic or the extension says it is
+// audio (an .m4a sniffs as video/mp4).
+func PreviewContentType(sniffed, filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if t, ok := previewTypes[ext]; ok && (sniffed == "application/octet-stream" || strings.HasPrefix(t, "audio/")) {
+		return t
+	}
+	if sniffed == "" {
+		return "application/octet-stream"
+	}
+	return sniffed
 }

@@ -115,14 +115,27 @@ type Options struct {
 // call it; it never sees an http.Request, and it depends on VideoProvider and
 // Cache only through their interfaces.
 type Service struct {
-	store  store
-	video  VideoProvider
-	cache  cache.Cache
-	pool   database.Pool
-	outbox *events.Outbox
-	log    zerolog.Logger
-	opts   Options
+	store   store
+	video   VideoProvider
+	cache   cache.Cache
+	pool    database.Pool
+	outbox  *events.Outbox
+	log     zerolog.Logger
+	opts    Options
+	names   NameResolver
+	doctors NameResolver
 }
+
+// NameResolver turns ids into display names for JoinResult.CounterpartName.
+type NameResolver interface {
+	Names(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]string
+}
+
+// SetNameResolver attaches the patient-name resolver (user ids).
+func (s *Service) SetNameResolver(n NameResolver) { s.names = n }
+
+// SetDoctorNameResolver attaches the doctor-name resolver (doctor profile ids).
+func (s *Service) SetDoctorNameResolver(n NameResolver) { s.doctors = n }
 
 // NewService builds Service, filling in defaults for any zero-valued option.
 func NewService(st store, video VideoProvider, c cache.Cache, pool database.Pool, outbox *events.Outbox, log zerolog.Logger, opts Options) *Service {
@@ -294,22 +307,37 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 	}
 
 	return JoinResult{
-		ConsultationID: c.ID,
-		AppointmentID:  c.AppointmentID,
-		Status:         c.Status,
-		Role:           string(role),
-		ScheduledAt:    c.ScheduledAt,
-		Token:          token,
-		TokenExpiresAt: tokenExpiresAt,
-		RoomName:       c.RoomName,
-		Provider:       s.video.Name(),
-		LiveKitURL:     s.opts.LiveKitURL,
-		SignalURL:      s.opts.SignalURL,
-		RecordingMode:  recordingModeFor(s.video.Name()),
-		// Minted per join, and scoped to the identity that will present it:
-		// a REST-style TURN credential is traceable only if it names someone.
-		ICEServers: s.opts.ICEServers(ctx, identity),
+		ConsultationID:  c.ID,
+		AppointmentID:   c.AppointmentID,
+		Status:          c.Status,
+		Role:            string(role),
+		ScheduledAt:     c.ScheduledAt,
+		Token:           token,
+		TokenExpiresAt:  tokenExpiresAt,
+		RoomName:        c.RoomName,
+		Provider:        s.video.Name(),
+		LiveKitURL:      s.opts.LiveKitURL,
+		SignalURL:       s.opts.SignalURL,
+		RecordingMode:   recordingModeFor(s.video.Name()),
+		ICEServers:      s.opts.ICEServers(ctx, identity),
+		CounterpartName: s.counterpartName(ctx, role, c),
 	}, nil
+}
+
+func (s *Service) counterpartName(ctx context.Context, role ParticipantRole, c *Consultation) string {
+	switch role {
+	case RoleDoctor:
+		if s.names == nil {
+			return ""
+		}
+		return s.names.Names(ctx, []uuid.UUID{c.PatientID})[c.PatientID]
+	case RolePatient:
+		if s.doctors == nil {
+			return ""
+		}
+		return s.doctors.Names(ctx, []uuid.UUID{c.DoctorID})[c.DoctorID]
+	}
+	return ""
 }
 
 // Admit is the doctor explicitly bringing a waiting patient into an active

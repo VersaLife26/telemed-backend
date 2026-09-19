@@ -72,6 +72,14 @@ type AppointmentDTO struct {
 	Currency    string `json:"currency,omitempty"`
 	Specialty   string `json:"specialty,omitempty"`
 
+	// PatientName is filled only for the treating doctor's own view, so the
+	// queue and the call screen say who the visit is with.
+	PatientName string `json:"patient_name,omitempty"`
+
+	// CounterpartName is the other party's display name: the patient's name
+	// for a doctor, the doctor's name for a patient.
+	CounterpartName string `json:"counterpart_name,omitempty"`
+
 	PaymentID   *uuid.UUID `json:"payment_id,omitempty"`
 	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`

@@ -74,6 +74,7 @@ func servePresignedGet(w http.ResponseWriter, r *http.Request, fs *FilesystemSto
 	defer func() { _ = body.Close() }()
 
 	setObjectHeaders(w, info)
+	setContentDisposition(w, r.URL.Query().Get("disp"))
 	// No Content-Length: on a short read the client would otherwise wait for
 	// bytes that are not coming. Go's chunked encoding ends the response
 	// honestly instead.
@@ -91,6 +92,7 @@ func servePresignedHead(w http.ResponseWriter, r *http.Request, fs *FilesystemSt
 		return
 	}
 	setObjectHeaders(w, info)
+	setContentDisposition(w, r.URL.Query().Get("disp"))
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	w.WriteHeader(http.StatusOK)
 }
@@ -123,13 +125,17 @@ func setObjectHeaders(w http.ResponseWriter, info ObjectInfo) {
 	// An intermediary caching one would outlive the capability that granted
 	// it, which is the entire point of the expiry.
 	w.Header().Set("Cache-Control", "no-store, private")
-	// The bytes are user-supplied. Rendering them inline is how an uploaded
-	// .html or .svg becomes stored XSS on the API's own origin.
-	w.Header().Set("Content-Disposition", "attachment")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if info.ETag != "" {
 		w.Header().Set("ETag", fmt.Sprintf("%q", info.ETag))
 	}
+}
+
+func setContentDisposition(w http.ResponseWriter, disp string) {
+	if disp == "" {
+		disp = "inline"
+	}
+	w.Header().Set("Content-Disposition", disp)
 }
 
 func writeObjectError(w http.ResponseWriter, err error) {

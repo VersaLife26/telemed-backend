@@ -120,6 +120,19 @@ func (s *Service) Check(ctx context.Context, o CheckOptions) error {
 	return nil
 }
 
+// ReachablePatients lists the patients whose vault the calling doctor may
+// currently read. It returns nothing for any principal that is not a doctor.
+func (s *Service) ReachablePatients(ctx context.Context, p middleware.Principal) ([]uuid.UUID, error) {
+	if !p.HasRole(middleware.RoleDoctor) || p.DoctorID == uuid.Nil {
+		return nil, nil
+	}
+	ids, err := s.repo.ReachablePatients(ctx, s.pool, p.DoctorID, time.Now().UTC())
+	if err != nil {
+		return nil, httpx.ErrInternal.WithCause(err)
+	}
+	return ids, nil
+}
+
 // decide performs the I/O (treating-relationship and share lookups) needed
 // to reach a decision and delegates the actual rule to decideAccess, which
 // has no dependencies and is what access_test.go exercises exhaustively.

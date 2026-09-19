@@ -361,6 +361,9 @@ components:
         ice_servers:
           type: array
           items: { $ref: '#/components/schemas/ICEServer' }
+        counterpart_name:
+          type: string
+          description: The other party's display name for the lobby and call chrome.
 
     ICEServer:
       type: object
@@ -2088,6 +2091,118 @@ paths:
               schema: { $ref: '#/components/schemas/APIError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/v1/records/patients:
+    get:
+      tags: [records]
+      summary: Patients whose vault the calling doctor can currently read
+      description: Requires role `doctor`. Active treating relationship or unexpired share; names resolved from the user directory.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            user_id: { type: string, format: uuid }
+                            name: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/records/folders:
+    get:
+      tags: [records]
+      summary: One level of a vault's folder tree
+      parameters:
+        - { name: owner_user_id, in: query, schema: { type: string, format: uuid } }
+        - { name: parent_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Child folders and the breadcrumb path to parent_id
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [records]
+      summary: Create a vault folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 120 }
+                parent_id: { type: string, description: Empty or absent for the vault root }
+                owner_user_id: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/records/folders/{folderID}:
+    parameters:
+      - { name: folderID, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [records]
+      summary: Rename or move a vault folder
+      description: Owning patient only. The target parent must be in the same vault.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+                parent_id: { type: string, description: Empty string moves to the vault root }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [records]
+      summary: Delete an empty vault folder
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/records/{recordID}/content:
+    get:
+      tags: [records]
+      summary: A vault document's bytes, for in-app preview
+      description: Authorised and access-logged exactly like /download. Served inline under a sandbox CSP.
+      parameters:
+        - name: recordID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The file
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/v1/records/{recordID}/download:
     get:
       tags: [records]
@@ -2097,6 +2212,10 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: disposition
+          in: query
+          schema: { type: string, enum: [inline, attachment] }
+          description: attachment forces a download filename; default is inline for previews.
       responses:
         '200':
           description: OK (redirect or presigned URL payload, upload timeout class)
@@ -3132,6 +3251,32 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/RecordUpload' } }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [records]
+      summary: Rename a vault document or move it between folders of the same vault
+      description: Owning patient only.
+      parameters:
+        - name: recordID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filename: { type: string, maxLength: 255 }
+                folder_id: { type: string, description: Empty string moves to the vault root }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
     delete:
       tags: [records]
       summary: Soft-delete a vault document

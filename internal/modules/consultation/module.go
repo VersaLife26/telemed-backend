@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"telemed/internal/domain/consultation/consultation"
 	"telemed/internal/domain/consultation/signal"
@@ -22,6 +23,7 @@ import (
 	"telemed/internal/platform/middleware"
 	"telemed/internal/platform/modular"
 	"telemed/internal/platform/server"
+	"telemed/internal/platform/usernames"
 )
 
 // Domain is the name this module registers under.
@@ -143,6 +145,16 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		DefaultConsultationDuration: time.Duration(cfg.DefaultConsultationDurationSeconds) * time.Second,
 		QualityDegradeThreshold:     cfg.QualityDegradeThreshold,
 	})
+	if names := usernames.FromRegistry(deps.Registry, log); names != nil {
+		svc.SetNameResolver(names)
+	}
+	if v, ok := deps.Registry.Lookup(modular.KeyDoctorDirectory); ok {
+		if n, ok := v.(interface {
+			Names(context.Context, []uuid.UUID) map[uuid.UUID]string
+		}); ok {
+			svc.SetDoctorNameResolver(n)
+		}
+	}
 	handler := consultation.NewHandler(svc, log)
 
 	// --- background workers ----------------------------------------------

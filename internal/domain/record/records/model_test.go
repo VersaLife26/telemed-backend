@@ -23,6 +23,13 @@ func TestIsAllowedUpload_RejectionCases(t *testing.T) {
 		{"mp4 with matching sniff", ".mp4", "video/mp4", true},
 		{"webm with matching sniff", ".webm", "video/webm", true},
 		{"dicom sniffs as octet-stream", ".dcm", "application/octet-stream", true},
+		{"ID3-tagged mp3", ".mp3", "audio/mpeg", true},
+		{"untagged mp3 sniffs as octet-stream", ".mp3", "application/octet-stream", true},
+		{"m4a sniffs as video/mp4", ".m4a", "video/mp4", true},
+		{"wav with matching sniff", ".wav", "audio/wave", true},
+		{"ogg with matching sniff", ".ogg", "application/ogg", true},
+		{"html renamed to .mp3 must be rejected", ".mp3", "text/html", false},
+		{"pdf renamed to .wav must be rejected", ".wav", "application/pdf", false},
 
 		{
 			name: "an executable renamed to .pdf must be rejected",

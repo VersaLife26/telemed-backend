@@ -747,6 +747,14 @@ components:
             The doctor's specialty at booking time, denormalised. The payment
             service prices its commission off it, so it is captured with the
             quote rather than read live.
+        patient_name:
+          type: string
+          description: The patient's display name. Only on the treating doctor's own view.
+        counterpart_name:
+          type: string
+          description: >
+            The other party's display name — the patient's name for a doctor,
+            the doctor's name for a patient. Resolved in one batch per list.
         intake:
           type: object
           additionalProperties: true

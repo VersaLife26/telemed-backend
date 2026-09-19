@@ -494,6 +494,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ICEServer'
+        counterpart_name:
+          type: string
+          description: The other party's display name for the lobby and call chrome.
 
     JoinResponseEnvelope:
       type: object

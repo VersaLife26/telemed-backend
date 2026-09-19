@@ -12,6 +12,7 @@ import (
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
 	"telemed/internal/platform/logger"
+	"telemed/internal/platform/storage"
 )
 
 // DocumentStore is the one object-storage operation this domain needs.
@@ -23,7 +24,7 @@ import (
 // interface at the point of use is what enforces that, and it keeps the
 // package's test fake to a single method.
 type DocumentStore interface {
-	PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration) (string, error)
+	PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration, opts ...storage.PresignGetOptions) (string, error)
 }
 
 // Service implements the credentialing business rules: presigning document

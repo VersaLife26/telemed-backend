@@ -172,6 +172,34 @@ func TestFilesystemStorage_PresignedGet_TamperedSignatureIsRejected(t *testing.T
 	}
 }
 
+func TestFilesystemStorage_PresignedGet_AttachmentDispositionIsSigned(t *testing.T) {
+	fs := newTestFS(t)
+	disp := AttachmentDisposition("lab-report.pdf")
+	raw, err := fs.PresignedGet(context.Background(), "medical-reports", "a.pdf", 15*time.Minute, PresignGetOptions{
+		ResponseContentDisposition: disp,
+	})
+	if err != nil {
+		t.Fatalf("PresignedGet: %v", err)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := u.Query().Get("disp"); got != disp {
+		t.Fatalf("disp query = %q, want %q", got, disp)
+	}
+	if _, _, _, err := fs.VerifyPresigned(u.RawQuery); err != nil {
+		t.Fatalf("VerifyPresigned: %v", err)
+	}
+	forged := *u
+	q := forged.Query()
+	q.Set("disp", "attachment; filename=\"other.pdf\"")
+	forged.RawQuery = q.Encode()
+	if _, _, _, err := fs.VerifyPresigned(forged.RawQuery); err == nil {
+		t.Fatal("tampering with disp must fail signature verification")
+	}
+}
+
 func TestFilesystemStorage_PresignedPut_TamperedOpIsRejected(t *testing.T) {
 	fs := newTestFS(t)
 	raw, err := fs.PresignedPut(context.Background(), "medical-reports", "a.pdf", 15*time.Minute)

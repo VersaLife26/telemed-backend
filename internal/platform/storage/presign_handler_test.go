@@ -61,10 +61,36 @@ func TestPresignedGetRoundTripsOverHTTP(t *testing.T) {
 	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
-	// Uploaded bytes are user-supplied; rendering them inline on the API's
-	// own origin is stored XSS.
-	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
-		t.Errorf("Content-Disposition = %q, want attachment", cd)
+	// Default is inline so a preview can use the URL as a PDF or media source.
+	if cd := resp.Header.Get("Content-Disposition"); cd != "inline" {
+		t.Errorf("Content-Disposition = %q, want inline", cd)
+	}
+}
+
+func TestPresignedGetAttachmentDispositionOverHTTP(t *testing.T) {
+	fs, _ := newServedStore(t, []byte("stable-secret"))
+	ctx := context.Background()
+	const body = "audio-bytes"
+	if err := fs.Put(ctx, "medical-reports", "note.mp3", strings.NewReader(body), int64(len(body)), "audio/mpeg"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	disp := AttachmentDisposition("visit-note.mp3")
+	raw, err := fs.PresignedGet(ctx, "medical-reports", "note.mp3", 5*time.Minute, PresignGetOptions{
+		ResponseContentDisposition: disp,
+	})
+	if err != nil {
+		t.Fatalf("presign: %v", err)
+	}
+	resp, err := http.Get(raw) //nolint:noctx,gosec
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s", resp.Status)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, "visit-note.mp3") {
+		t.Errorf("Content-Disposition = %q, want attachment filename", cd)
 	}
 }
 

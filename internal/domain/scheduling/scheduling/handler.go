@@ -1,6 +1,7 @@
 package scheduling
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -18,7 +19,9 @@ import (
 // and renders. It contains no SQL and no business rule -- when a decision looks
 // like it belongs here, it belongs in service.go.
 type Handler struct {
-	svc *Service
+	svc     *Service
+	names   NameResolver
+	doctors NameResolver
 	// adminIssuer is the one token issuer whose administrative role claims
 	// this service honours. Empty disables the check. See actor().
 	adminIssuer string
@@ -38,6 +41,53 @@ type Handler struct {
 // that does not was never going to receive a Keycloak token anyway.
 func NewHandler(svc *Service, adminIssuer string) *Handler {
 	return &Handler{svc: svc, adminIssuer: adminIssuer}
+}
+
+// NameResolver turns ids into display names for appointment lists.
+type NameResolver interface {
+	Names(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]string
+}
+
+// SetNameResolver attaches the patient-name resolver; without one, patient_name
+// and a doctor's counterpart_name are omitted.
+func (h *Handler) SetNameResolver(n NameResolver) { h.names = n }
+
+// SetDoctorNameResolver attaches the doctor-name resolver used to label a
+// patient's counterpart_name.
+func (h *Handler) SetDoctorNameResolver(n NameResolver) { h.doctors = n }
+
+// withCounterpartNames labels each appointment with the other party's name.
+func (h *Handler) withCounterpartNames(ctx context.Context, role string, dtos []AppointmentDTO) {
+	if len(dtos) == 0 {
+		return
+	}
+	switch role {
+	case ActorDoctor:
+		if h.names == nil {
+			return
+		}
+		ids := make([]uuid.UUID, len(dtos))
+		for i := range dtos {
+			ids[i] = dtos[i].PatientID
+		}
+		names := h.names.Names(ctx, ids)
+		for i := range dtos {
+			dtos[i].PatientName = names[dtos[i].PatientID]
+			dtos[i].CounterpartName = dtos[i].PatientName
+		}
+	case ActorPatient:
+		if h.doctors == nil {
+			return
+		}
+		ids := make([]uuid.UUID, len(dtos))
+		for i := range dtos {
+			ids[i] = dtos[i].DoctorID
+		}
+		names := h.doctors.Names(ctx, ids)
+		for i := range dtos {
+			dtos[i].CounterpartName = names[dtos[i].DoctorID]
+		}
+	}
 }
 
 // actor resolves the caller into the identity the domain uses.
@@ -498,7 +548,9 @@ func (h *Handler) getAppointment(w http.ResponseWriter, r *http.Request) {
 	}
 	// An administrator resolving a dispute has no clinical need for the intake
 	// form; HIPAA minimum-necessary says they do not get it.
-	httpx.OK(w, r, NewAppointmentDTO(appt, h.svc.Location(), role != "admin"))
+	dto := []AppointmentDTO{NewAppointmentDTO(appt, h.svc.Location(), role != "admin")}
+	h.withCounterpartNames(r.Context(), role, dto)
+	httpx.OK(w, r, dto[0])
 }
 
 func (h *Handler) listAppointments(w http.ResponseWriter, r *http.Request) {
@@ -547,6 +599,7 @@ func (h *Handler) listAppointments(w http.ResponseWriter, r *http.Request) {
 		// place it is actually needed.
 		out[i] = NewAppointmentDTO(appts[i], h.svc.Location(), false)
 	}
+	h.withCounterpartNames(r.Context(), role, out)
 	httpx.List(w, r, out, httpx.Meta{Page: page, PerPage: perPage, Total: total})
 }
 

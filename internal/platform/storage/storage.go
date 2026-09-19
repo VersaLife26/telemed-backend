@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"time"
 )
 
@@ -43,7 +44,11 @@ type Storage interface {
 
 	// PresignedGet returns a time-boxed URL a client can use to download the
 	// object directly, without proxying the bytes through this service.
-	PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration) (string, error)
+	//
+	// A zero-value opts (or none) leaves the object's stored metadata alone,
+	// which is inline for a preview. Pass ResponseContentDisposition to force
+	// a download filename.
+	PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration, opts ...PresignGetOptions) (string, error)
 
 	// PresignedPut returns a time-boxed URL a client can use to upload
 	// directly to the bucket.
@@ -76,3 +81,26 @@ const (
 	RecordPresignTTL       = 15 * time.Minute
 	PrescriptionPresignTTL = 24 * time.Hour
 )
+
+// PresignGetOptions overrides how the object is served at the presigned URL.
+type PresignGetOptions struct {
+	// ResponseContentDisposition is sent as the S3
+	// response-content-disposition query parameter (and the matching header
+	// on the filesystem backend). Empty leaves the stored metadata alone.
+	ResponseContentDisposition string
+}
+
+// AttachmentDisposition is Content-Disposition for a forced download.
+func AttachmentDisposition(filename string) string {
+	if filename == "" {
+		return "attachment"
+	}
+	return mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+}
+
+func firstPresignOpt(opts []PresignGetOptions) PresignGetOptions {
+	if len(opts) == 0 {
+		return PresignGetOptions{}
+	}
+	return opts[0]
+}
