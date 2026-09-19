@@ -737,3 +737,93 @@ func (r *Repository) ListStaleActive(ctx context.Context, q queryer, quietSince 
 	}
 	return out, nil
 }
+
+// --- consultation_messages ---------------------------------------------
+
+func (r *Repository) InsertMessage(ctx context.Context, q queryer, msg *ChatMessage) error {
+	if msg.ID == uuid.Nil {
+		msg.ID = uuid.New()
+	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	if len(msg.Metadata) == 0 {
+		msg.Metadata = json.RawMessage("{}")
+	}
+
+	const sql = `
+		INSERT INTO consultation_messages (id, consultation_id, sender_id, sender_role, sender_name, content, metadata, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, created_at`
+
+	err := q.QueryRow(ctx, sql,
+		msg.ID,
+		msg.ConsultationID,
+		msg.SenderID,
+		string(msg.SenderRole),
+		msg.SenderName,
+		msg.Content,
+		msg.Metadata,
+		msg.CreatedAt,
+	).Scan(&msg.ID, &msg.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("consultation: insert message: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListMessages(ctx context.Context, q queryer, consultationID uuid.UUID, since time.Time, limit int) ([]ChatMessage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if since.IsZero() {
+		const sql = `
+			SELECT id, consultation_id, sender_id, sender_role, sender_name, content, metadata, created_at
+			FROM consultation_messages
+			WHERE consultation_id = $1
+			ORDER BY created_at ASC
+			LIMIT $2`
+		rows, err = q.Query(ctx, sql, consultationID, limit)
+	} else {
+		const sql = `
+			SELECT id, consultation_id, sender_id, sender_role, sender_name, content, metadata, created_at
+			FROM consultation_messages
+			WHERE consultation_id = $1 AND created_at > $2
+			ORDER BY created_at ASC
+			LIMIT $3`
+		rows, err = q.Query(ctx, sql, consultationID, since, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("consultation: list messages: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ChatMessage, 0)
+	for rows.Next() {
+		var m ChatMessage
+		var role string
+		if err := rows.Scan(
+			&m.ID,
+			&m.ConsultationID,
+			&m.SenderID,
+			&role,
+			&m.SenderName,
+			&m.Content,
+			&m.Metadata,
+			&m.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("consultation: scan message: %w", err)
+		}
+		m.SenderRole = ParticipantRole(role)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("consultation: iterate messages: %w", err)
+	}
+	return out, nil
+}

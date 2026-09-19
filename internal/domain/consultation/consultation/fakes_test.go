@@ -86,6 +86,7 @@ type fakeStore struct {
 	// WHERE doctor_id=... AND status='ended' ORDER BY ended_at DESC" -- one
 	// slice per doctor, appended in the order consultations actually ended.
 	completedDurations map[uuid.UUID][]int
+	messages           []ChatMessage
 }
 
 func newFakeStore() *fakeStore {
@@ -734,5 +735,42 @@ func (f *fakeStore) ListStaleActive(_ context.Context, _ queryer, quietSince tim
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
+	return out, nil
+}
+
+func (f *fakeStore) InsertMessage(_ context.Context, _ queryer, msg *ChatMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if msg.ID == uuid.Nil {
+		msg.ID = uuid.New()
+	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	cp := *msg
+	f.messages = append(f.messages, cp)
+	return nil
+}
+
+func (f *fakeStore) ListMessages(_ context.Context, _ queryer, consultationID uuid.UUID, since time.Time, limit int) ([]ChatMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	out := make([]ChatMessage, 0)
+	for _, m := range f.messages {
+		if m.ConsultationID == consultationID {
+			if since.IsZero() || m.CreatedAt.After(since) {
+				out = append(out, m)
+				if len(out) >= limit {
+					break
+				}
+			}
+		}
+	}
 	return out, nil
 }

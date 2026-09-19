@@ -412,6 +412,27 @@ components:
       properties:
         should_downgrade_video: { type: boolean }
 
+    ChatMessage:
+      type: object
+      required: [id, consultation_id, sender_id, sender_role, sender_name, content, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        consultation_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        sender_role: { type: string, enum: [doctor, patient] }
+        sender_name: { type: string }
+        content: { type: string }
+        metadata: { type: object }
+        created_at: { type: string, format: date-time }
+
+    SendMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 4000 }
+        sender_name: { type: string, maxLength: 100 }
+        metadata: { type: object }
+
     AuthRefreshRequest:
       type: object
       required: [refresh_token]
@@ -759,6 +780,11 @@ components:
         commission: { type: integer, description: cents }
 
   responses:
+    BadRequest:
+      description: Bad request or validation failure.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/APIError' }
     Unauthorized:
       description: Missing or invalid bearer token.
       content:
@@ -2821,6 +2847,64 @@ paths:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/QualityReportResponse' } }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/consultations/{consultationID}/messages:
+    get:
+      tags: [consultations]
+      summary: List in-meeting chat messages
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: since
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, minimum: 1, maximum: 100 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ChatMessage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [consultations]
+      summary: Send an in-meeting chat message
+      parameters:
+        - name: consultationID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendMessageRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/ChatMessage' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /api/v1/consultations/ready-for-next:
     post:

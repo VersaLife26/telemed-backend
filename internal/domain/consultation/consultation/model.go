@@ -9,6 +9,7 @@
 package consultation
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -304,4 +305,16 @@ type WaitingRoomStatusResult struct {
 // QualityReportResult is the response to POST /consultations/{id}/quality.
 type QualityReportResult struct {
 	ShouldDowngradeVideo bool `json:"should_downgrade_video"`
+}
+
+// ChatMessage represents a single message sent during a consultation.
+type ChatMessage struct {
+	ID             uuid.UUID       `json:"id"`
+	ConsultationID uuid.UUID       `json:"consultation_id"`
+	SenderID       uuid.UUID       `json:"sender_id"`
+	SenderRole     ParticipantRole `json:"sender_role"`
+	SenderName     string          `json:"sender_name"`
+	Content        string          `json:"content"`
+	Metadata       json.RawMessage `json:"metadata"`
+	CreatedAt      time.Time       `json:"created_at"`
 }

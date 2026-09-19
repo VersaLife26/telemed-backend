@@ -61,6 +61,8 @@ const (
 	// TypePing keeps intermediaries from idling the socket out. The hub
 	// answers with TypePong and does not relay it.
 	TypePing = "ping"
+	// TypeChat carries an in-meeting chat message between doctor and patient.
+	TypeChat = "chat"
 )
 
 // Frame types only the hub sends.
@@ -86,6 +88,7 @@ var relayable = map[string]bool{
 	TypeBye:            true,
 	TypeRecordingState: true,
 	TypeQuality:        true,
+	TypeChat:           true,
 }
 
 // Welcome is the first frame the hub sends a peer that has joined.

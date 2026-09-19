@@ -2,8 +2,10 @@ package consultation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,7 +27,9 @@ var (
 	ErrInvalidState = errors.New("consultation: invalid state transition")
 	// ErrJoinCutoff is a patient trying to join for the first time after the
 	// booked slot has ended. Reconnects (already waiting or active) still work.
-	ErrJoinCutoff = errors.New("consultation: booked slot has ended")
+	ErrJoinCutoff     = errors.New("consultation: booked slot has ended")
+	ErrEmptyMessage   = errors.New("consultation: message content cannot be empty")
+	ErrMessageTooLong = errors.New("consultation: message content exceeds 4000 characters")
 )
 
 // store is the persistence contract the service depends on. Defining it here,
@@ -70,6 +74,9 @@ type store interface {
 
 	ListStaleActive(ctx context.Context, q queryer, quietSince time.Time, limit int) ([]StaleCandidate, error)
 	ListScheduledPastJoinCutoff(ctx context.Context, q queryer, cutoff time.Time, limit int) ([]*Consultation, error)
+
+	InsertMessage(ctx context.Context, q queryer, msg *ChatMessage) error
+	ListMessages(ctx context.Context, q queryer, consultationID uuid.UUID, since time.Time, limit int) ([]ChatMessage, error)
 }
 
 // Options configures Service. Every duration has a sane default applied by
@@ -1133,4 +1140,81 @@ func (s *Service) NotePeerChange(ctx context.Context, roomName, identity string,
 		s.log.Warn().Err(err).Str("consultation_id", c.ID.String()).
 			Bool("joined", joined).Msg("consultation: could not record peer change")
 	}
+}
+
+// --- chat messages ---------------------------------------------------------
+
+// SendMessageInput is the input parameter for Service.SendMessage.
+type SendMessageInput struct {
+	ConsultationID uuid.UUID
+	Caller         middleware.Principal
+	SenderName     string
+	Content        string
+	Metadata       json.RawMessage
+}
+
+// SendMessage records an in-meeting chat message sent by doctor or patient.
+func (s *Service) SendMessage(ctx context.Context, in SendMessageInput) (ChatMessage, error) {
+	content := strings.TrimSpace(in.Content)
+	if content == "" {
+		return ChatMessage{}, ErrEmptyMessage
+	}
+	if len(content) > 4000 {
+		return ChatMessage{}, ErrMessageTooLong
+	}
+
+	c, err := s.store.GetConsultation(ctx, s.pool, in.ConsultationID)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+
+	role, ok := authorizeParty(in.Caller, c)
+	if !ok {
+		return ChatMessage{}, ErrForbidden
+	}
+
+	if c.Status.terminal() {
+		return ChatMessage{}, ErrInvalidState
+	}
+
+	senderName := strings.TrimSpace(in.SenderName)
+	if senderName == "" {
+		if role == RoleDoctor {
+			senderName = "Doctor"
+		} else {
+			senderName = "Patient"
+		}
+	}
+
+	msg := ChatMessage{
+		ID:             uuid.New(),
+		ConsultationID: c.ID,
+		SenderID:       in.Caller.UserID,
+		SenderRole:     role,
+		SenderName:     senderName,
+		Content:        content,
+		Metadata:       in.Metadata,
+		CreatedAt:      time.Now().UTC(),
+	}
+
+	if err := s.store.InsertMessage(ctx, s.pool, &msg); err != nil {
+		return ChatMessage{}, err
+	}
+
+	return msg, nil
+}
+
+// ListMessages returns chronological chat messages for a consultation.
+func (s *Service) ListMessages(ctx context.Context, consultationID uuid.UUID, caller middleware.Principal, since time.Time, limit int) ([]ChatMessage, error) {
+	c, err := s.store.GetConsultation(ctx, s.pool, consultationID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, ok := authorizeParty(caller, c)
+	if !ok && !caller.HasAdminRole(middleware.RoleSuperAdmin, middleware.RoleOps) {
+		return nil, ErrForbidden
+	}
+
+	return s.store.ListMessages(ctx, s.pool, consultationID, since, limit)
 }

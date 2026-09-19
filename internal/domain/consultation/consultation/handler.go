@@ -1,9 +1,12 @@
 package consultation
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -49,6 +52,8 @@ func (h *Handler) Routes(auth *middleware.Authenticator) chi.Router {
 	r.Get("/{id}", h.get)
 	r.Get("/{id}/waiting-room", h.waitingRoom)
 	r.Post("/{id}/quality", h.quality)
+	r.Post("/{id}/messages", h.sendMessage)
+	r.Get("/{id}/messages", h.listMessages)
 	return r
 }
 
@@ -318,6 +323,78 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	httpx.NoContent(w, r)
 }
 
+type sendMessageRequest struct {
+	Content    string          `json:"content"`
+	SenderName string          `json:"sender_name,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+}
+
+func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	consultationID, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+
+	var req sendMessageRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeValidation, "content cannot be empty"))
+		return
+	}
+
+	msg, err := h.service.SendMessage(r.Context(), SendMessageInput{
+		ConsultationID: consultationID,
+		Caller:         p,
+		SenderName:     req.SenderName,
+		Content:        req.Content,
+		Metadata:       req.Metadata,
+	})
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	httpx.Created(w, r, msg)
+}
+
+func (h *Handler) listMessages(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	consultationID, err := httpx.PathUUID(r, "id", chi.URLParam)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+
+	var since time.Time
+	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, sinceStr)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, sinceStr)
+		}
+		if err == nil {
+			since = parsed
+		}
+	}
+
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	msgs, err := h.service.ListMessages(r.Context(), consultationID, p, since, limit)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	httpx.OK(w, r, msgs)
+}
+
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -328,6 +405,8 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "consultation is not in a state that allows this action").WithCause(err))
 	case errors.Is(err, ErrJoinCutoff):
 		httpx.Error(w, r, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "this visit's booked slot has ended").WithCause(err))
+	case errors.Is(err, ErrEmptyMessage), errors.Is(err, ErrMessageTooLong):
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeValidation, err.Error()).WithCause(err))
 	case errors.Is(err, ErrOptimisticLock):
 		httpx.Error(w, r, httpx.ErrConflict.WithCause(err))
 	case errors.Is(err, ErrWebhookUnverified):

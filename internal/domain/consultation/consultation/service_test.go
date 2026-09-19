@@ -517,3 +517,87 @@ func TestJoin_ReturnsTheConsultationIDTheOtherEndpointsNeed(t *testing.T) {
 	require.Equal(t, StatusActive, rejoin.Status)
 	require.Equal(t, c.ID, rejoin.ConsultationID)
 }
+
+func TestChatMessages(t *testing.T) {
+	svc, st, _, _ := newTestService(t, Options{})
+	ctx := context.Background()
+
+	patientID := uuid.New()
+	doctorID := uuid.New()
+	doctorUserID := uuid.New()
+	c := seedConsultation(t, st, patientID, doctorID)
+	patientJoins(t, svc, patientID, c)
+
+	// 1. Patient sends message
+	msg1, err := svc.SendMessage(ctx, SendMessageInput{
+		ConsultationID: c.ID,
+		Caller:         patientPrincipal(patientID),
+		Content:        "Hello doctor, can you hear me?",
+	})
+	require.NoError(t, err)
+	require.Equal(t, c.ID, msg1.ConsultationID)
+	require.Equal(t, patientID, msg1.SenderID)
+	require.Equal(t, RolePatient, msg1.SenderRole)
+	require.Equal(t, "Patient", msg1.SenderName)
+	require.Equal(t, "Hello doctor, can you hear me?", msg1.Content)
+
+	// 2. Doctor sends message with custom sender name
+	msg2, err := svc.SendMessage(ctx, SendMessageInput{
+		ConsultationID: c.ID,
+		Caller:         doctorPrincipal(doctorUserID, doctorID),
+		SenderName:     "Dr. Nimal Perera",
+		Content:        "Yes, loud and clear. Starting video now.",
+	})
+	require.NoError(t, err)
+	require.Equal(t, c.ID, msg2.ConsultationID)
+	require.Equal(t, doctorUserID, msg2.SenderID)
+	require.Equal(t, RoleDoctor, msg2.SenderRole)
+	require.Equal(t, "Dr. Nimal Perera", msg2.SenderName)
+	require.Equal(t, "Yes, loud and clear. Starting video now.", msg2.Content)
+
+	// 3. Unauthorized user cannot send message
+	unauthorizedID := uuid.New()
+	_, err = svc.SendMessage(ctx, SendMessageInput{
+		ConsultationID: c.ID,
+		Caller:         patientPrincipal(unauthorizedID),
+		Content:        "I am an intruder",
+	})
+	require.ErrorIs(t, err, ErrForbidden)
+
+	// 4. Empty message rejected
+	_, err = svc.SendMessage(ctx, SendMessageInput{
+		ConsultationID: c.ID,
+		Caller:         patientPrincipal(patientID),
+		Content:        "   ",
+	})
+	require.ErrorIs(t, err, ErrEmptyMessage)
+
+	// 5. List messages returns all messages in order
+	msgs, err := svc.ListMessages(ctx, c.ID, patientPrincipal(patientID), time.Time{}, 50)
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	require.Equal(t, msg1.ID, msgs[0].ID)
+	require.Equal(t, msg2.ID, msgs[1].ID)
+
+	// 6. Unauthorized user cannot list messages
+	_, err = svc.ListMessages(ctx, c.ID, patientPrincipal(unauthorizedID), time.Time{}, 50)
+	require.ErrorIs(t, err, ErrForbidden)
+
+	// 7. Terminal consultation rejects new messages but allows listing
+	latest, err := st.GetConsultation(ctx, fakeTx{}, c.ID)
+	require.NoError(t, err)
+	latest.Status = StatusEnded
+	require.NoError(t, st.UpdateConsultation(ctx, fakeTx{}, latest))
+
+	_, err = svc.SendMessage(ctx, SendMessageInput{
+		ConsultationID: c.ID,
+		Caller:         patientPrincipal(patientID),
+		Content:        "Another message after call ended",
+	})
+	require.ErrorIs(t, err, ErrInvalidState)
+
+	// History is still readable after call ends
+	msgsAfterEnd, err := svc.ListMessages(ctx, c.ID, patientPrincipal(patientID), time.Time{}, 50)
+	require.NoError(t, err)
+	require.Len(t, msgsAfterEnd, 2)
+}

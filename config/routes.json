@@ -724,6 +724,19 @@
       "description": "Report a connection-quality sample and learn whether to downgrade video. Called repeatedly during a call on a bad 3G link, so it is rate-limited generously and timed as a read."
     },
     {
+      "name": "consultation-messages",
+      "pattern": "/api/v1/consultations/{consultationID}/messages",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "upstream": "consultation-service",
+      "auth": "authenticated",
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Send or list in-meeting chat messages for a consultation."
+    },
+    {
       "name": "consultation-ready-for-next",
       "pattern": "/api/v1/consultations/ready-for-next",
       "methods": [
