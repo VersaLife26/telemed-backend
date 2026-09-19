@@ -804,6 +804,10 @@ func (integrationNoopRail) VerifyWebhook(context.Context, http.Header, []byte) (
 	return WebhookEvent{}, ErrSignatureInvalid
 }
 
+func (integrationNoopRail) Capture(context.Context, CaptureRequest) (CaptureResult, error) {
+	return CaptureResult{}, ErrUnsupported
+}
+
 func (integrationNoopRail) Refund(context.Context, RefundRequest) (RefundResult, error) {
 	return RefundResult{}, ErrUnsupported
 }
@@ -1186,6 +1190,10 @@ func (r *payoutRail) CreateIntent(context.Context, IntentRequest) (IntentResult,
 
 func (r *payoutRail) VerifyWebhook(context.Context, http.Header, []byte) (WebhookEvent, error) {
 	return WebhookEvent{}, ErrSignatureInvalid
+}
+
+func (r *payoutRail) Capture(context.Context, CaptureRequest) (CaptureResult, error) {
+	return CaptureResult{}, ErrUnsupported
 }
 
 func (r *payoutRail) Refund(context.Context, RefundRequest) (RefundResult, error) {
