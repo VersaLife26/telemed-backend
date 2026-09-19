@@ -342,8 +342,8 @@ func (r *Repository) SetEarlyJoinResponse(ctx context.Context, tx pgx.Tx, consul
 }
 
 // ListScheduledPastJoinCutoff returns consults still waiting for a first
-// patient join after the late-join window. Waiting/active rows are excluded
-// so a late arriver already in the queue is not auto no-showed.
+// patient join after the booked slot ended. Waiting/active rows are excluded
+// so someone who arrived during the slot is not closed out.
 func (r *Repository) ListScheduledPastJoinCutoff(ctx context.Context, q queryer, cutoff time.Time, limit int) ([]*Consultation, error) {
 	if limit <= 0 {
 		limit = 50
@@ -353,8 +353,8 @@ func (r *Repository) ListScheduledPastJoinCutoff(ctx context.Context, q queryer,
 		FROM consultations
 		WHERE status = 'scheduled'
 		  AND deleted_at IS NULL
-		  AND scheduled_at <= $1
-		ORDER BY scheduled_at ASC
+		  AND scheduled_end_at <= $1
+		ORDER BY scheduled_end_at ASC
 		LIMIT $2`
 	rows, err := q.Query(ctx, sql, cutoff.UTC(), limit)
 	if err != nil {

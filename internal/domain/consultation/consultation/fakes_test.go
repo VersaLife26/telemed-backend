@@ -377,14 +377,14 @@ func (f *fakeStore) ListScheduledPastJoinCutoff(_ context.Context, _ queryer, cu
 		if c.Status != StatusScheduled || c.DeletedAt != nil {
 			continue
 		}
-		if c.ScheduledAt.After(cutoff) {
+		if bookedSlotEnd(c).After(cutoff) {
 			continue
 		}
 		cp := *c
 		out = append(out, &cp)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].ScheduledAt.Before(out[j].ScheduledAt)
+		return bookedSlotEnd(out[i]).Before(bookedSlotEnd(out[j]))
 	})
 	if len(out) > limit {
 		out = out[:limit]

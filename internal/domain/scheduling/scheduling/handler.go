@@ -593,7 +593,8 @@ func (h *Handler) completeAppointment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) noShowAppointment(w http.ResponseWriter, r *http.Request) {
-	h.markTerminal(w, r, AppointmentNoShow)
+	httpx.Error(w, r, httpx.NewError(http.StatusForbidden, httpx.CodeForbidden,
+		"the booked slot is the visit window; no-show is not recorded"))
 }
 
 func (h *Handler) markTerminal(w http.ResponseWriter, r *http.Request, status AppointmentStatus) {

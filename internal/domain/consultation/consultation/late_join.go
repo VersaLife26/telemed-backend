@@ -12,20 +12,29 @@ import (
 )
 
 const (
-	// LateJoinGrace is how long after scheduled_at the doctor waits and the
-	// patient may still join for the first time. After this, auto no-show
-	// fires if they never arrived. Later slots are not moved.
+	// DefaultBookedSlot is used when scheduled_end_at is missing. It matches
+	// CreateConsultation's fallback so join and sweep agree on the window.
+	DefaultBookedSlot = 15 * time.Minute
+
+	// LateJoinGrace is retained for older tests and comments. First join is
+	// allowed for the whole booked slot, not this grace window.
 	LateJoinGrace = 10 * time.Minute
 
-	// LateJoinCutoff is the hard stop on a first patient join. Same length as
-	// the grace window: once it elapses, join is refused unless they already
-	// made it into the waiting room.
+	// LateJoinCutoff is no longer a join stop; the booked slot end is.
 	LateJoinCutoff = LateJoinGrace
 )
 
-// SweepPatientNoShow closes scheduled consults whose late-join window has
-// passed with nobody arriving. It does not touch waiting or active visits,
-// and it does not rewrite later slots.
+func bookedSlotEnd(c *Consultation) time.Time {
+	if c.ScheduledEndAt.After(c.ScheduledAt) {
+		return c.ScheduledEndAt
+	}
+	return c.ScheduledAt.Add(DefaultBookedSlot)
+}
+
+// SweepPatientNoShow closes scheduled consults whose booked slot has ended
+// with nobody arriving. It does not touch waiting or active visits, and it
+// does not rewrite later slots. The appointment is closed as completed (the
+// slot was allocated), not as a no-show.
 func (s *Service) SweepPatientNoShow(ctx context.Context, now time.Time, batch int) (int, error) {
 	if batch <= 0 {
 		batch = DefaultRunningLateBatch
@@ -36,8 +45,7 @@ func (s *Service) SweepPatientNoShow(ctx context.Context, now time.Time, batch i
 		now = now.UTC()
 	}
 
-	cutoff := now.Add(-LateJoinGrace)
-	stale, err := s.store.ListScheduledPastJoinCutoff(ctx, s.pool, cutoff, batch)
+	stale, err := s.store.ListScheduledPastJoinCutoff(ctx, s.pool, now, batch)
 	if err != nil {
 		return 0, err
 	}
@@ -48,7 +56,7 @@ func (s *Service) SweepPatientNoShow(ctx context.Context, now time.Time, batch i
 		if err != nil {
 			s.log.Error().Err(err).
 				Str("consultation_id", c.ID.String()).
-				Msg("patient no-show sweep failed")
+				Msg("unused-slot sweep failed")
 			continue
 		}
 		if ok {
@@ -65,7 +73,7 @@ func (s *Service) markPatientNoShow(ctx context.Context, c *Consultation, now ti
 
 	c.Status = StatusAbandoned
 	c.DeletedAt = &now
-	reason := "no_show"
+	reason := "slot_ended"
 	c.EndReason = &reason
 
 	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -96,7 +104,7 @@ func (s *Service) markPatientNoShow(ctx context.Context, c *Consultation, now ti
 	}
 
 	if err := s.video.EndRoom(ctx, c.RoomName); err != nil && !errors.Is(err, ErrRoomNotFound) {
-		s.log.Warn().Err(err).Str("room", c.RoomName).Msg("end room after patient no-show failed")
+		s.log.Warn().Err(err).Str("room", c.RoomName).Msg("end room after unused slot closed failed")
 	}
 	return true, nil
 }

@@ -224,11 +224,11 @@ paths:
     post:
       tags: [appointments]
       operationId: noShowAppointment
-      summary: Record a no-show
+      summary: No-show is not recorded
       description: |
-        Doctor or administrator only. A patient may not declare their own
-        no-show, nor complete a consultation to dodge one. A nightly backstop
-        records a no-show for anything left `confirmed` 12 hours past its end.
+        The booked slot is the visit window. Late arrival is allowed until
+        the slot ends. Unused slots close as completed. This endpoint always
+        returns 403.
       parameters: [{ $ref: '#/components/parameters/AppointmentID' }]
       responses:
         '200':

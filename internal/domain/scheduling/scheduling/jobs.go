@@ -31,15 +31,13 @@ const (
 )
 
 // NoShowGrace is how long after a consultation should have ended before an
-// appointment nobody closed out is recorded as a no-show.
+// appointment nobody closed out is recorded as completed.
 //
-// It is generous on purpose. A patient who never joins is closed earlier by
-// consultation-service's late-join sweep (10 minutes after scheduled_at).
-// This job is only the backstop for when that never arrives -- a started
-// visit the doctor forgot to close, or a confirmed booking with no
-// consultation row -- and a wrongly recorded no-show feeds the prepayment
-// rule. Twelve hours means a consultation that ran late does not become an
-// accusation.
+// A patient who never joins is closed earlier by consultation-service when
+// the booked slot ends. This job is only the backstop for when that never
+// arrives -- a started visit the doctor forgot to close, or a confirmed
+// booking with no consultation row. Twelve hours means a consultation that
+// ran late is not closed while it may still be live.
 const NoShowGrace = 12 * time.Hour
 
 // Scheduler owns the cron jobs. It is constructed at boot and stopped on
@@ -289,7 +287,8 @@ func (s *Service) SweepUnpaidBookings(ctx context.Context) (int, error) {
 }
 
 // DetectNoShows closes out confirmed appointments that nobody reported an
-// outcome for. See NoShowGrace for why the window is long.
+// outcome for. See NoShowGrace for why the window is long. Unused slots are
+// completed, not marked no-show: the booked window was the allocation.
 func (s *Service) DetectNoShows(ctx context.Context) (int, error) {
 	now := s.clock.Now()
 	cutoff := now.Add(-NoShowGrace)
@@ -303,14 +302,14 @@ func (s *Service) DetectNoShows(ctx context.Context) (int, error) {
 	marked := 0
 	for i := range stale {
 		a := &stale[i]
-		if _, err := s.MarkTerminal(ctx, a.ID, a.PatientID, "system", AppointmentNoShow); err != nil {
-			s.log.Error().Err(err).Str("appointment_id", maskID(a.ID)).Msg("no-show detection failed")
+		if _, err := s.MarkTerminal(ctx, a.ID, a.PatientID, "system", AppointmentCompleted); err != nil {
+			s.log.Error().Err(err).Str("appointment_id", maskID(a.ID)).Msg("stale appointment close failed")
 			continue
 		}
 		marked++
 	}
 	if marked > 0 {
-		s.log.Info().Int("marked", marked).Msg("no-shows recorded by the nightly backstop")
+		s.log.Info().Int("marked", marked).Msg("stale appointments completed by the nightly backstop")
 	}
 	return marked, nil
 }

@@ -2684,8 +2684,8 @@ paths:
   /api/v1/appointments/{appointmentID}/no-show:
     post:
       tags: [scheduling]
-      summary: Mark a patient no-show
-      description: Requires role `doctor`. A patient must not be able to declare their own no-show.
+      summary: No-show is not recorded
+      description: The booked slot is the visit window. This endpoint always returns 403.
       parameters:
         - name: appointmentID
           in: path

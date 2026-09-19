@@ -159,9 +159,9 @@ func (w *RunningLateSweeper) Run(ctx context.Context) {
 			}
 			absent, err := w.svc.SweepPatientNoShow(ctx, time.Time{}, w.batch)
 			if err != nil {
-				w.log.Error().Err(err).Msg("patient no-show sweep failed")
+				w.log.Error().Err(err).Msg("unused-slot sweep failed")
 			} else if absent > 0 {
-				w.log.Info().Int("marked", absent).Msg("late patients who never joined marked no-show")
+				w.log.Info().Int("marked", absent).Msg("unjoined visits closed after the booked slot ended")
 			}
 		}
 	}

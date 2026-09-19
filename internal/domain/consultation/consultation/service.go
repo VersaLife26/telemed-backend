@@ -24,8 +24,8 @@ var (
 	ErrForbidden    = errors.New("consultation: caller is not a party to this consultation")
 	ErrInvalidState = errors.New("consultation: invalid state transition")
 	// ErrJoinCutoff is a patient trying to join for the first time after the
-	// late-join window. Reconnects (already waiting or active) still work.
-	ErrJoinCutoff = errors.New("consultation: late-join window has closed")
+	// booked slot has ended. Reconnects (already waiting or active) still work.
+	ErrJoinCutoff = errors.New("consultation: booked slot has ended")
 )
 
 // store is the persistence contract the service depends on. Defining it here,
@@ -212,7 +212,7 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 	}
 
 	now := time.Now().UTC()
-	if role == RolePatient && c.Status == StatusScheduled && !now.Before(c.ScheduledAt.Add(LateJoinCutoff)) {
+	if role == RolePatient && c.Status == StatusScheduled && !now.Before(bookedSlotEnd(c)) {
 		return JoinResult{}, ErrJoinCutoff
 	}
 

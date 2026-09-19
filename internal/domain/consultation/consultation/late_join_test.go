@@ -11,12 +11,14 @@ import (
 	"telemed/internal/platform/events"
 )
 
-func TestJoin_PatientLateWithinGraceIsAllowed(t *testing.T) {
+func TestJoin_PatientLateWithinSlotIsAllowed(t *testing.T) {
 	svc, st, _, _ := newTestService(t, Options{})
 	patientID, doctorID := uuid.New(), uuid.New()
 	c := seedConsultation(t, st, patientID, doctorID)
+	now := time.Now().UTC()
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = time.Now().UTC().Add(-5 * time.Minute)
+	st.consultations[c.ID].ScheduledAt = now.Add(-11 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(4 * time.Minute)
 	st.mu.Unlock()
 
 	got, err := svc.Join(context.Background(), patientPrincipal(patientID), c.AppointmentID)
@@ -24,24 +26,28 @@ func TestJoin_PatientLateWithinGraceIsAllowed(t *testing.T) {
 	require.Equal(t, StatusWaiting, got.Status)
 }
 
-func TestJoin_PatientPastCutoffIsBlocked(t *testing.T) {
+func TestJoin_PatientPastSlotEndIsBlocked(t *testing.T) {
 	svc, st, _, _ := newTestService(t, Options{})
 	patientID, doctorID := uuid.New(), uuid.New()
 	c := seedConsultation(t, st, patientID, doctorID)
+	now := time.Now().UTC()
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = time.Now().UTC().Add(-(LateJoinCutoff + time.Minute))
+	st.consultations[c.ID].ScheduledAt = now.Add(-16 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(-time.Minute)
 	st.mu.Unlock()
 
 	_, err := svc.Join(context.Background(), patientPrincipal(patientID), c.AppointmentID)
 	require.ErrorIs(t, err, ErrJoinCutoff)
 }
 
-func TestJoin_DoctorPastCutoffStillAllowed(t *testing.T) {
+func TestJoin_DoctorPastSlotEndStillAllowed(t *testing.T) {
 	svc, st, _, _ := newTestService(t, Options{})
 	patientID, doctorID := uuid.New(), uuid.New()
 	c := seedConsultation(t, st, patientID, doctorID)
+	now := time.Now().UTC()
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = time.Now().UTC().Add(-(LateJoinCutoff + time.Minute))
+	st.consultations[c.ID].ScheduledAt = now.Add(-16 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(-time.Minute)
 	st.mu.Unlock()
 
 	got, err := svc.Join(context.Background(), doctorPrincipal(uuid.New(), doctorID), c.AppointmentID)
@@ -50,14 +56,16 @@ func TestJoin_DoctorPastCutoffStillAllowed(t *testing.T) {
 	require.Equal(t, StatusScheduled, got.Status)
 }
 
-func TestJoin_PatientReconnectAfterCutoffIfAlreadyWaiting(t *testing.T) {
+func TestJoin_PatientReconnectAfterSlotEndIfAlreadyWaiting(t *testing.T) {
 	svc, st, _, _ := newTestService(t, Options{})
 	patientID, doctorID := uuid.New(), uuid.New()
 	c := seedConsultation(t, st, patientID, doctorID)
 	patientJoins(t, svc, patientID, c)
 
+	now := time.Now().UTC()
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = time.Now().UTC().Add(-(LateJoinCutoff + time.Minute))
+	st.consultations[c.ID].ScheduledAt = now.Add(-16 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(-time.Minute)
 	st.mu.Unlock()
 
 	got, err := svc.Join(context.Background(), patientPrincipal(patientID), c.AppointmentID)
@@ -65,13 +73,14 @@ func TestJoin_PatientReconnectAfterCutoffIfAlreadyWaiting(t *testing.T) {
 	require.Equal(t, StatusWaiting, got.Status)
 }
 
-func TestSweepPatientNoShow_MarksScheduledPastGrace(t *testing.T) {
+func TestSweepPatientNoShow_MarksScheduledPastSlotEnd(t *testing.T) {
 	svc, st, _ := newSweepService(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 	c := seedConsultation(t, st, uuid.New(), uuid.New())
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = now.Add(-LateJoinGrace - time.Minute)
+	st.consultations[c.ID].ScheduledAt = now.Add(-16 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(-time.Minute)
 	st.mu.Unlock()
 
 	n, err := svc.SweepPatientNoShow(ctx, now, 50)
@@ -82,7 +91,7 @@ func TestSweepPatientNoShow_MarksScheduledPastGrace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StatusAbandoned, reloaded.Status)
 	require.NotNil(t, reloaded.EndReason)
-	require.Equal(t, "no_show", *reloaded.EndReason)
+	require.Equal(t, "slot_ended", *reloaded.EndReason)
 
 	n, err = svc.SweepPatientNoShow(ctx, now.Add(time.Minute), 50)
 	require.NoError(t, err)
@@ -100,7 +109,8 @@ func TestSweepPatientNoShow_SkipsWaitingPatient(t *testing.T) {
 	c := seedConsultation(t, st, patientID, doctorID)
 	patientJoins(t, svc, patientID, c)
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = now.Add(-LateJoinGrace - time.Minute)
+	st.consultations[c.ID].ScheduledAt = now.Add(-16 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(-time.Minute)
 	st.mu.Unlock()
 
 	n, err := svc.SweepPatientNoShow(ctx, now, 50)
@@ -112,13 +122,14 @@ func TestSweepPatientNoShow_SkipsWaitingPatient(t *testing.T) {
 	require.Equal(t, StatusWaiting, reloaded.Status)
 }
 
-func TestSweepPatientNoShow_SkipsInsideGrace(t *testing.T) {
+func TestSweepPatientNoShow_SkipsInsideBookedSlot(t *testing.T) {
 	svc, st, _ := newSweepService(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 	c := seedConsultation(t, st, uuid.New(), uuid.New())
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = now.Add(-5 * time.Minute)
+	st.consultations[c.ID].ScheduledAt = now.Add(-11 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(4 * time.Minute)
 	st.mu.Unlock()
 
 	n, err := svc.SweepPatientNoShow(ctx, now, 50)
@@ -132,7 +143,8 @@ func TestSweepPatientNoShow_SkipsActiveConsult(t *testing.T) {
 	now := time.Now().UTC()
 	c := activeConsultation(t, svc, st, time.Minute)
 	st.mu.Lock()
-	st.consultations[c.ID].ScheduledAt = now.Add(-LateJoinGrace - time.Minute)
+	st.consultations[c.ID].ScheduledAt = now.Add(-16 * time.Minute)
+	st.consultations[c.ID].ScheduledEndAt = now.Add(-time.Minute)
 	st.mu.Unlock()
 
 	n, err := svc.SweepPatientNoShow(ctx, now, 50)

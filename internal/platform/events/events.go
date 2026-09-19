@@ -86,7 +86,8 @@ const (
 	// stands unless they accept and join through the existing waiting room.
 	SubjectConsultationEarlyJoinOffered Subject = "consultation.early_join_offered"
 	// SubjectConsultationPatientNoShow is a first-join that never happened
-	// after the late-join grace. Scheduling marks the appointment no_show.
+	// before the booked slot ended. Scheduling closes the appointment as
+	// completed (the slot was allocated), not as a no-show.
 	SubjectConsultationPatientNoShow Subject = "consultation.patient_no_show"
 
 	SubjectPrescriptionIssued Subject = "prescription.issued"

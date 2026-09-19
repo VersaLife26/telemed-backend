@@ -611,19 +611,19 @@ func (c *Consumers) handleConsultationPatientNoShow(ctx context.Context, env eve
 			Msg("consultation.patient_no_show without an appointment_id")
 		return nil
 	}
-	_, err := c.svc.MarkTerminal(ctx, p.AppointmentID, uuid.Nil, "system", AppointmentNoShow)
+	_, err := c.svc.MarkTerminal(ctx, p.AppointmentID, uuid.Nil, "system", AppointmentCompleted)
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrAppointmentNotCancellable):
 		c.log.Info().Str("appointment_id", maskID(p.AppointmentID)).
 			Str("event_id", env.ID.String()).
-			Msg("patient no-show: appointment was already closed")
+			Msg("unused slot: appointment was already closed")
 		return nil
 	case errors.Is(err, ErrAppointmentNotFound):
 		c.log.Error().Str("appointment_id", maskID(p.AppointmentID)).
 			Str("event_id", env.ID.String()).
-			Msg("patient no-show for an unknown appointment")
+			Msg("unused slot closed for an unknown appointment")
 		return nil
 	default:
 		return err

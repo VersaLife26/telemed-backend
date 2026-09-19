@@ -530,8 +530,8 @@ type ConsultationEarlyJoinOffered struct {
 }
 
 // ConsultationPatientNoShow asks scheduling to close a confirmed appointment
-// because the patient never joined after the late-join window. No later slots
-// are moved.
+// because the patient never joined before the booked slot ended. Scheduling
+// records that as completed. No later slots are moved.
 type ConsultationPatientNoShow struct {
 	ConsultationID uuid.UUID `json:"consultation_id"`
 	AppointmentID  uuid.UUID `json:"appointment_id"`
