@@ -1290,13 +1290,13 @@ func (s *Service) OnAppointmentCreated(ctx context.Context, payload events.Appoi
 	}
 
 	p := Payment{
-		ID:               uuid.New(),
-		AppointmentID:    payload.AppointmentID,
-		PatientID:        payload.PatientID,
-		DoctorID:         payload.DoctorID,
-		Specialty:        payload.Specialty,
-		CorporateClient:  payload.CorporateClient,
-		AmountCents:      payload.AmountCents,
+		ID:              uuid.New(),
+		AppointmentID:   payload.AppointmentID,
+		PatientID:       payload.PatientID,
+		DoctorID:        payload.DoctorID,
+		Specialty:       payload.Specialty,
+		CorporateClient: payload.CorporateClient,
+		AmountCents:     payload.AmountCents,
 		// No promotion has been applied yet, so gross == charged. ApplyPromo
 		// is the only thing that ever moves them apart.
 		GrossAmountCents: payload.AmountCents,
@@ -1306,7 +1306,7 @@ func (s *Service) OnAppointmentCreated(ctx context.Context, payload events.Appoi
 		ScheduledStartAt: startAt,
 		// Deterministic from the appointment, so a redelivery of the event
 		// collides on the unique index instead of creating a second payment.
-		IdempotencyKey:   "appointment:" + payload.AppointmentID.String(),
+		IdempotencyKey: "appointment:" + payload.AppointmentID.String(),
 	}
 
 	err := s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {

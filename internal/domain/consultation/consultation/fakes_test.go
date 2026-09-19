@@ -762,10 +762,11 @@ func (f *fakeStore) ListMessages(_ context.Context, _ queryer, consultationID uu
 	}
 
 	out := make([]ChatMessage, 0)
-	for _, m := range f.messages {
+	for i := range f.messages {
+		m := &f.messages[i]
 		if m.ConsultationID == consultationID {
 			if since.IsZero() || m.CreatedAt.After(since) {
-				out = append(out, m)
+				out = append(out, *m)
 				if len(out) >= limit {
 					break
 				}

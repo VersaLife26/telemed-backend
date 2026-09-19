@@ -32,9 +32,9 @@ func (d *NameDirectory) Names(ctx context.Context, ids []uuid.UUID) map[uuid.UUI
 		d.log.Warn().Err(err).Int("count", len(ids)).Msg("doctor name lookup failed")
 		return out
 	}
-	for _, doc := range doctors {
-		if doc.DisplayName != "" {
-			out[doc.ID] = doc.DisplayName
+	for i := range doctors {
+		if doctors[i].DisplayName != "" {
+			out[doctors[i].ID] = doctors[i].DisplayName
 		}
 	}
 	return out

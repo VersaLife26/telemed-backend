@@ -118,7 +118,7 @@ func (s *Service) Upload(ctx context.Context, in UploadInput) (Document, error) 
 	}
 
 	if in.FolderID != nil {
-		if _, err := s.folderInVault(ctx, *in.FolderID, ownerID); err != nil {
+		if err := s.folderInVault(ctx, *in.FolderID, ownerID); err != nil {
 			return Document{}, err
 		}
 	}

@@ -82,15 +82,15 @@ func mapFolderWriteErr(err error) error {
 // folderInVault loads a folder and confirms it belongs to ownerUserID. A
 // folder from another vault is reported as not found, never as forbidden,
 // so a caller cannot probe for folder ids outside the vault they hold.
-func (s *Service) folderInVault(ctx context.Context, id, ownerUserID uuid.UUID) (Folder, error) {
+func (s *Service) folderInVault(ctx context.Context, id, ownerUserID uuid.UUID) error {
 	f, ok, err := s.repo.GetFolder(ctx, s.pool, id)
 	if err != nil {
-		return Folder{}, httpx.ErrInternal.WithCause(err)
+		return httpx.ErrInternal.WithCause(err)
 	}
 	if !ok || f.OwnerUserID != ownerUserID {
-		return Folder{}, errFolderNotFound
+		return errFolderNotFound
 	}
-	return f, nil
+	return nil
 }
 
 func (s *Service) checkVault(ctx context.Context, caller middleware.Principal, ownerUserID, resourceID uuid.UUID, action access.Action, ip, ua string) error {
@@ -120,7 +120,7 @@ func (s *Service) ListFolders(ctx context.Context, caller middleware.Principal, 
 	}
 	var out FolderListing
 	if parentID != nil {
-		if _, err := s.folderInVault(ctx, *parentID, ownerUserID); err != nil {
+		if err := s.folderInVault(ctx, *parentID, ownerUserID); err != nil {
 			return FolderListing{}, err
 		}
 		path, err := s.repo.FolderPath(ctx, s.pool, *parentID)
@@ -154,7 +154,7 @@ func (s *Service) CreateFolder(ctx context.Context, caller middleware.Principal,
 		}
 	}
 	if parentID != nil {
-		if _, err := s.folderInVault(ctx, *parentID, ownerUserID); err != nil {
+		if err := s.folderInVault(ctx, *parentID, ownerUserID); err != nil {
 			return Folder{}, err
 		}
 	}
@@ -191,15 +191,15 @@ func (s *Service) UpdateFolder(ctx context.Context, caller middleware.Principal,
 	if move.Set {
 		parent = move.ID
 		if parent != nil {
-			if _, err := s.folderInVault(ctx, *parent, f.OwnerUserID); err != nil {
+			if err := s.folderInVault(ctx, *parent, f.OwnerUserID); err != nil {
 				return Folder{}, err
 			}
 			chain, err := s.repo.FolderPath(ctx, s.pool, *parent)
 			if err != nil {
 				return Folder{}, httpx.ErrInternal.WithCause(err)
 			}
-			for _, c := range chain {
-				if c.ID == f.ID {
+			for i := range chain {
+				if chain[i].ID == f.ID {
 					return Folder{}, errFolderCycle
 				}
 			}
@@ -266,7 +266,7 @@ func (s *Service) UpdateDocument(ctx context.Context, caller middleware.Principa
 	if move.Set {
 		folder = move.ID
 		if folder != nil {
-			if _, err := s.folderInVault(ctx, *folder, doc.OwnerUserID); err != nil {
+			if err := s.folderInVault(ctx, *folder, doc.OwnerUserID); err != nil {
 				return Document{}, err
 			}
 		}
