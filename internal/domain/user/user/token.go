@@ -24,6 +24,11 @@ import (
 const (
 	AccessTokenTTL  = 15 * time.Minute
 	RefreshTokenTTL = 7 * 24 * time.Hour
+	// RefreshReuseGrace is how long a just-rotated refresh token may be
+	// presented again without burning the family. Parallel BFF requests after
+	// access expiry all carry the same cookie; without this window the second
+	// rotation looks like theft and logs the user out.
+	RefreshReuseGrace = 30 * time.Second
 
 	refreshTokenBytes = 32 // 256 bits of entropy, base64url encoded
 )

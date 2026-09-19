@@ -272,11 +272,8 @@ func mustCreateUser(t *testing.T, ctx context.Context, repo *Repository, phone s
 
 // TestIntegration_RefreshRotation_ReuseDetectionRevokesFamily is the test
 // AGENT-BRIEF calls for: "refresh rotation including the reuse-detection
-// path". A stolen refresh token replayed after it has already been rotated
-// must not just fail itself -- it must burn the entire session lineage,
-// including the token that legitimately replaced it, which is what makes
-// this the standard defence against refresh-token theft rather than a
-// half-measure.
+// path". Immediate replay (two BFF requests racing) must not look like theft.
+// A replay after the grace window must burn the entire session lineage.
 func TestIntegration_RefreshRotation_ReuseDetectionRevokesFamily(t *testing.T) {
 	ctx := context.Background()
 	pool := setupTestPool(t)
@@ -301,20 +298,36 @@ func TestIntegration_RefreshRotation_ReuseDetectionRevokesFamily(t *testing.T) {
 		t.Fatalf("rotated session user = %v, want %v", session2.User.ID, u.ID)
 	}
 
-	// Replay attack: token 1 is presented again after it was already
-	// rotated away. This must be detected as reuse, not merely rejected as
-	// "already used".
-	_, err = svc.Refresh(ctx, session1.RefreshToken, "device-A")
-	if !errors.Is(err, ErrRefreshReused) {
-		t.Fatalf("replaying token 1: got err=%v, want ErrRefreshReused", err)
+	// Immediate replay is how two BFF requests race after access expiry.
+	// That must mint a sibling, not burn the family the first rotation just
+	// issued.
+	if _, err = svc.Refresh(ctx, session1.RefreshToken, "device-A"); err != nil {
+		t.Fatalf("replaying token 1 within grace: got err=%v, want a sibling session", err)
+	}
+	if _, err = svc.Refresh(ctx, session2.RefreshToken, "device-A"); err != nil {
+		t.Fatalf("token 2 must stay live after a grace replay: %v", err)
 	}
 
-	// The legitimate, currently-active token from the same family must also
-	// now be dead: reuse detection revokes the whole lineage, not just the
-	// replayed token.
-	_, err = svc.Refresh(ctx, session2.RefreshToken, "device-A")
+	// A replay after the grace window is theft: burn the lineage.
+	session4, err := svc.issueSession(ctx, *u, "device-B", uuid.New())
+	if err != nil {
+		t.Fatalf("issueSession B: %v", err)
+	}
+	session5, err := svc.Refresh(ctx, session4.RefreshToken, "device-B")
+	if err != nil {
+		t.Fatalf("first refresh on family B: %v", err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = NOW() - interval '2 minutes' WHERE token_hash = $1`, HashRefreshToken(session4.RefreshToken))
+	if err != nil {
+		t.Fatalf("backdate revoked_at: %v", err)
+	}
+	_, err = svc.Refresh(ctx, session4.RefreshToken, "device-B")
+	if !errors.Is(err, ErrRefreshReused) {
+		t.Fatalf("replaying token 4 after grace: got err=%v, want ErrRefreshReused", err)
+	}
+	_, err = svc.Refresh(ctx, session5.RefreshToken, "device-B")
 	if !errors.Is(err, ErrRefreshReused) && !errors.Is(err, ErrRefreshInvalid) {
-		t.Fatalf("token 2 (legitimate descendant of the compromised family) after reuse detection: got err=%v, want it revoked", err)
+		t.Fatalf("token 5 after reuse detection: got err=%v, want it revoked", err)
 	}
 }
 

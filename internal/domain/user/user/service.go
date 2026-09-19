@@ -810,7 +810,7 @@ func (s *Service) Refresh(ctx context.Context, rawToken, deviceID string) (AuthR
 			return err
 		}
 
-		if rt.RevokedAt != nil {
+		if rt.RevokedAt != nil && !recentlyRotated(rt) {
 			if _, revErr := s.repo.RevokeFamily(ctx, tx, rt.FamilyID); revErr != nil {
 				return revErr
 			}
@@ -818,7 +818,7 @@ func (s *Service) Refresh(ctx context.Context, rawToken, deviceID string) (AuthR
 			outcome = ErrRefreshReused
 			return nil
 		}
-		if time.Now().UTC().After(rt.ExpiresAt) {
+		if rt.RevokedAt == nil && time.Now().UTC().After(rt.ExpiresAt) {
 			if revErr := s.repo.RevokeRefreshToken(ctx, tx, rt.ID, nil); revErr != nil {
 				return revErr
 			}
@@ -885,6 +885,10 @@ func (s *Service) Refresh(ctx context.Context, rawToken, deviceID string) (AuthR
 		return AuthResult{}, outcome
 	}
 	return result, nil
+}
+
+func recentlyRotated(rt *RefreshToken) bool {
+	return rt.RevokedAt != nil && rt.ReplacedBy != nil && time.Since(*rt.RevokedAt) < RefreshReuseGrace
 }
 
 // Logout revokes exactly the presented session. It is idempotent: revoking a
