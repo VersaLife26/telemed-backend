@@ -363,6 +363,25 @@ func (p *Provider) Refund(ctx context.Context, req payment.RefundRequest) (payme
 	}, nil
 }
 
+// Capture charges previously authorized funds on Stripe.
+func (p *Provider) Capture(ctx context.Context, req payment.CaptureRequest) (payment.CaptureResult, error) {
+	if req.ProviderIntentID == "" {
+		return payment.CaptureResult{}, fmt.Errorf("%w: no Stripe intent recorded for capture", payment.ErrProviderRejected)
+	}
+	params := &stripe.PaymentIntentCaptureParams{
+		AmountToCapture: stripe.Int64(req.AmountCents),
+	}
+	params.IdempotencyKey = stripe.String(req.IdempotencyKey)
+	pi, err := p.client.V1PaymentIntents.Capture(ctx, req.ProviderIntentID, params)
+	if err != nil {
+		return payment.CaptureResult{}, classify(err, "capture payment intent")
+	}
+	return payment.CaptureResult{
+		ProviderPaymentID: pi.ID,
+		Status:            "succeeded",
+	}, nil
+}
+
 // mapRefundReason narrows our richer set of reasons onto the three Stripe
 // accepts. Our own reason is preserved in the metadata, so nothing is lost.
 func mapRefundReason(r payment.RefundReason) string {

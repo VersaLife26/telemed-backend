@@ -35,6 +35,7 @@ const (
 	StatusPending           Status = "pending"
 	StatusRequiresAction    Status = "requires_action" // 3DS or redirect pending
 	StatusRequiresPIN       Status = "requires_pin"    // Dialog carrier billing, PIN sent
+	StatusAuthorized        Status = "authorized"      // Funds held on card, awaiting consultation
 	StatusSucceeded         Status = "succeeded"
 	StatusFailed            Status = "failed"
 	StatusPartiallyRefunded Status = "partially_refunded"
@@ -142,6 +143,12 @@ type Payment struct {
 	IdempotencyKey string     `json:"-"`
 	PayoutID       *uuid.UUID `json:"payout_id,omitempty"`
 	FailureReason  string     `json:"failure_reason,omitempty"`
+
+	AuthorizedAt        *time.Time `json:"authorized_at,omitempty"`
+	ConsultationEndedAt *time.Time `json:"consultation_ended_at,omitempty"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	ScheduledStartAt    *time.Time `json:"scheduled_start_at,omitempty"`
+	AuthorizationToken  string     `json:"authorization_token,omitempty"`
 
 	SucceededAt *time.Time `json:"succeeded_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`

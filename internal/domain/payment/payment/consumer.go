@@ -52,6 +52,8 @@ func subjects() []events.Subject {
 	return []events.Subject{
 		events.SubjectAppointmentCreated,
 		events.SubjectAppointmentCancelled,
+		events.SubjectConsultationEnded,
+		events.SubjectAppointmentCompleted,
 		// Administrator commands. This service owns money, so it is the only
 		// place that can carry them out.
 		events.SubjectAdminRefundApproved,
@@ -109,6 +111,36 @@ func (c *Consumer) handle(ctx context.Context, env events.Envelope) error {
 		if err := c.svc.OnAppointmentCancelled(ctx, payload); err != nil {
 			if isPermanent(err) {
 				log.Error().Err(err).Msg("dropping unprocessable appointment.cancelled")
+				return nil
+			}
+			return err
+		}
+		return nil
+
+	case events.SubjectConsultationEnded:
+		var payload events.ConsultationEnded
+		if err := env.Decode(&payload); err != nil {
+			log.Error().Err(err).Msg("dropping undecodable consultation.ended")
+			return nil
+		}
+		if err := c.svc.OnConsultationEnded(ctx, payload); err != nil {
+			if isPermanent(err) {
+				log.Error().Err(err).Msg("dropping unprocessable consultation.ended")
+				return nil
+			}
+			return err
+		}
+		return nil
+
+	case events.SubjectAppointmentCompleted:
+		var payload events.AppointmentTerminal
+		if err := env.Decode(&payload); err != nil {
+			log.Error().Err(err).Msg("dropping undecodable appointment.completed")
+			return nil
+		}
+		if err := c.svc.OnAppointmentCompleted(ctx, payload); err != nil {
+			if isPermanent(err) {
+				log.Error().Err(err).Msg("dropping unprocessable appointment.completed")
 				return nil
 			}
 			return err

@@ -28,6 +28,7 @@ const paymentColumns = `
 	refunded_commission_cents, refunded_payout_cents,
 	commission_rule_id, commission_rule_key, commission_rule_ver,
 	idempotency_key, payout_id, failure_reason, succeeded_at,
+	authorized_at, consultation_ended_at, completed_at, scheduled_start_at, authorization_token,
 	created_at, updated_at, deleted_at, version`
 
 const payoutColumns = `
@@ -84,6 +85,7 @@ func scanPayment(row rowScanner) (Payment, error) {
 		&p.RefundedCommissionCents, &p.RefundedPayoutCents,
 		&ruleID, &p.CommissionRuleKey, &p.CommissionRuleVer,
 		&p.IdempotencyKey, &payoutID, &p.FailureReason, &p.SucceededAt,
+		&p.AuthorizedAt, &p.ConsultationEndedAt, &p.CompletedAt, &p.ScheduledStartAt, &p.AuthorizationToken,
 		&p.CreatedAt, &p.UpdatedAt, &p.DeletedAt, &p.Version,
 	); err != nil {
 		return Payment{}, err
@@ -478,8 +480,9 @@ func (t *txRepo) InsertPayment(ctx context.Context, p *Payment) error {
 			commission_cents, provider_fee_cents, doctor_payout_cents, refunded_cents,
 			refunded_commission_cents, refunded_payout_cents,
 			commission_rule_id, commission_rule_key, commission_rule_ver,
-			idempotency_key, failure_reason, succeeded_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+			idempotency_key, failure_reason, succeeded_at,
+			authorized_at, consultation_ended_at, completed_at, scheduled_start_at, authorization_token
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
 		RETURNING created_at, updated_at, version`
 	err := t.tx.QueryRow(ctx, q,
 		p.ID, p.AppointmentID, p.PatientID, p.DoctorID, p.Specialty, p.CorporateClient,
@@ -489,6 +492,7 @@ func (t *txRepo) InsertPayment(ctx context.Context, p *Payment) error {
 		p.RefundedCommissionCents, p.RefundedPayoutCents,
 		toPgUUID(p.CommissionRuleID), p.CommissionRuleKey, p.CommissionRuleVer,
 		p.IdempotencyKey, p.FailureReason, p.SucceededAt,
+		p.AuthorizedAt, p.ConsultationEndedAt, p.CompletedAt, p.ScheduledStartAt, p.AuthorizationToken,
 	).Scan(&p.CreatedAt, &p.UpdatedAt, &p.Version)
 	if err != nil {
 		if database.IsUniqueViolation(err) {
@@ -533,6 +537,7 @@ func (t *txRepo) UpdatePayment(ctx context.Context, p *Payment) error {
 			commission_rule_id = $12, commission_rule_key = $13, commission_rule_ver = $14,
 			payout_id = $15, failure_reason = $16, succeeded_at = $17,
 			amount_cents = $19, discount_cents = $20, promo_code = $21,
+			authorized_at = $22, consultation_ended_at = $23, completed_at = $24, authorization_token = $25,
 			version = version + 1
 		WHERE id = $1 AND version = $18 AND deleted_at IS NULL
 		RETURNING version, updated_at`
@@ -548,6 +553,7 @@ func (t *txRepo) UpdatePayment(ctx context.Context, p *Payment) error {
 		toPgUUID(p.CommissionRuleID), p.CommissionRuleKey, p.CommissionRuleVer,
 		toPgUUID(p.PayoutID), p.FailureReason, p.SucceededAt, p.Version,
 		p.AmountCents, p.DiscountCents, p.PromoCode,
+		p.AuthorizedAt, p.ConsultationEndedAt, p.CompletedAt, p.AuthorizationToken,
 	).Scan(&p.Version, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: payment %s at version %d", ErrVersionConflict, p.ID, p.Version)

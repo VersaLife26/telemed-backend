@@ -40,6 +40,7 @@ type testProvider struct {
 	intentCalls int
 	refundCalls int
 	payoutCalls int
+	lastReq     IntentRequest
 	transfers   map[string]string // idempotency key -> transfer id
 }
 
@@ -55,10 +56,11 @@ func newTestProvider(name ProviderName) *testProvider {
 
 func (p *testProvider) Name() string { return string(p.name) }
 
-func (p *testProvider) CreateIntent(context.Context, IntentRequest) (IntentResult, error) {
+func (p *testProvider) CreateIntent(_ context.Context, req IntentRequest) (IntentResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.intentCalls++
+	p.lastReq = req
 	if p.intentErr != nil {
 		return IntentResult{}, p.intentErr
 	}
@@ -82,6 +84,15 @@ func (p *testProvider) Refund(context.Context, RefundRequest) (RefundResult, err
 		return RefundResult{}, p.refundErr
 	}
 	return p.refundResult, nil
+}
+
+func (p *testProvider) Capture(context.Context, CaptureRequest) (CaptureResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return CaptureResult{
+		ProviderPaymentID: "capt_test",
+		Status:            "succeeded",
+	}, nil
 }
 
 func (p *testProvider) Payout(_ context.Context, req PayoutRequest) (PayoutResult, error) {
@@ -695,6 +706,70 @@ func TestCreateIntentFreezesTheCommissionRule(t *testing.T) {
 	assert.True(t, view.Payment.SplitBalances())
 }
 
+func TestCreateIntentPayHereAuthorizeWindow(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	payhereRail := newTestProvider(ProviderPayHere)
+	h.svc.providers.Register(payhereRail)
+
+	ctx := context.Background()
+
+	// Case 1: Appointment in 2 days (<= 6 days) -> AuthorizeOnly is true
+	inTwoDays := h.now.Add(48 * time.Hour)
+	p1 := Payment{
+		ID:               uuid.New(),
+		AppointmentID:    uuid.New(),
+		PatientID:        uuid.New(),
+		DoctorID:         uuid.New(),
+		AmountCents:      150000,
+		GrossAmountCents: 150000,
+		Currency:         "LKR",
+		Provider:         ProviderPayHere,
+		Status:           StatusPending,
+		ScheduledStartAt: &inTwoDays,
+		IdempotencyKey:   "appt:1",
+	}
+	require.NoError(t, h.store.InTx(ctx, func(_ context.Context, tx Tx) error {
+		return tx.InsertPayment(ctx, &p1)
+	}))
+
+	_, err := h.svc.CreateIntent(ctx, CreateIntentInput{
+		AppointmentID: p1.AppointmentID,
+		CallerID:      p1.PatientID,
+		Provider:      ProviderPayHere,
+	})
+	require.NoError(t, err)
+	assert.True(t, payhereRail.lastReq.AuthorizeOnly, "appointment within 6 days must use AuthorizeOnly")
+
+	// Case 2: Appointment in 10 days (> 6 days) -> AuthorizeOnly is false
+	inTenDays := h.now.Add(10 * 24 * time.Hour)
+	p2 := Payment{
+		ID:               uuid.New(),
+		AppointmentID:    uuid.New(),
+		PatientID:        uuid.New(),
+		DoctorID:         uuid.New(),
+		AmountCents:      150000,
+		GrossAmountCents: 150000,
+		Currency:         "LKR",
+		Provider:         ProviderPayHere,
+		Status:           StatusPending,
+		ScheduledStartAt: &inTenDays,
+		IdempotencyKey:   "appt:2",
+	}
+	require.NoError(t, h.store.InTx(ctx, func(_ context.Context, tx Tx) error {
+		return tx.InsertPayment(ctx, &p2)
+	}))
+
+	_, err = h.svc.CreateIntent(ctx, CreateIntentInput{
+		AppointmentID: p2.AppointmentID,
+		CallerID:      p2.PatientID,
+		Provider:      ProviderPayHere,
+	})
+	require.NoError(t, err)
+	assert.False(t, payhereRail.lastReq.AuthorizeOnly, "appointment > 6 days must NOT use AuthorizeOnly")
+}
+
 func TestGetPaymentAuthorization(t *testing.T) {
 	t.Parallel()
 
@@ -917,4 +992,131 @@ func (h *harness) refundCount(t *testing.T, paymentID uuid.UUID) int {
 		}
 	}
 	return n
+}
+
+func TestWebhookAuthorizesPayment(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	p := h.pendingPayment(t, 250000)
+	evt := WebhookEvent{
+		EventID:            "evt_auth_1",
+		Type:               "payhere.notify.3",
+		Outcome:            OutcomePaymentAuthorized,
+		ProviderIntentID:   p.ProviderIntentID,
+		AuthorizationToken: "auth_token_xyz",
+		AmountCents:        250000,
+		Currency:           "LKR",
+		Raw:                []byte(`{"id":"evt_auth_1"}`),
+	}
+	h.provider.setEvent(evt)
+
+	ctx := context.Background()
+	_, err := h.svc.HandleWebhook(ctx, ProviderMock, http.Header{}, evt.Raw)
+	require.NoError(t, err)
+
+	after, err := h.store.GetPayment(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusAuthorized, after.Status)
+	assert.NotNil(t, after.AuthorizedAt)
+	assert.Equal(t, "auth_token_xyz", after.AuthorizationToken)
+	assert.Equal(t, 1, h.store.outboxCount(events.SubjectPaymentAuthorized))
+}
+
+func TestCaptureAfterConsultationEndedAndAppointmentCompleted(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	p := h.pendingPayment(t, 300000)
+
+	// Step 1: Place payment on hold (authorized)
+	evt := WebhookEvent{
+		EventID:            "evt_auth_capture",
+		Type:               "payhere.notify.3",
+		Outcome:            OutcomePaymentAuthorized,
+		ProviderIntentID:   p.ProviderIntentID,
+		AuthorizationToken: "tok_capture_123",
+		AmountCents:        300000,
+		Currency:           "LKR",
+		Raw:                []byte(`{"id":"evt_auth_capture"}`),
+	}
+	h.provider.setEvent(evt)
+
+	ctx := context.Background()
+	_, err := h.svc.HandleWebhook(ctx, ProviderMock, http.Header{}, evt.Raw)
+	require.NoError(t, err)
+
+	// Step 2: consultation.ended arrives
+	err = h.svc.OnConsultationEnded(ctx, events.ConsultationEnded{
+		ConsultationID: uuid.New(),
+		AppointmentID:  p.AppointmentID,
+		PatientID:      p.PatientID,
+		DoctorID:       p.DoctorID,
+	})
+	require.NoError(t, err)
+
+	// Payment should STILL be in StatusAuthorized (waiting for doctor to mark completed)
+	mid, err := h.store.GetPayment(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusAuthorized, mid.Status)
+	assert.NotNil(t, mid.ConsultationEndedAt)
+	assert.Nil(t, mid.CompletedAt)
+	assert.Zero(t, h.store.ledgerGroups(EntryPaymentCaptured))
+
+	// Step 3: appointment.completed arrives
+	err = h.svc.OnAppointmentCompleted(ctx, events.AppointmentTerminal{
+		AppointmentID: p.AppointmentID,
+		PatientID:     p.PatientID,
+		DoctorID:      p.DoctorID,
+		OccurredAt:    time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	// Payment must now be captured and settled!
+	finalP, err := h.store.GetPayment(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusSucceeded, finalP.Status)
+	assert.NotNil(t, finalP.SucceededAt)
+	assert.NotNil(t, finalP.CompletedAt)
+	assert.Equal(t, 1, h.store.ledgerGroups(EntryPaymentCaptured))
+	assert.Equal(t, 1, h.store.outboxCount(events.SubjectPaymentSucceeded))
+}
+
+func TestAppointmentCancelledReleasesAuthorizedHoldWithoutRefund(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	p := h.pendingPayment(t, 400000)
+
+	// Authorize payment
+	evt := WebhookEvent{
+		EventID:            "evt_auth_cancel",
+		Type:               "payhere.notify.3",
+		Outcome:            OutcomePaymentAuthorized,
+		ProviderIntentID:   p.ProviderIntentID,
+		AuthorizationToken: "tok_to_cancel",
+		AmountCents:        400000,
+		Currency:           "LKR",
+		Raw:                []byte(`{"id":"evt_auth_cancel"}`),
+	}
+	h.provider.setEvent(evt)
+
+	ctx := context.Background()
+	_, err := h.svc.HandleWebhook(ctx, ProviderMock, http.Header{}, evt.Raw)
+	require.NoError(t, err)
+
+	// Patient/Doctor cancels
+	err = h.svc.OnAppointmentCancelled(ctx, events.AppointmentCancelled{
+		AppointmentID: p.AppointmentID,
+		CancelledBy:   "patient",
+		CancelledAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	after, err := h.store.GetPayment(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusFailed, after.Status)
+	assert.Equal(t, "cancelled before capture", after.FailureReason)
+	// Zero refunds created because funds were never captured
+	assert.Equal(t, 0, h.refundCount(t, p.ID))
 }

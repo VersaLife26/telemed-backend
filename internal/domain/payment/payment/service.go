@@ -202,16 +202,27 @@ func (s *Service) CreateIntent(ctx context.Context, in CreateIntentInput) (Inten
 	// this call presents the same key and the rail returns the same intent
 	// instead of creating a second one.
 	req := IntentRequest{
-		PaymentID:      existing.ID,
-		AppointmentID:  existing.AppointmentID,
-		PatientID:      existing.PatientID,
-		DoctorID:       existing.DoctorID,
-		AmountCents:    existing.AmountCents,
-		Currency:       existing.Currency,
-		IdempotencyKey: existing.IdempotencyKey,
-		Description:    "Telemedicine consultation " + existing.AppointmentID.String(),
-		PatientPhone:   in.PatientPhone,
-		ReturnURL:      in.ReturnURL,
+		PaymentID:        existing.ID,
+		AppointmentID:    existing.AppointmentID,
+		PatientID:        existing.PatientID,
+		DoctorID:         existing.DoctorID,
+		AmountCents:      existing.AmountCents,
+		Currency:         existing.Currency,
+		IdempotencyKey:   existing.IdempotencyKey,
+		Description:      "Telemedicine consultation " + existing.AppointmentID.String(),
+		PatientPhone:     in.PatientPhone,
+		ReturnURL:        in.ReturnURL,
+		ScheduledStartAt: existing.ScheduledStartAt,
+	}
+
+	// For PayHere, place a hold on the card (Authorize) if the appointment
+	// is scheduled within the 6-day hold safety window (PayHere card holds expire in 7 days).
+	// If scheduled > 6 days away, fall back to immediate checkout.
+	if provider == ProviderPayHere && existing.ScheduledStartAt != nil {
+		diff := existing.ScheduledStartAt.Sub(s.now().UTC())
+		if diff <= 6*24*time.Hour && diff >= 0 {
+			req.AuthorizeOnly = true
+		}
 	}
 
 	res, err := rail.CreateIntent(ctx, req)
@@ -1077,6 +1088,30 @@ func (s *Service) applyWebhook(ctx context.Context, tx Tx, providerName Provider
 	}
 
 	switch evt.Outcome {
+	case OutcomePaymentAuthorized:
+		if p.Status.Settled() || p.Status == StatusAuthorized {
+			return &p.ID, "payment already authorized or settled", nil
+		}
+		if err := checkReportedAmount(p, evt); err != nil {
+			return nil, "", err
+		}
+		now := s.now().UTC()
+		p.Status = StatusAuthorized
+		p.AuthorizedAt = &now
+		if evt.AuthorizationToken != "" {
+			p.AuthorizationToken = evt.AuthorizationToken
+		}
+		if p.ProviderReference == "" && evt.AuthorizationToken != "" {
+			p.ProviderReference = evt.AuthorizationToken
+		}
+		if err := tx.UpdatePayment(ctx, &p); err != nil {
+			return nil, "", err
+		}
+		if err := tx.Enqueue(ctx, events.SubjectPaymentAuthorized, p.ID.String(), s.paymentEvent(p)); err != nil {
+			return nil, "", err
+		}
+		return &p.ID, "", nil
+
 	case OutcomePaymentSucceeded:
 		if p.Status.Settled() {
 			return &p.ID, "payment already settled", nil
@@ -1248,23 +1283,30 @@ func (s *Service) OnAppointmentCreated(ctx context.Context, payload events.Appoi
 		currency = s.cfg.Currency
 	}
 
+	var startAt *time.Time
+	if !payload.StartAt.IsZero() {
+		t := payload.StartAt.UTC()
+		startAt = &t
+	}
+
 	p := Payment{
-		ID:              uuid.New(),
-		AppointmentID:   payload.AppointmentID,
-		PatientID:       payload.PatientID,
-		DoctorID:        payload.DoctorID,
-		Specialty:       payload.Specialty,
-		CorporateClient: payload.CorporateClient,
-		AmountCents:     payload.AmountCents,
+		ID:               uuid.New(),
+		AppointmentID:    payload.AppointmentID,
+		PatientID:        payload.PatientID,
+		DoctorID:         payload.DoctorID,
+		Specialty:        payload.Specialty,
+		CorporateClient:  payload.CorporateClient,
+		AmountCents:      payload.AmountCents,
 		// No promotion has been applied yet, so gross == charged. ApplyPromo
 		// is the only thing that ever moves them apart.
 		GrossAmountCents: payload.AmountCents,
 		Currency:         currency,
 		Provider:         s.cfg.DefaultProvider,
 		Status:           StatusPending,
+		ScheduledStartAt: startAt,
 		// Deterministic from the appointment, so a redelivery of the event
 		// collides on the unique index instead of creating a second payment.
-		IdempotencyKey: "appointment:" + payload.AppointmentID.String(),
+		IdempotencyKey:   "appointment:" + payload.AppointmentID.String(),
 	}
 
 	err := s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {
@@ -1297,6 +1339,20 @@ func (s *Service) OnAppointmentCancelled(ctx context.Context, payload events.App
 		return err
 	}
 	if !p.Status.Settled() || p.RefundableCents() == 0 {
+		if p.Status == StatusAuthorized {
+			return s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {
+				locked, err := tx.LockPayment(ctx, p.ID)
+				if err != nil {
+					return err
+				}
+				locked.Status = StatusFailed
+				locked.FailureReason = "cancelled before capture"
+				if err := tx.UpdatePayment(ctx, &locked); err != nil {
+					return err
+				}
+				return releasePromoFor(ctx, tx, p.ID, ReleaseCancelled, s.now().UTC())
+			})
+		}
 		// Nothing to refund, but an unpaid payment may still be holding a
 		// promo code the patient should get back.
 		if !p.Status.Settled() {
@@ -1434,4 +1490,130 @@ func (s *Service) PaymentForAppointment(ctx context.Context, appointmentID, call
 		return Payment{}, ErrForbidden
 	}
 	return p, nil
+}
+
+// OnConsultationEnded handles consultation.ended event.
+// If the appointment was already marked completed by the doctor, any pre-authorized
+// payment is now captured.
+func (s *Service) OnConsultationEnded(ctx context.Context, payload events.ConsultationEnded) error {
+	p, err := s.store.GetPaymentByAppointment(ctx, payload.AppointmentID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if p.Status != StatusAuthorized {
+		return nil
+	}
+
+	now := s.now().UTC()
+	var shouldCapture bool
+	err = s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {
+		locked, err := tx.LockPayment(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if locked.Status != StatusAuthorized {
+			return nil
+		}
+		locked.ConsultationEndedAt = &now
+		if locked.CompletedAt != nil {
+			locked.Status = StatusPending
+			shouldCapture = true
+		}
+		p = locked
+		return tx.UpdatePayment(ctx, &locked)
+	})
+	if err != nil || !shouldCapture {
+		return err
+	}
+	return s.captureAuthorizedPayment(ctx, &p)
+}
+
+// OnAppointmentCompleted handles appointment.completed event.
+// If the consultation was already ended, any pre-authorized payment is now captured.
+func (s *Service) OnAppointmentCompleted(ctx context.Context, payload events.AppointmentTerminal) error {
+	p, err := s.store.GetPaymentByAppointment(ctx, payload.AppointmentID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if p.Status != StatusAuthorized {
+		return nil
+	}
+
+	now := s.now().UTC()
+	var shouldCapture bool
+	err = s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {
+		locked, err := tx.LockPayment(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if locked.Status != StatusAuthorized {
+			return nil
+		}
+		locked.CompletedAt = &now
+		if locked.ConsultationEndedAt != nil {
+			locked.Status = StatusPending
+			shouldCapture = true
+		}
+		p = locked
+		return tx.UpdatePayment(ctx, &locked)
+	})
+	if err != nil || !shouldCapture {
+		return err
+	}
+	return s.captureAuthorizedPayment(ctx, &p)
+}
+
+// captureAuthorizedPayment executes the provider's Capture API and settles the payment into the ledger.
+func (s *Service) captureAuthorizedPayment(ctx context.Context, p *Payment) error {
+	rail, err := s.providers.Get(p.Provider)
+	if err != nil {
+		return err
+	}
+
+	req := CaptureRequest{
+		PaymentID:          p.ID,
+		ProviderIntentID:   p.ProviderIntentID,
+		AuthorizationToken: p.AuthorizationToken,
+		AmountCents:        p.AmountCents,
+		Currency:           p.Currency,
+		Description:        "Consultation completed for appointment " + p.AppointmentID.String(),
+		IdempotencyKey:     "capture:" + p.ID.String(),
+	}
+
+	res, err := rail.Capture(ctx, req)
+	if err != nil {
+		s.log.Error().Err(err).
+			Str("payment_id", p.ID.String()).
+			Str("provider", string(p.Provider)).
+			Msg("failed to capture authorized payment")
+		_ = s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {
+			locked, lerr := tx.LockPayment(ctx, p.ID)
+			if lerr == nil {
+				locked.FailureReason = err.Error()
+				_ = tx.UpdatePayment(ctx, &locked)
+			}
+			return nil
+		})
+		return fmt.Errorf("capture authorized payment: %w", err)
+	}
+
+	return s.store.InTx(ctx, func(ctx context.Context, tx Tx) error {
+		locked, err := tx.LockPayment(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if locked.Status.Settled() {
+			return nil
+		}
+		if res.ProviderPaymentID != "" {
+			locked.ProviderIntentID = res.ProviderPaymentID
+		}
+		return s.applyCapture(ctx, tx, &locked, res.ProviderFeeCents)
+	})
 }

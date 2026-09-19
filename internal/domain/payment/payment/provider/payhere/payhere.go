@@ -83,6 +83,7 @@ var _ payment.PaymentProvider = (*Provider)(nil)
 
 // PayHere status codes, from the 2.0 notify specification.
 const (
+	statusAuthorized  = "3"
 	statusSuccess     = "2"
 	statusPending     = "0"
 	statusCancelled   = "-1"
@@ -310,9 +311,14 @@ func (p *Provider) CreateIntent(_ context.Context, req payment.IntentRequest) (p
 		return payment.IntentResult{}, fmt.Errorf("payhere: encode checkout payload: %w", err)
 	}
 
+	redirectPath := "/pay/checkout"
+	if req.AuthorizeOnly {
+		redirectPath = "/pay/authorize"
+	}
+
 	return payment.IntentResult{
 		ProviderIntentID: orderID,
-		RedirectURL:      p.cfg.BaseURL + "/pay/checkout",
+		RedirectURL:      p.cfg.BaseURL + redirectPath,
 		Reference:        string(encoded),
 		Status:           payment.IntentRequiresAction,
 	}, nil
@@ -396,6 +402,9 @@ func (p *Provider) VerifyWebhook(_ context.Context, headers http.Header, body []
 	}
 
 	switch statusCode {
+	case statusAuthorized:
+		out.Outcome = payment.OutcomePaymentAuthorized
+		out.AuthorizationToken = strings.TrimSpace(form.Get("authorization_token"))
 	case statusSuccess:
 		out.Outcome = payment.OutcomePaymentSucceeded
 	case statusPending:
@@ -564,6 +573,86 @@ func (p *Provider) Refund(ctx context.Context, req payment.RefundRequest) (payme
 	return payment.RefundResult{
 		ProviderRefundID: firstNonEmpty(rr.Data.PaymentID.String(), req.ProviderIntentID),
 		Status:           payment.RefundSucceeded,
+	}, nil
+}
+
+type captureRequestBody struct {
+	AuthorizationToken string  `json:"authorization_token"`
+	Amount             float64 `json:"amount"`
+	DeductionDetails   string  `json:"deduction_details"`
+}
+
+type captureResponse struct {
+	Status int    `json:"status"`
+	Msg    string `json:"msg"`
+	Data   struct {
+		StatusCode     int         `json:"status_code"`
+		StatusMessage  string      `json:"status_message"`
+		PaymentID      json.Number `json:"payment_id"`
+		Currency       string      `json:"currency"`
+		Amount         float64     `json:"amount"`
+		CapturedAmount float64     `json:"captured_amount"`
+		Items          string      `json:"items"`
+		OrderID        string      `json:"order_id"`
+	} `json:"data"`
+}
+
+// Capture charges previously authorized funds via the PayHere Capture REST API.
+func (p *Provider) Capture(ctx context.Context, req payment.CaptureRequest) (payment.CaptureResult, error) {
+	if req.AuthorizationToken == "" {
+		return payment.CaptureResult{}, fmt.Errorf("%w: authorization token is required for capture", payment.ErrProviderRejected)
+	}
+	token, err := p.accessToken(ctx)
+	if err != nil {
+		return payment.CaptureResult{}, err
+	}
+
+	amountFloat := float64(req.AmountCents) / 100.0
+	body, err := json.Marshal(captureRequestBody{
+		AuthorizationToken: req.AuthorizationToken,
+		Amount:             amountFloat,
+		DeductionDetails:   firstNonEmpty(req.Description, "Telemedicine consultation completed"),
+	})
+	if err != nil {
+		return payment.CaptureResult{}, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		p.cfg.BaseURL+"/merchant/v1/payment/capture", bytes.NewReader(body))
+	if err != nil {
+		return payment.CaptureResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return payment.CaptureResult{}, fmt.Errorf("%w: payhere capture: %w", payment.ErrProviderUnavailable, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+
+	if resp.StatusCode >= 500 {
+		return payment.CaptureResult{}, fmt.Errorf("%w: payhere capture returned %d", payment.ErrProviderUnavailable, resp.StatusCode)
+	}
+	var cr captureResponse
+	if err := json.Unmarshal(raw, &cr); err != nil {
+		return payment.CaptureResult{}, fmt.Errorf("%w: payhere capture response unusable", payment.ErrProviderUnavailable)
+	}
+	if resp.StatusCode != http.StatusOK || cr.Status != 1 || cr.Data.StatusCode != 2 {
+		msg := cr.Msg
+		if cr.Data.StatusMessage != "" {
+			msg = cr.Data.StatusMessage
+		}
+		return payment.CaptureResult{
+			Status:        "failed",
+			FailureReason: msg,
+		}, fmt.Errorf("%w: payhere capture: %s", payment.ErrProviderRejected, msg)
+	}
+
+	return payment.CaptureResult{
+		ProviderPaymentID: cr.Data.PaymentID.String(),
+		Status:            "succeeded",
 	}, nil
 }
 

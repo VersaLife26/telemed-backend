@@ -69,10 +69,11 @@ const (
 
 	SubjectWaitlistSlotOffer Subject = "waitlist.slot_offered"
 
-	SubjectPaymentSucceeded Subject = "payment.succeeded"
-	SubjectPaymentFailed    Subject = "payment.failed"
-	SubjectPaymentRefunded  Subject = "payment.refunded"
-	SubjectPayoutSent       Subject = "payout.sent"
+	SubjectPaymentAuthorized Subject = "payment.authorized"
+	SubjectPaymentSucceeded  Subject = "payment.succeeded"
+	SubjectPaymentFailed     Subject = "payment.failed"
+	SubjectPaymentRefunded   Subject = "payment.refunded"
+	SubjectPayoutSent        Subject = "payout.sent"
 
 	SubjectConsultationStarted Subject = "consultation.started"
 	SubjectConsultationEnded   Subject = "consultation.ended"
@@ -115,7 +116,7 @@ var AllSubjects = []Subject{
 	SubjectAppointmentCompleted, SubjectAppointmentNoShow, SubjectAppointmentReminder,
 	SubjectAppointmentRescheduleRequested, SubjectAppointmentRescheduled,
 	SubjectWaitlistSlotOffer,
-	SubjectPaymentSucceeded, SubjectPaymentFailed, SubjectPaymentRefunded, SubjectPayoutSent,
+	SubjectPaymentAuthorized, SubjectPaymentSucceeded, SubjectPaymentFailed, SubjectPaymentRefunded, SubjectPayoutSent,
 	SubjectConsultationStarted, SubjectConsultationEnded, SubjectConsultationDoctorRunningLate,
 	SubjectConsultationEarlyJoinOffered, SubjectConsultationPatientNoShow,
 	SubjectPrescriptionIssued,

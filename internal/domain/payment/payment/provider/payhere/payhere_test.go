@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -157,6 +158,7 @@ func TestPayHereStatusCodeMapping(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]payment.WebhookOutcome{
+		statusAuthorized:  payment.OutcomePaymentAuthorized,
 		statusSuccess:     payment.OutcomePaymentSucceeded,
 		statusPending:     payment.OutcomePaymentPending,
 		statusCancelled:   payment.OutcomePaymentFailed,
@@ -273,10 +275,109 @@ func TestPayHereCreateIntentSignsTheCheckout(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, payment.IntentRequiresAction, res.Status)
-	assert.Contains(t, res.RedirectURL, "payhere.lk")
+	assert.Contains(t, res.RedirectURL, "payhere.lk/pay/checkout")
 	assert.Contains(t, res.Reference, `"amount":"5000.00"`)
 	assert.Contains(t, res.Reference, `"merchant_id":"`+testMerchant+`"`)
 	assert.Contains(t, res.Reference, `"notify_url":"https://api.example.lk/webhooks/payhere"`)
+}
+
+func TestPayHereCreateIntentAuthorizeOnly(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider(t)
+	res, err := p.CreateIntent(context.Background(), payment.IntentRequest{
+		AmountCents:   500000,
+		Currency:      "LKR",
+		Description:   "Telemedicine consultation",
+		AuthorizeOnly: true,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, payment.IntentRequiresAction, res.Status)
+	assert.Contains(t, res.RedirectURL, "payhere.lk/pay/authorize")
+	assert.Contains(t, res.Reference, `"amount":"5000.00"`)
+}
+
+func TestPayHereVerifyWebhookAuthorized(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider(t)
+	orderID := "3f1a6b7c-0000-4000-8000-000000000042"
+	amount := "2500.00"
+	currency := "LKR"
+	token := "auth_tok_12345"
+
+	sig := NotifyHash(testMerchant, orderID, amount, currency, statusAuthorized, md5Upper([]byte(testSecret)))
+	form := url.Values{
+		"merchant_id":         {testMerchant},
+		"order_id":            {orderID},
+		"payment_id":          {"320027112345"},
+		"payhere_amount":      {amount},
+		"payhere_currency":    {currency},
+		"status_code":         {statusAuthorized},
+		"authorization_token": {token},
+		"md5sig":              {sig},
+	}
+
+	evt, err := p.VerifyWebhook(context.Background(), formHeader(), []byte(form.Encode()))
+	require.NoError(t, err)
+	assert.Equal(t, payment.OutcomePaymentAuthorized, evt.Outcome)
+	assert.Equal(t, token, evt.AuthorizationToken)
+	assert.Equal(t, int64(250000), evt.AmountCents)
+}
+
+func TestPayHereCaptureSuccess(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/merchant/v1/oauth/token":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "test_token",
+				"token_type":   "bearer",
+				"expires_in":   600,
+			})
+		case "/merchant/v1/payment/capture":
+			assert.Equal(t, "Bearer test_token", r.Header.Get("Authorization"))
+			var req map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			assert.Equal(t, "auth_tok_abc", req["authorization_token"])
+			assert.Equal(t, float64(25), req["amount"])
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": 1,
+				"msg":    "Successfully captured payment",
+				"data": map[string]any{
+					"status_code":    2,
+					"status_message": "Success",
+					"payment_id":     json.Number("320025527952"),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	p, err := New(Config{
+		MerchantID:     testMerchant,
+		MerchantSecret: testSecret,
+		AppID:          "app_123",
+		AppSecret:      "app_secret_456",
+		BaseURL:        server.URL,
+	})
+	require.NoError(t, err)
+
+	res, err := p.Capture(context.Background(), payment.CaptureRequest{
+		AuthorizationToken: "auth_tok_abc",
+		AmountCents:        2500,
+		Currency:           "LKR",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "succeeded", res.Status)
+	assert.Equal(t, "320025527952", res.ProviderPaymentID)
 }
 
 func TestPayHereRejectsZeroAmount(t *testing.T) {

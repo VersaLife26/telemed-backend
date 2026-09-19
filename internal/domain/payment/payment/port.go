@@ -106,6 +106,12 @@ type IntentRequest struct {
 	// cannot work without it. It is never logged unmasked.
 	PatientPhone string
 	ReturnURL    string
+	// AuthorizeOnly asks the provider to pre-authorize / hold funds rather than
+	// immediately charging. Supported by PayHere Hold on Card.
+	AuthorizeOnly bool
+	// ScheduledStartAt is the booked consultation time. Used to decide whether
+	// the hold window (e.g. PayHere's 7-day max) is safe.
+	ScheduledStartAt *time.Time
 }
 
 // IntentResult is what the provider gave back.
@@ -155,6 +161,9 @@ type WebhookEvent struct {
 	ProviderFeeCents int64
 	// ProviderRefundID correlates a refund.* event back to our refunds row.
 	ProviderRefundID string
+	// AuthorizationToken carries the token issued on a successful card hold
+	// (e.g. PayHere Hold on Card status_code 3).
+	AuthorizationToken string
 
 	OccurredAt time.Time
 	// Raw is the exact bytes received, stored for dispute evidence.
@@ -165,13 +174,14 @@ type WebhookEvent struct {
 type WebhookOutcome string
 
 const (
-	OutcomePaymentSucceeded WebhookOutcome = "payment_succeeded"
-	OutcomePaymentFailed    WebhookOutcome = "payment_failed"
-	OutcomePaymentPending   WebhookOutcome = "payment_pending"
-	OutcomeRefundSucceeded  WebhookOutcome = "refund_succeeded"
-	OutcomeRefundFailed     WebhookOutcome = "refund_failed"
-	OutcomePayoutPaid       WebhookOutcome = "payout_paid"
-	OutcomePayoutFailed     WebhookOutcome = "payout_failed"
+	OutcomePaymentAuthorized WebhookOutcome = "payment_authorized"
+	OutcomePaymentSucceeded  WebhookOutcome = "payment_succeeded"
+	OutcomePaymentFailed     WebhookOutcome = "payment_failed"
+	OutcomePaymentPending    WebhookOutcome = "payment_pending"
+	OutcomeRefundSucceeded   WebhookOutcome = "refund_succeeded"
+	OutcomeRefundFailed      WebhookOutcome = "refund_failed"
+	OutcomePayoutPaid        WebhookOutcome = "payout_paid"
+	OutcomePayoutFailed      WebhookOutcome = "payout_failed"
 	// OutcomeSetupSucceeded is a card-on-file setup the patient completed.
 	// It carries no payment: ProviderIntentID names the setup intent, and the
 	// vault resolves ownership from the metadata the rail echoes back.
@@ -180,6 +190,25 @@ const (
 	// rule for. It is recorded and acknowledged, never retried.
 	OutcomeIgnored WebhookOutcome = "ignored"
 )
+
+// CaptureRequest asks a provider to programmatically capture held funds.
+type CaptureRequest struct {
+	PaymentID          uuid.UUID
+	ProviderIntentID   string
+	AuthorizationToken string
+	AmountCents        int64
+	Currency           string
+	Description        string
+	IdempotencyKey     string
+}
+
+// CaptureResult is the provider's answer to a capture request.
+type CaptureResult struct {
+	ProviderPaymentID string
+	Status            string
+	ProviderFeeCents  int64
+	FailureReason     string
+}
 
 // RefundRequest asks a provider to return money.
 type RefundRequest struct {
@@ -236,6 +265,9 @@ type PaymentProvider interface {
 	// particular it never returns a partially parsed event alongside an error,
 	// because a caller that ignores the error would then act on unverified data.
 	VerifyWebhook(ctx context.Context, headers http.Header, body []byte) (WebhookEvent, error)
+
+	// Capture programmatically charges previously authorized/held funds.
+	Capture(ctx context.Context, req CaptureRequest) (CaptureResult, error)
 
 	// Refund returns money against a previously captured intent.
 	Refund(ctx context.Context, req RefundRequest) (RefundResult, error)

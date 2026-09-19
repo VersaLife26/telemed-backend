@@ -48,6 +48,7 @@ func (c *Consumers) Subjects() []events.Subject {
 		// Without it a doctor who changes their fee, specialty or status after
 		// approval is quoted at their approval-day price forever.
 		events.SubjectDoctorUpdated,
+		events.SubjectPaymentAuthorized,
 		events.SubjectPaymentSucceeded,
 		events.SubjectPaymentFailed,
 		// Administrator commands. This service owns the appointment lifecycle,
@@ -72,7 +73,7 @@ func (c *Consumers) Handle(ctx context.Context, env events.Envelope) error {
 		err = c.handleDoctorApproved(ctx, env)
 	case events.SubjectDoctorUpdated:
 		err = c.handleDoctorUpdated(ctx, env)
-	case events.SubjectPaymentSucceeded:
+	case events.SubjectPaymentAuthorized, events.SubjectPaymentSucceeded:
 		err = c.handlePaymentSucceeded(ctx, env)
 	case events.SubjectPaymentFailed:
 		err = c.handlePaymentFailed(ctx, env)

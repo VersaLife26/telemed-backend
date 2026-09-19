@@ -421,6 +421,11 @@ func (p *Provider) Refund(_ context.Context, _ payment.RefundRequest) (payment.R
 	return payment.RefundResult{}, fmt.Errorf("%w: Dialog carrier billing has no refund API; reverse it in the monthly Ideamart reconciliation", payment.ErrUnsupported)
 }
 
+// Capture is not available on Dialog: carrier billing debits upon PIN confirmation.
+func (p *Provider) Capture(_ context.Context, _ payment.CaptureRequest) (payment.CaptureResult, error) {
+	return payment.CaptureResult{}, fmt.Errorf("%w: Dialog carrier billing does not support two-step capture; billing settles upon PIN confirmation", payment.ErrUnsupported)
+}
+
 // Payout is not available: Ideamart bills subscribers, it does not pay
 // merchants' suppliers.
 func (p *Provider) Payout(_ context.Context, _ payment.PayoutRequest) (payment.PayoutResult, error) {

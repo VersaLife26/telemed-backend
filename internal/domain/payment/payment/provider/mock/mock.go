@@ -162,6 +162,18 @@ func (p *Provider) Refund(_ context.Context, req payment.RefundRequest) (payment
 	return res, nil
 }
 
+// Capture simulates capturing previously held funds.
+func (p *Provider) Capture(_ context.Context, req payment.CaptureRequest) (payment.CaptureResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fee := req.AmountCents * int64(p.cfg.FeeBps) / payment.BasisPointDenominator
+	return payment.CaptureResult{
+		ProviderPaymentID: "capt_mock_" + uuid.NewString(),
+		Status:            "succeeded",
+		ProviderFeeCents:  fee,
+	}, nil
+}
+
 // Payout records a transfer, honouring the idempotency key. This is what makes
 // the payout re-run test meaningful: a second call with the same key returns
 // the first transfer instead of moving money again.
