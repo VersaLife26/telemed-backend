@@ -345,7 +345,23 @@ func TestStateMachine_EndIsIdempotentOnTerminalState(t *testing.T) {
 	require.Equal(t, first.Version, second.Version, "ending an already-terminal consultation must not mutate it again")
 }
 
-func TestStateMachine_JoinRejectedOnTerminalConsultation(t *testing.T) {
+func TestStateMachine_JoinRejectedOnEndedConsultation(t *testing.T) {
+	svc, st, _, _ := newTestService(t, Options{})
+	patientID, doctorID := uuid.New(), uuid.New()
+	c := seedConsultation(t, st, patientID, doctorID)
+	ctx := context.Background()
+
+	patientJoins(t, svc, patientID, c)
+	_, err := svc.Admit(ctx, doctorPrincipal(uuid.New(), doctorID), c.ID)
+	require.NoError(t, err)
+	_, err = svc.End(ctx, doctorPrincipal(uuid.New(), doctorID), c.ID, "completed")
+	require.NoError(t, err)
+
+	_, err = svc.Join(ctx, doctorPrincipal(uuid.New(), doctorID), c.AppointmentID)
+	require.ErrorIs(t, err, ErrInvalidState)
+}
+
+func TestJoin_ReopensAbandonedNeverStartedConsultation(t *testing.T) {
 	svc, st, _, _ := newTestService(t, Options{})
 	patientID, doctorID := uuid.New(), uuid.New()
 	c := seedConsultation(t, st, patientID, doctorID)
@@ -354,7 +370,50 @@ func TestStateMachine_JoinRejectedOnTerminalConsultation(t *testing.T) {
 	_, err := svc.End(ctx, patientPrincipal(patientID), c.ID, "")
 	require.NoError(t, err)
 
-	_, err = svc.Join(ctx, patientPrincipal(patientID), c.AppointmentID)
+	doctorJoin, err := svc.Join(ctx, doctorPrincipal(uuid.New(), doctorID), c.AppointmentID)
+	require.NoError(t, err)
+	require.Equal(t, StatusScheduled, doctorJoin.Status)
+
+	updated, err := st.GetConsultation(ctx, fakePool{}, c.ID)
+	require.NoError(t, err)
+	require.Equal(t, StatusScheduled, updated.Status)
+	require.Nil(t, updated.EndedAt)
+	require.Nil(t, updated.DeletedAt)
+
+	patientJoin, err := svc.Join(ctx, patientPrincipal(patientID), c.AppointmentID)
+	require.NoError(t, err)
+	require.Equal(t, StatusWaiting, patientJoin.Status)
+}
+
+func TestJoin_DoesNotReopenCancelledAppointment(t *testing.T) {
+	svc, st, _, _ := newTestService(t, Options{})
+	patientID, doctorID := uuid.New(), uuid.New()
+	c := seedConsultation(t, st, patientID, doctorID)
+
+	require.NoError(t, svc.TeardownForCancellation(context.Background(), c.AppointmentID))
+
+	_, err := svc.Join(context.Background(), doctorPrincipal(uuid.New(), doctorID), c.AppointmentID)
+	require.ErrorIs(t, err, ErrInvalidState)
+}
+
+func TestJoin_DoesNotReopenAfterSlotEnded(t *testing.T) {
+	svc, st, _, _ := newTestService(t, Options{})
+	patientID, doctorID := uuid.New(), uuid.New()
+	past := time.Now().UTC().Add(-20 * time.Minute)
+	c := &Consultation{
+		AppointmentID: uuid.New(),
+		PatientID:     patientID,
+		DoctorID:      doctorID,
+		RoomName:      "room-" + uuid.NewString(),
+		Status:        StatusAbandoned,
+		ScheduledAt:   past,
+		EndedAt:       ptrTime(past.Add(15 * time.Minute)),
+	}
+	reason := "slot_ended"
+	c.EndReason = &reason
+	require.NoError(t, st.CreateConsultation(context.Background(), fakeTx{}, c))
+
+	_, err := svc.Join(context.Background(), doctorPrincipal(uuid.New(), doctorID), c.AppointmentID)
 	require.ErrorIs(t, err, ErrInvalidState)
 }
 

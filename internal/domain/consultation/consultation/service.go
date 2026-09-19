@@ -217,6 +217,11 @@ func partyIdentity(role ParticipantRole, c *Consultation) uuid.UUID {
 // mints a fresh token. A patient's first join transitions the consultation
 // into the doctor's waiting queue; every later call (a token refresh, a
 // reconnect after a dropped 3G connection) is a no-op on that state.
+//
+// A never-started consult that was abandoned (lobby End, unused-slot sweep)
+// is reopened while the booked slot is still open, so neither party is stuck
+// on a 409 for the rest of the visit window. Cancelled appointments and
+// consults that actually started stay closed.
 func (s *Service) Join(ctx context.Context, principal middleware.Principal, appointmentID uuid.UUID) (JoinResult, error) {
 	c, err := s.store.GetConsultationByAppointment(ctx, s.pool, appointmentID)
 	if err != nil {
@@ -227,11 +232,11 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 	if !ok {
 		return JoinResult{}, ErrForbidden
 	}
-	if c.Status.terminal() {
-		return JoinResult{}, ErrInvalidState
-	}
 
 	now := time.Now().UTC()
+	if err := s.reopenIdleVisit(ctx, c, now); err != nil {
+		return JoinResult{}, err
+	}
 	if role == RolePatient && c.Status == StatusScheduled && !now.Before(bookedSlotEnd(c)) {
 		return JoinResult{}, ErrJoinCutoff
 	}
@@ -322,6 +327,33 @@ func (s *Service) Join(ctx context.Context, principal middleware.Principal, appo
 		ICEServers:      s.opts.ICEServers(ctx, identity),
 		CounterpartName: s.counterpartName(ctx, role, c),
 	}, nil
+}
+
+// reopenIdleVisit puts a never-started abandoned consult back on the board
+// when the booked slot is still open. Ending the lobby (or a premature
+// no-show sweep) used to make Join a permanent 409, so neither party could
+// recover during the visit window.
+func (s *Service) reopenIdleVisit(ctx context.Context, c *Consultation, now time.Time) error {
+	if !c.Status.terminal() {
+		return nil
+	}
+	if c.StartedAt != nil || c.Status == StatusEnded {
+		return ErrInvalidState
+	}
+	if c.EndReason != nil && *c.EndReason == "appointment_cancelled" {
+		return ErrInvalidState
+	}
+	if !now.Before(bookedSlotEnd(c)) {
+		return ErrInvalidState
+	}
+
+	c.Status = StatusScheduled
+	c.EndedAt = nil
+	c.EndReason = nil
+	c.DeletedAt = nil
+	return database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return s.store.UpdateConsultation(ctx, tx, c)
+	})
 }
 
 func (s *Service) counterpartName(ctx context.Context, role ParticipantRole, c *Consultation) string {
