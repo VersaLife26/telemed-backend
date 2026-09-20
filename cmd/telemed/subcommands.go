@@ -66,8 +66,8 @@ func healthcheck() int {
 	// operator, not by a request. gosec's SSRF check (G704) cannot see that the
 	// destination is pinned to 127.0.0.1, so it is silenced here rather than
 	// restructured into something less clear.
-	url := "http://" + net.JoinHostPort("127.0.0.1", port) + "/health/ready"
-	resp, err := client.Get(url) //nolint:noctx,gosec // the client timeout is the deadline; G704: loopback only, see above
+	endpoint := "http://" + net.JoinHostPort("127.0.0.1", port) + "/health/ready"
+	resp, err := client.Get(endpoint) //nolint:noctx,gosec // the client timeout is the deadline; G704: loopback only, see above
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
 		return 1
@@ -258,4 +258,3 @@ func generateSlots(args []string) int {
 	fmt.Printf("Generated slots for %d doctors: inserted=%d\n", doctors, inserted)
 	return 0
 }
-

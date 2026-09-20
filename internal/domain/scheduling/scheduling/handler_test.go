@@ -487,4 +487,3 @@ func TestAdminGenerateSlotsEndpoint(t *testing.T) {
 		t.Fatalf("POST /admin/slots/generate (all) = %d: %s", recAll.Code, recAll.Body.String())
 	}
 }
-
