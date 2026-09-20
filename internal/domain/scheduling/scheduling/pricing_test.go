@@ -545,7 +545,7 @@ func TestDoctorUpdatedAppliesAvailabilityEdits(t *testing.T) {
 		t.Fatalf("after approval: %d working-hour rows, want 1", len(before))
 	}
 
-	// The doctor adds Saturday and lengthens their consultations.
+	// The doctor adds Saturday and Sunday and lengthens their consultations.
 	thirty := 30
 	buffer := 0
 	if err := consumers.Handle(ctx, envelope(t, events.SubjectDoctorUpdated, events.DoctorUpdated{
@@ -556,6 +556,7 @@ func TestDoctorUpdatedAppliesAvailabilityEdits(t *testing.T) {
 		WorkingHours: []events.WorkingHour{
 			{DayOfWeek: 1, StartTime: "09:00", EndTime: "12:00", IsAvailable: &yes},
 			{DayOfWeek: 6, StartTime: "08:00", EndTime: "11:00", IsAvailable: &yes},
+			{DayOfWeek: 0, StartTime: "10:00", EndTime: "13:00", IsAvailable: &yes},
 		},
 		UpdatedAt: time.Now().UTC(),
 	})); err != nil {
@@ -566,19 +567,25 @@ func TestDoctorUpdatedAppliesAvailabilityEdits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hours after update: %v", err)
 	}
-	if len(after) != 2 {
-		t.Fatalf("after the edit: %d working-hour rows, want 2 -- the availability "+
+	if len(after) != 3 {
+		t.Fatalf("after the edit: %d working-hour rows, want 3 -- the availability "+
 			"edit was discarded, which is the bug this test exists for", len(after))
 	}
 
-	var sawSaturday bool
+	var sawSaturday, sawSunday bool
 	for _, h := range after {
 		if h.DayOfWeek == 6 {
 			sawSaturday = true
 		}
+		if h.DayOfWeek == 0 {
+			sawSunday = true
+		}
 	}
 	if !sawSaturday {
 		t.Error("Saturday window did not reach scheduling")
+	}
+	if !sawSunday {
+		t.Error("Sunday window did not reach scheduling")
 	}
 
 	settings, err := svc.Repo().GetScheduleSettings(ctx, pool, doctorID)
@@ -593,5 +600,33 @@ func TestDoctorUpdatedAppliesAvailabilityEdits(t *testing.T) {
 	if settings.BufferMinutes != 0 {
 		t.Errorf("buffer_minutes = %d, want 0 -- zero must not be read as unset",
 			settings.BufferMinutes)
+	}
+
+	// Future slots must have been immediately materialised for the newly added
+	// Saturday and Sunday windows without waiting for the nightly cron job.
+	var saturdaySlots, sundaySlots int
+	loc := svc.Location()
+	rows, err := pool.Query(ctx, `SELECT start_at FROM slots WHERE doctor_id = $1 AND status = 'AVAILABLE'`, doctorID)
+	if err != nil {
+		t.Fatalf("query generated slots: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var startAt time.Time
+		if err := rows.Scan(&startAt); err != nil {
+			t.Fatalf("scan slot start_at: %v", err)
+		}
+		switch startAt.In(loc).Weekday() {
+		case time.Saturday:
+			saturdaySlots++
+		case time.Sunday:
+			sundaySlots++
+		}
+	}
+	if saturdaySlots == 0 {
+		t.Error("no Saturday slots generated after doctor enabled Saturday")
+	}
+	if sundaySlots == 0 {
+		t.Error("no Sunday slots generated after doctor enabled Sunday")
 	}
 }

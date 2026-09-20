@@ -383,6 +383,22 @@ func (c *Consumers) handleDoctorUpdated(ctx context.Context, env events.Envelope
 		Bool("settings_changed", settingsChanged).
 		Int("working_hours", len(hours)).
 		Msg("doctor projection updated")
+
+	// When working hours or schedule settings are updated, immediately generate
+	// future slots so newly enabled days (like Saturday and Sunday) or altered
+	// shifts are bookable without waiting for the nightly batch job.
+	if settingsChanged || len(hours) > 0 {
+		if _, err := c.svc.GenerateForDoctor(ctx, p.DoctorID); err != nil {
+			if errors.Is(err, ErrDoctorNotConfigured) {
+				c.log.Info().Str("doctor_id", maskID(p.DoctorID)).
+					Msg("doctor updated without working hours; slots will appear once they publish a schedule")
+				return nil
+			}
+			c.log.Error().Err(err).Str("doctor_id", maskID(p.DoctorID)).
+				Msg("slot generation after doctor.updated failed; the nightly job will retry")
+		}
+	}
+
 	return nil
 }
 
