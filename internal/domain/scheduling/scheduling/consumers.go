@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -345,6 +346,7 @@ func (c *Consumers) handleDoctorUpdated(ctx context.Context, env events.Envelope
 	}
 
 	applied := false
+	hoursChanged := false
 	err = database.InTx(ctx, c.svc.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var uErr error
 		// last_event_at guards this, so a stale or duplicated delivery is a
@@ -360,10 +362,23 @@ func (c *Consumers) handleDoctorUpdated(ctx context.Context, env events.Envelope
 				return sErr
 			}
 		}
-		if len(hours) > 0 {
-			return c.svc.repo.ReplaceWorkingHours(ctx, tx, p.DoctorID, hours)
+		if len(hours) == 0 {
+			return nil
 		}
-		return nil
+		// doctor.updated is published on EVERY profile edit -- a new fee, a new
+		// bio, a new photo -- and carries the working hours every time. Diffing
+		// against what we already hold is what stops a bio edit from
+		// reconciling a month of slots, which is a plan, a row lock on every
+		// slot in the window and a COPY for a change that touched no hour.
+		current, cErr := c.svc.repo.ListWorkingHours(ctx, tx, p.DoctorID)
+		if cErr != nil {
+			return cErr
+		}
+		if sameWeeklyPattern(current, hours) {
+			return nil
+		}
+		hoursChanged = true
+		return c.svc.repo.ReplaceWorkingHours(ctx, tx, p.DoctorID, hours)
 	})
 	if err != nil {
 		return err
@@ -381,25 +396,66 @@ func (c *Consumers) handleDoctorUpdated(ctx context.Context, env events.Envelope
 		Int64("fee_cents", pricing.FeeCents).
 		Str("status", pricing.Status).
 		Bool("settings_changed", settingsChanged).
+		Bool("hours_changed", hoursChanged).
 		Int("working_hours", len(hours)).
 		Msg("doctor projection updated")
 
-	// When working hours or schedule settings are updated, immediately generate
-	// future slots so newly enabled days (like Saturday and Sunday) or altered
-	// shifts are bookable without waiting for the nightly batch job.
-	if settingsChanged || len(hours) > 0 {
-		if _, err := c.svc.GenerateForDoctor(ctx, p.DoctorID); err != nil {
-			if errors.Is(err, ErrDoctorNotConfigured) {
-				c.log.Info().Str("doctor_id", maskID(p.DoctorID)).
-					Msg("doctor updated without working hours; slots will appear once they publish a schedule")
-				return nil
-			}
-			c.log.Error().Err(err).Str("doctor_id", maskID(p.DoctorID)).
-				Msg("slot generation after doctor.updated failed; the nightly job will retry")
+	if !hoursChanged && !settingsChanged {
+		return nil
+	}
+
+	// The edit has to reach the slots themselves, not just the pattern they are
+	// generated from. Mirroring the hours and stopping here is what made the
+	// availability editor decorative for a month at a time: a doctor who opened
+	// up Saturday saw an empty Saturday in the patient app until the 00:00 cron
+	// caught up, which for the coming weekend is too late.
+	//
+	// Errors are logged, not returned. Returning one nak-s the envelope, and
+	// the redelivery would find its own last_event_at already written and skip
+	// the whole handler -- so a retry here cannot work, while the nightly run
+	// can.
+	if _, err := c.svc.SyncScheduleChange(ctx, p.DoctorID); err != nil {
+		if errors.Is(err, ErrDoctorNotConfigured) {
+			c.log.Info().Str("doctor_id", maskID(p.DoctorID)).
+				Msg("doctor updated without working hours; slots will appear once they publish a schedule")
+			return nil
 		}
+		c.log.Error().Err(err).Str("doctor_id", maskID(p.DoctorID)).
+			Msg("slot sync after doctor.updated failed; the nightly job will retry generation")
 	}
 
 	return nil
+}
+
+// sameWeeklyPattern reports whether two sets of working hours describe the same
+// clinic week. Identity and ordering are deliberately ignored: the mirror's
+// rows carry their own ids, and the event's order is whatever doctor-service's
+// query returned.
+func sameWeeklyPattern(a, b []WorkingHour) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sorted := func(in []WorkingHour) []WorkingHour {
+		out := make([]WorkingHour, len(in))
+		copy(out, in)
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].DayOfWeek != out[j].DayOfWeek {
+				return out[i].DayOfWeek < out[j].DayOfWeek
+			}
+			return out[i].StartMinute < out[j].StartMinute
+		})
+		return out
+	}
+	x, y := sorted(a), sorted(b)
+	for i := range x {
+		if x[i].DayOfWeek != y[i].DayOfWeek ||
+			x[i].StartMinute != y[i].StartMinute ||
+			x[i].EndMinute != y[i].EndMinute ||
+			x[i].IsAvailable != y[i].IsAvailable {
+			return false
+		}
+	}
+	return true
 }
 
 // eventTime picks the producer's own timestamp for the fact, falling back to

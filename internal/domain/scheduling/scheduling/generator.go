@@ -137,22 +137,34 @@ type GenerationResult struct {
 	To       Date
 }
 
-// GenerateForDoctor materialises the next advance_days of slots for one doctor.
+// schedulePlan is one doctor's intended calendar for the next advance_days:
+// the settings, the resolved timezone, the window and the slots the pattern
+// asks for.
 //
-// It is idempotent by construction: the plan is deterministic for a given day
-// and the merge is ON CONFLICT DO NOTHING, so running it five times in a row
-// inserts rows exactly once. That property is what lets the cron job be retried
-// blindly after a failure, and it is asserted by
-// TestSlotGeneration_IdempotentRerun.
-func (s *Service) GenerateForDoctor(ctx context.Context, doctorID uuid.UUID) (GenerationResult, error) {
+// It exists because generation and reconciliation need exactly the same four
+// reads, and an availability edit runs both. Computing it once and handing it
+// to each is what keeps one edit from issuing eight queries for one answer.
+type schedulePlan struct {
+	doctorID uuid.UUID
+	settings ScheduleSettings
+	loc      *time.Location
+	from, to Date
+	now      time.Time
+	plans    []SlotPlan
+}
+
+// planForDoctor resolves what the doctor's calendar should look like. It does
+// not touch a single slot row.
+func (s *Service) planForDoctor(ctx context.Context, doctorID uuid.UUID) (schedulePlan, error) {
 	now := s.clock.Now()
 
 	settings, err := s.repo.GetScheduleSettings(ctx, s.pool, doctorID)
 	if err != nil {
-		return GenerationResult{}, err
+		return schedulePlan{}, err
 	}
+	plan := schedulePlan{doctorID: doctorID, settings: settings, loc: s.loc, now: now}
 	if !settings.IsActive {
-		return GenerationResult{DoctorID: doctorID}, nil
+		return plan, nil
 	}
 
 	loc, err := time.LoadLocation(settings.Timezone)
@@ -165,31 +177,58 @@ func (s *Service) GenerateForDoctor(ctx context.Context, doctorID uuid.UUID) (Ge
 			Msg("invalid doctor timezone, falling back to platform default")
 		loc = s.loc
 	}
+	plan.loc = loc
 
 	hours, err := s.repo.ListWorkingHours(ctx, s.pool, doctorID)
 	if err != nil {
-		return GenerationResult{}, err
+		return schedulePlan{}, err
 	}
 	if len(hours) == 0 {
-		return GenerationResult{}, ErrDoctorNotConfigured
+		return schedulePlan{}, ErrDoctorNotConfigured
 	}
 
-	from := DateIn(now, loc)
-	to := from.AddDays(settings.AdvanceDays - 1)
+	plan.from = DateIn(now, loc)
+	plan.to = plan.from.AddDays(settings.AdvanceDays - 1)
 
-	holidays, err := s.repo.ListHolidays(ctx, s.pool, doctorID, from, to)
+	holidays, err := s.repo.ListHolidays(ctx, s.pool, doctorID, plan.from, plan.to)
+	if err != nil {
+		return schedulePlan{}, err
+	}
+
+	plan.plans = PlanRange(settings, hours, holidays, plan.from, settings.AdvanceDays, loc, now)
+	return plan, nil
+}
+
+// GenerateForDoctor materialises the next advance_days of slots for one doctor.
+//
+// It is idempotent by construction: the plan is deterministic for a given day
+// and the merge is ON CONFLICT DO NOTHING, so running it five times in a row
+// inserts rows exactly once. That property is what lets the cron job be retried
+// blindly after a failure, and it is asserted by
+// TestSlotGeneration_IdempotentRerun.
+func (s *Service) GenerateForDoctor(ctx context.Context, doctorID uuid.UUID) (GenerationResult, error) {
+	plan, err := s.planForDoctor(ctx, doctorID)
 	if err != nil {
 		return GenerationResult{}, err
 	}
+	return s.materialise(ctx, plan)
+}
 
-	plans := PlanRange(settings, hours, holidays, from, settings.AdvanceDays, loc, now)
-	result := GenerationResult{DoctorID: doctorID, Planned: len(plans), From: from, To: to}
-	if len(plans) == 0 {
+// materialise inserts the slots a plan asks for and announces the ones that
+// were actually new.
+func (s *Service) materialise(ctx context.Context, plan schedulePlan) (GenerationResult, error) {
+	doctorID := plan.doctorID
+	if !plan.settings.IsActive {
+		return GenerationResult{DoctorID: doctorID}, nil
+	}
+
+	result := GenerationResult{DoctorID: doctorID, Planned: len(plan.plans), From: plan.from, To: plan.to}
+	if len(plan.plans) == 0 {
 		return result, nil
 	}
 
-	slots := make([]Slot, len(plans))
-	for i, p := range plans {
+	slots := make([]Slot, len(plan.plans))
+	for i, p := range plan.plans {
 		slots[i] = Slot{
 			ID:       uuid.New(),
 			DoctorID: doctorID,
@@ -199,7 +238,7 @@ func (s *Service) GenerateForDoctor(ctx context.Context, doctorID uuid.UUID) (Ge
 		}
 	}
 
-	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	err := database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		inserted, err := s.repo.CopySlots(ctx, tx, slots)
 		if err != nil {
 			return err
@@ -214,8 +253,8 @@ func (s *Service) GenerateForDoctor(ctx context.Context, doctorID uuid.UUID) (Ge
 			// YYYY-MM-DD civil dates in the business timezone, not instants:
 			// "the 21st of August" is a day in Colombo, and rendering it as a
 			// UTC timestamp makes it the 20th for eighteen and a half hours.
-			FromDate: from.String(),
-			ToDate:   to.String(),
+			FromDate: plan.from.String(),
+			ToDate:   plan.to.String(),
 			Count:    int(inserted),
 		})
 	})
@@ -227,10 +266,155 @@ func (s *Service) GenerateForDoctor(ctx context.Context, doctorID uuid.UUID) (Ge
 		Str("doctor_id", maskID(doctorID)).
 		Int("planned", result.Planned).
 		Int64("inserted", result.Inserted).
-		Str("from", from.String()).
-		Str("to", to.String()).
+		Str("from", plan.from.String()).
+		Str("to", plan.to.String()).
 		Msg("slots generated")
 	return result, nil
+}
+
+// ScheduleSyncResult reports what one availability edit did to the calendar
+// that already existed, on top of what it generated.
+type ScheduleSyncResult struct {
+	GenerationResult
+	// Withdrawn is how many unbooked slots the new pattern no longer covers.
+	Withdrawn int
+	// Restored is how many previously withdrawn slots the new pattern covers
+	// again.
+	Restored int
+}
+
+// scheduleChangeReason is carried on the slot events a pattern edit produces,
+// so an operator reading a replayed stream can tell an edit from leave.
+const scheduleChangeReason = "schedule_changed"
+
+// SyncScheduleChange brings a doctor's materialised slots back in line with the
+// weekly pattern they just published.
+//
+// THE PROBLEM THIS SOLVES
+// Slots are materialised up to advance_days ahead, and until this existed the
+// ONLY things that created them were doctor.approved and the 00:00 cron. So a
+// doctor who added Saturday mornings saw nothing happen: the pattern was
+// mirrored correctly, no slot row was written, and patients kept seeing an
+// empty Saturday until the next nightly run -- by which time the weekend they
+// opened up was often already here. The availability editor looked broken while
+// every service involved was behaving exactly as written.
+//
+// WHAT HAPPENS TO EACH KIND OF SLOT
+//   - Planned and missing: inserted, same as any generation run.
+//   - Planned but previously CANCELLED (the doctor removed the hour and has now
+//     put it back): released in place. It has to be in place, because CopySlots
+//     merges ON CONFLICT DO NOTHING, so the cancelled row would otherwise block
+//     re-generation of exactly the slot it occupies -- the same trap
+//     RemoveHoliday documents.
+//   - No longer planned and AVAILABLE: withdrawn. Leaving them would let
+//     patients book an hour the doctor has just told us they do not work.
+//   - No longer planned and BOOKED, BLOCKED or reserved: LEFT ALONE. A booked
+//     slot is a patient with an appointment, and cancelling it is a decision
+//     with a refund and an SMS attached -- the doctor makes it explicitly
+//     through leave or cancellation, never as a side effect of editing a time
+//     window. A BLOCKED slot is an admin override or a live waitlist offer, and
+//     neither belongs to this function.
+//
+// Withdrawal and restoration run in one transaction holding row locks in
+// start_at order -- the platform's slot lock order -- so a booking racing an
+// edit either commits first and is then seen as BOOKED and left alone, or
+// blocks and afterwards observes a CANCELLED slot and fails with
+// ErrSlotUnavailable. Generation runs after that commit, for the reason
+// RemoveHoliday gives: holding a month of slot locks while planning and
+// COPYing would serialise every booking for this doctor behind it.
+func (s *Service) SyncScheduleChange(ctx context.Context, doctorID uuid.UUID) (ScheduleSyncResult, error) {
+	plan, err := s.planForDoctor(ctx, doctorID)
+	if err != nil {
+		return ScheduleSyncResult{}, err
+	}
+	if !plan.settings.IsActive {
+		return ScheduleSyncResult{GenerationResult: GenerationResult{DoctorID: doctorID}}, nil
+	}
+
+	// Keyed on the instant, not on time.Time: two time.Time values for the same
+	// instant compare unequal as map keys when their locations differ, and the
+	// plan is built in the doctor's zone while the rows come back from pgx in
+	// whatever zone the connection reports.
+	wanted := make(map[int64]struct{}, len(plan.plans))
+	for _, p := range plan.plans {
+		wanted[p.StartAt.Unix()] = struct{}{}
+	}
+
+	var out ScheduleSyncResult
+	windowEnd := plan.to.EndOfDay(plan.loc).UTC()
+	if windowEnd.After(plan.now) {
+		err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			out.Withdrawn, out.Restored = 0, 0
+
+			// From now, never from the start of the day: an hour that has
+			// already begun cannot be withdrawn from anybody, and this morning's
+			// elapsed slots are not in the plan either.
+			slots, err := s.repo.LockSlotsInRange(ctx, tx, doctorID, plan.now, windowEnd)
+			if err != nil {
+				return err
+			}
+
+			for i := range slots {
+				_, planned := wanted[slots[i].StartAt.Unix()]
+				switch {
+				case planned && slots[i].Status == SlotCancelled:
+					if err := s.restoreSlot(ctx, tx, slots[i]); err != nil {
+						return err
+					}
+					out.Restored++
+				case !planned && slots[i].Status == SlotAvailable &&
+					(slots[i].ReservedUntil == nil || !slots[i].ReservedUntil.After(plan.now)):
+					withdrawn, err := s.withdrawSlot(ctx, tx, slots[i], scheduleChangeReason)
+					if err != nil {
+						return err
+					}
+					if withdrawn {
+						out.Withdrawn++
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return ScheduleSyncResult{}, err
+		}
+	}
+
+	gen, err := s.materialise(ctx, plan)
+	if err != nil {
+		return ScheduleSyncResult{}, err
+	}
+	out.GenerationResult = gen
+
+	if out.Withdrawn > 0 || out.Restored > 0 {
+		s.log.Info().
+			Str("doctor_id", maskID(doctorID)).
+			Int("withdrawn", out.Withdrawn).
+			Int("restored", out.Restored).
+			Msg("slots reconciled to the doctor's new schedule")
+	}
+	return out, nil
+}
+
+// restoreSlot puts a slot the doctor had removed from their week back on the
+// market, in place. Announced as slot.released, which is what the availability
+// projection and the waitlist both read as "bookable again".
+func (s *Service) restoreSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
+	rows, err := s.repo.ReleaseSlot(ctx, tx, slot.ID, slot.StartAt, slot.Version)
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		// The row moved under a lock we hold, which should be impossible.
+		return ErrVersionConflict
+	}
+	return s.outbox.Enqueue(ctx, tx, events.SubjectSlotReleased, slot.ID.String(), events.SlotReleased{
+		SlotID:   slot.ID,
+		DoctorID: slot.DoctorID,
+		StartAt:  slot.StartAt,
+		EndAt:    slot.EndAt,
+		Reason:   scheduleChangeReason,
+	})
 }
 
 // GenerateAll runs generation for every active doctor. One doctor's failure is

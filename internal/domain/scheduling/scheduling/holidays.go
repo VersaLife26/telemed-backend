@@ -207,7 +207,7 @@ func (s *Service) AddHoliday(ctx context.Context, in AddHolidayInput) (HolidayEf
 		}
 
 		for i := range slots {
-			withdrawn, err := s.withdrawSlot(ctx, tx, slots[i])
+			withdrawn, err := s.withdrawSlot(ctx, tx, slots[i], slotWithdrawalReason)
 			if err != nil {
 				return err
 			}
@@ -298,7 +298,11 @@ func (s *Service) cancelForLeave(ctx context.Context, tx pgx.Tx, a Appointment, 
 // withdrawSlot takes one slot off the market permanently. It reports whether it
 // changed anything: a slot already CANCELLED is left alone, which is what makes
 // re-registering the same holiday a no-op instead of an event storm.
-func (s *Service) withdrawSlot(ctx context.Context, tx pgx.Tx, slot Slot) (bool, error) {
+//
+// reason travels on events.SlotWithdrawn rather than being hardcoded, because
+// leave and a schedule edit both withdraw slots and an operator reading a
+// replayed stream has no other way to tell them apart.
+func (s *Service) withdrawSlot(ctx context.Context, tx pgx.Tx, slot Slot, reason string) (bool, error) {
 	if slot.Status == SlotCancelled {
 		return false, nil
 	}
@@ -314,7 +318,7 @@ func (s *Service) withdrawSlot(ctx context.Context, tx pgx.Tx, slot Slot) (bool,
 		DoctorID: slot.DoctorID,
 		StartAt:  slot.StartAt,
 		EndAt:    slot.EndAt,
-		Reason:   slotWithdrawalReason,
+		Reason:   reason,
 	})
 	if err != nil {
 		return false, err

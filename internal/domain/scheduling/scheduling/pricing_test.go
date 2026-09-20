@@ -630,3 +630,198 @@ func TestDoctorUpdatedAppliesAvailabilityEdits(t *testing.T) {
 		t.Error("no Sunday slots generated after doctor enabled Sunday")
 	}
 }
+
+// nextWeekdayIn returns midnight of the next occurrence of want, strictly after
+// today, in loc. Tests that assert on "the coming Saturday" have to name a real
+// future date rather than a weekday number, because the slots they look for are
+// instants in a partitioned table.
+func nextWeekdayIn(loc *time.Location, want time.Weekday) time.Time {
+	now := time.Now().In(loc)
+	ahead := (int(want) - int(now.Weekday()) + 7) % 7
+	if ahead == 0 {
+		ahead = 7
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, ahead)
+}
+
+// countSlotsOn reports how many of a doctor's slots fall on one local day with
+// a given status.
+func countSlotsOn(t *testing.T, pool *pgxpool.Pool, doctorID uuid.UUID, day time.Time, status string) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM slots
+		WHERE doctor_id = $1 AND start_at >= $2 AND start_at < $3 AND status = $4`,
+		doctorID, day.UTC(), day.AddDate(0, 0, 1).UTC(), status).Scan(&n)
+	if err != nil {
+		t.Fatalf("count slots: %v", err)
+	}
+	return n
+}
+
+// TestDoctorUpdatedMaterialisesNewDays is the fix for the reported defect:
+// doctors opened up Saturdays and Sundays and patients saw nothing.
+//
+// The pattern reached this service correctly -- TestDoctorUpdatedAppliesAvailabilityEdits
+// above proves that -- but nothing materialised a slot row from it. Generation
+// ran on doctor.approved and at 00:00, and on nothing else, so the weekend a
+// doctor opened up on Friday was still empty all weekend. GET
+// /doctors/{id}/slots reads the slots table, not the weekly pattern, so the day
+// rendered empty with no error anywhere.
+func TestDoctorUpdatedMaterialisesNewDays(t *testing.T) {
+	pool := requireDB(t)
+	resetTables(t, pool)
+	ctx := context.Background()
+
+	svc := newTestService(t, pool, scheduling.NoopLocker{}, nil)
+	consumers := scheduling.NewConsumers(svc, nil, nil, zerolog.Nop())
+	doctorID := uuid.New()
+	yes := true
+
+	loc, err := time.LoadLocation("Asia/Colombo")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	saturday := nextWeekdayIn(loc, time.Saturday)
+
+	// Approved on a weekday only -- the editor's default week, and the reason
+	// the defect looked specific to weekends: weekdays were generated at
+	// approval and the weekend was always the thing added afterwards.
+	if err := consumers.Handle(ctx, approvedEnvelope(t,
+		events.DoctorApproved{
+			DoctorID: doctorID, UserID: uuid.New(), DoctorName: "Dr Weekend",
+			Specialty: "general", FeeCents: 200000, Currency: "LKR",
+			ApprovedAt: time.Now().UTC().Add(-time.Hour),
+		},
+		scheduling.DoctorScheduleHints{
+			Timezone: "Asia/Colombo", SlotDurationMinutes: 30, BufferMinutes: intPtr(0),
+			WorkingHours: []scheduling.WorkingHourPayload{
+				{DayOfWeek: int(time.Monday), StartTime: "09:00", EndTime: "12:00", IsAvailable: &yes},
+			},
+		})); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if n := countSlotsOn(t, pool, doctorID, saturday, "AVAILABLE"); n != 0 {
+		t.Fatalf("before the edit: %d Saturday slots, want 0", n)
+	}
+
+	// The doctor opens up Saturday morning.
+	if err := consumers.Handle(ctx, envelope(t, events.SubjectDoctorUpdated, events.DoctorUpdated{
+		DoctorID: doctorID, Specialty: "general", FeeCents: 200000, Currency: "LKR",
+		Status: "approved", Timezone: "Asia/Colombo",
+		SlotDurationMinutes: 30, BufferMinutes: intPtr(0),
+		WorkingHours: []events.WorkingHour{
+			{DayOfWeek: int(time.Monday), StartTime: "09:00", EndTime: "12:00", IsAvailable: &yes},
+			{DayOfWeek: int(time.Saturday), StartTime: "08:00", EndTime: "11:00", IsAvailable: &yes},
+		},
+		UpdatedAt: time.Now().UTC(),
+	})); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	if n := countSlotsOn(t, pool, doctorID, saturday, "AVAILABLE"); n != 6 {
+		t.Fatalf("after the edit: %d bookable Saturday slots, want 6 -- the availability "+
+			"edit never reached the calendar, which is the bug this test exists for", n)
+	}
+}
+
+// TestDoctorUpdatedWithdrawsAndRestoresRemovedDays is the other half of the
+// same edit. Adding a day has to add slots; removing one has to remove them, or
+// a doctor who drops Saturday keeps taking Saturday bookings for a month.
+//
+// A BOOKED slot is deliberately left standing: there is a patient behind it,
+// and cancelling them carries a refund and an SMS. That decision is made
+// explicitly through leave or cancellation, never as a side effect of editing a
+// time window.
+func TestDoctorUpdatedWithdrawsAndRestoresRemovedDays(t *testing.T) {
+	pool := requireDB(t)
+	resetTables(t, pool)
+	ctx := context.Background()
+
+	svc := newTestService(t, pool, scheduling.NoopLocker{}, nil)
+	consumers := scheduling.NewConsumers(svc, nil, nil, zerolog.Nop())
+	doctorID := uuid.New()
+	yes := true
+	base := time.Now().UTC()
+
+	loc, err := time.LoadLocation("Asia/Colombo")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	saturday := nextWeekdayIn(loc, time.Saturday)
+
+	weekend := []scheduling.WorkingHourPayload{
+		{DayOfWeek: int(time.Saturday), StartTime: "08:00", EndTime: "11:00", IsAvailable: &yes},
+	}
+	if err := consumers.Handle(ctx, approvedEnvelope(t,
+		events.DoctorApproved{
+			DoctorID: doctorID, UserID: uuid.New(), DoctorName: "Dr Weekend",
+			Specialty: "general", FeeCents: 200000, Currency: "LKR",
+			ApprovedAt: base.Add(-time.Hour),
+		},
+		scheduling.DoctorScheduleHints{
+			Timezone: "Asia/Colombo", SlotDurationMinutes: 30, BufferMinutes: intPtr(0),
+			WorkingHours: weekend,
+		})); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if n := countSlotsOn(t, pool, doctorID, saturday, "AVAILABLE"); n != 6 {
+		t.Fatalf("after approval: %d Saturday slots, want 6", n)
+	}
+
+	// One patient is already booked into the Saturday the doctor is about to
+	// drop.
+	if _, err := pool.Exec(ctx, `
+		UPDATE slots SET status = 'BOOKED', appointment_id = gen_random_uuid()
+		WHERE id = (SELECT id FROM slots WHERE doctor_id = $1 AND start_at >= $2 AND start_at < $3
+		            ORDER BY start_at LIMIT 1)`,
+		doctorID, saturday.UTC(), saturday.AddDate(0, 0, 1).UTC()); err != nil {
+		t.Fatalf("book a slot: %v", err)
+	}
+
+	// The doctor drops Saturday and works Monday instead.
+	monday := []events.WorkingHour{
+		{DayOfWeek: int(time.Monday), StartTime: "09:00", EndTime: "12:00", IsAvailable: &yes},
+	}
+	if err := consumers.Handle(ctx, envelope(t, events.SubjectDoctorUpdated, events.DoctorUpdated{
+		DoctorID: doctorID, Specialty: "general", FeeCents: 200000, Currency: "LKR",
+		Status: "approved", Timezone: "Asia/Colombo",
+		SlotDurationMinutes: 30, BufferMinutes: intPtr(0),
+		WorkingHours: monday,
+		UpdatedAt:    base.Add(time.Minute),
+	})); err != nil {
+		t.Fatalf("drop Saturday: %v", err)
+	}
+
+	if n := countSlotsOn(t, pool, doctorID, saturday, "AVAILABLE"); n != 0 {
+		t.Errorf("after dropping Saturday: %d slots still bookable, want 0", n)
+	}
+	if n := countSlotsOn(t, pool, doctorID, saturday, "CANCELLED"); n != 5 {
+		t.Errorf("after dropping Saturday: %d withdrawn slots, want 5", n)
+	}
+	if n := countSlotsOn(t, pool, doctorID, saturday, "BOOKED"); n != 1 {
+		t.Errorf("the booked appointment's slot was disturbed: %d BOOKED, want 1", n)
+	}
+
+	// ...and changes their mind. The withdrawn rows have to come back in place:
+	// CopySlots merges ON CONFLICT DO NOTHING, so a cancelled row left sitting
+	// there would block re-generation of exactly the slot it occupies.
+	if err := consumers.Handle(ctx, envelope(t, events.SubjectDoctorUpdated, events.DoctorUpdated{
+		DoctorID: doctorID, Specialty: "general", FeeCents: 200000, Currency: "LKR",
+		Status: "approved", Timezone: "Asia/Colombo",
+		SlotDurationMinutes: 30, BufferMinutes: intPtr(0),
+		WorkingHours: append([]events.WorkingHour{
+			{DayOfWeek: int(time.Saturday), StartTime: "08:00", EndTime: "11:00", IsAvailable: &yes},
+		}, monday...),
+		UpdatedAt: base.Add(2 * time.Minute),
+	})); err != nil {
+		t.Fatalf("restore Saturday: %v", err)
+	}
+
+	if n := countSlotsOn(t, pool, doctorID, saturday, "AVAILABLE"); n != 5 {
+		t.Errorf("after re-adding Saturday: %d bookable slots, want 5", n)
+	}
+	if n := countSlotsOn(t, pool, doctorID, saturday, "CANCELLED"); n != 0 {
+		t.Errorf("after re-adding Saturday: %d slots still withdrawn, want 0", n)
+	}
+}
