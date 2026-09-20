@@ -70,8 +70,14 @@ func (r *Resolver) Names(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]str
 			continue
 		}
 		for _, u := range resp.GetUsers() {
-			if id, err := uuid.Parse(u.GetId()); err == nil && u.GetName() != "" {
-				out[id] = u.GetName()
+			if id, err := uuid.Parse(u.GetId()); err == nil {
+				if u.GetName() != "" {
+					out[id] = u.GetName()
+				} else if u.GetPhone() != "" {
+					out[id] = "Patient (" + u.GetPhone() + ")"
+				} else if u.GetEmail() != "" {
+					out[id] = "Patient (" + u.GetEmail() + ")"
+				}
 			}
 		}
 	}

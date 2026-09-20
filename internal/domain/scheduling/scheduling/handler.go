@@ -596,9 +596,9 @@ func (h *Handler) listAppointments(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]AppointmentDTO, len(appts))
 	for i := range appts {
-		// Never in a list: intake is PHI and a listing is the least likely
-		// place it is actually needed.
-		out[i] = NewAppointmentDTO(appts[i], h.svc.Location(), false)
+		// Treating doctors need intake symptoms in their queue to prepare for consultations.
+		// For patients, intake is omitted in lists to minimize PHI on overview screens.
+		out[i] = NewAppointmentDTO(appts[i], h.svc.Location(), role == ActorDoctor)
 	}
 	h.withCounterpartNames(r.Context(), role, out)
 	httpx.List(w, r, out, httpx.Meta{Page: page, PerPage: perPage, Total: total})
