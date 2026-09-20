@@ -65,6 +65,15 @@ for domain in "${DOMAINS[@]}"; do
   if [[ "$DIRECTION" == "down" ]]; then
     migrate -path "$dir" -database "$dsn" down -all
   else
+    # Automatically clear dirty state if a previous migration run failed midway
+    v=$(migrate -path "$dir" -database "$dsn" version 2>&1 || true)
+    if [[ "$v" == *"(dirty)"* ]]; then
+      dirty_ver=$(echo "$v" | awk '{print $1}')
+      prev_ver=$((dirty_ver - 1))
+      if (( prev_ver < 0 )); then prev_ver=0; fi
+      echo "==> ${domain} is dirty at version ${dirty_ver}; clearing dirty state and forcing to ${prev_ver}"
+      migrate -path "$dir" -database "$dsn" force "$prev_ver"
+    fi
     migrate -path "$dir" -database "$dsn" up
   fi
 done

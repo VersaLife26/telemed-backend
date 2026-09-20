@@ -68,7 +68,7 @@ slots_to_generate AS (
     ) s
     LEFT JOIN holidays h
         ON (h.doctor_id = d.doctor_id OR h.doctor_id IS NULL)
-        AND h.date = d.cal_day
+        AND h.holiday_date = d.cal_day
     WHERE h.id IS NULL
       AND s.slot_start > NOW()
 )
