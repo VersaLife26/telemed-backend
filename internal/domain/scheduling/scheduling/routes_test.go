@@ -54,6 +54,7 @@ func TestRouteRegistration(t *testing.T) {
 		"POST /api/v1/admin/holidays",
 		"POST /api/v1/admin/reschedule-requests/{requestID}/accept",
 		"POST /api/v1/admin/reschedule-requests/{requestID}/decline",
+		"POST /api/v1/admin/slots/generate",
 		"POST /api/v1/admin/slots/{slotID}/block",
 		"POST /api/v1/appointments/",
 		"POST /api/v1/appointments/{appointmentID}/complete",

@@ -2577,6 +2577,15 @@ paths:
         '200': { description: OK }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/admin/slots/generate:
+    post:
+      tags: [admin]
+      summary: Trigger slot generation for a doctor or all active doctors
+      description: Requires an admin role AND gateway IP allowlist. scheduling-service owns the generation.
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/admin/slots/{slotID}/block:
     post:
       tags: [admin]

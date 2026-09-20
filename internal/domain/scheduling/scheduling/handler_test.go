@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -445,3 +447,44 @@ func TestGenerateAllCoversEveryActiveDoctor(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminGenerateSlotsEndpoint(t *testing.T) {
+	pool := requireDB(t)
+	resetTables(t, pool)
+
+	svc := newTestService(t, pool, scheduling.NoopLocker{}, nil)
+	h := scheduling.NewHandler(svc, "")
+
+	doctorID := uuid.New()
+	var wh []scheduling.WorkingHour
+	for d := time.Sunday; d <= time.Saturday; d++ {
+		wh = append(wh, scheduling.WorkingHour{DoctorID: doctorID, DayOfWeek: d,
+			StartMinute: 9 * 60, EndMinute: 11 * 60, IsAvailable: true})
+	}
+	seedDoctorSchedule(t, pool, doctorID, "Asia/Colombo", 30, 0, 100, 3, wh)
+
+	r := chi.NewRouter()
+	r.Route("/api/v1/admin", h.AdminRoutes)
+
+	// 1. Generate for specific doctor
+	body := fmt.Sprintf(`{"doctor_id":%q}`, doctorID)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/slots/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /admin/slots/generate (specific) = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Generate for all doctors
+	reqAll := httptest.NewRequest(http.MethodPost, "/api/v1/admin/slots/generate", strings.NewReader(`{}`))
+	reqAll.Header.Set("Content-Type", "application/json")
+	recAll := httptest.NewRecorder()
+	r.ServeHTTP(recAll, reqAll)
+
+	if recAll.Code != http.StatusOK {
+		t.Fatalf("POST /admin/slots/generate (all) = %d: %s", recAll.Code, recAll.Body.String())
+	}
+}
+

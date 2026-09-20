@@ -1639,6 +1639,18 @@
       "description": "Staff-set leave or a platform-wide holiday. Named ahead of admin-catchall so scheduling-service owns the holidays table."
     },
     {
+      "name": "admin-slots-generate",
+      "pattern": "/api/v1/admin/slots/generate",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "admin",
+      "timeout_class": "write",
+      "rate_limit": "admin",
+      "description": "Trigger slot generation for one doctor or all active doctors. Auth mode 'admin'."
+    },
+    {
       "name": "admin-slots-block",
       "pattern": "/api/v1/admin/slots/{slotID}/block",
       "methods": [

@@ -392,6 +392,7 @@ func (h *Handler) deleteMyHoliday(w http.ResponseWriter, r *http.Request) {
 // AdminRoutes are the override surface. The caller has already passed the IP
 // allowlist and an admin role check before reaching here.
 func (h *Handler) AdminRoutes(r chi.Router) {
+	r.Post("/slots/generate", h.adminGenerateSlots)
 	r.Post("/slots/{slotID}/block", h.blockSlot)
 	// The scoped administrative listing. It lives HERE and not beside
 	// GET /appointments because this subtree is the only one that carries
@@ -941,4 +942,44 @@ func (h *Handler) forceCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, r, NewAppointmentDTO(appt, h.svc.Location(), false))
+}
+
+type adminGenerateSlotsRequest struct {
+	DoctorID *uuid.UUID `json:"doctor_id,omitempty"`
+}
+
+func (h *Handler) adminGenerateSlots(w http.ResponseWriter, r *http.Request) {
+	var req adminGenerateSlotsRequest
+	if r.ContentLength > 0 {
+		if err := httpx.DecodeJSON(w, r, &req); err != nil {
+			httpx.Error(w, r, err)
+			return
+		}
+	}
+
+	if req.DoctorID != nil && *req.DoctorID != uuid.Nil {
+		res, err := h.svc.GenerateForDoctor(r.Context(), *req.DoctorID)
+		if err != nil {
+			httpx.Error(w, r, APIError(err))
+			return
+		}
+		httpx.OK(w, r, map[string]any{
+			"doctor_id": res.DoctorID,
+			"planned":   res.Planned,
+			"inserted":  res.Inserted,
+			"from":      res.From.String(),
+			"to":        res.To.String(),
+		})
+		return
+	}
+
+	doctors, inserted, err := h.svc.GenerateAll(r.Context())
+	if err != nil {
+		httpx.Error(w, r, APIError(err))
+		return
+	}
+	httpx.OK(w, r, map[string]any{
+		"doctors":  doctors,
+		"inserted": inserted,
+	})
 }
