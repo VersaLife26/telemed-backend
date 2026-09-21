@@ -71,11 +71,12 @@ func (r *Resolver) Names(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]str
 		}
 		for _, u := range resp.GetUsers() {
 			if id, err := uuid.Parse(u.GetId()); err == nil {
-				if u.GetName() != "" {
+				switch {
+				case u.GetName() != "":
 					out[id] = u.GetName()
-				} else if u.GetPhone() != "" {
+				case u.GetPhone() != "":
 					out[id] = "Patient (" + u.GetPhone() + ")"
-				} else if u.GetEmail() != "" {
+				case u.GetEmail() != "":
 					out[id] = "Patient (" + u.GetEmail() + ")"
 				}
 			}
