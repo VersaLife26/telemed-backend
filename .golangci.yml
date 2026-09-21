@@ -89,6 +89,14 @@ linters:
       - path: (internal/pb|\.pb\.go)
         linters: [revive, gocritic, unparam, gosec]
 
+      # gen-sample-prescription: a local operator-run CLI that writes a
+      # sample PDF to an operator-supplied path (scripts/main.go, not served
+      # over any network boundary). gosec's taint analysis flags os.Args as
+      # untrusted input regardless of trust boundary; here "path traversal"
+      # just means the operator can point the output wherever they intended.
+      - path: scripts/gen-sample-prescription/main\.go
+        linters: [gosec]
+
 formatters:
   enable:
     - gofmt
