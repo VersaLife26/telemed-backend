@@ -224,17 +224,37 @@ func (h *Handler) writeLoop(ctx context.Context, conn *websocket.Conn, peer *Pee
 				return
 			}
 		case <-peer.Done():
-			// The hub finished with this peer -- it left, was replaced by a
-			// reconnect, or the room was closed. Say so properly rather than
-			// dropping the TCP connection, so the client can tell a deliberate
-			// close from a network failure and skip its reconnect backoff.
-			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
-			_ = conn.WriteMessage(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-			_ = conn.Close()
-			return
+			// CloseRoom (and similar) queues a last frame then signals Done.
+			// Both channels are then ready; picking Done first used to drop
+			// TypeRoomClosed and the client only saw a normal close. Drain
+			// anything already queued so they see why the socket is going
+			// away, then close cleanly.
+			for {
+				select {
+				case raw, ok := <-peer.Out():
+					if !ok {
+						writeNormalClose(conn)
+						return
+					}
+					_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+					if err := conn.WriteMessage(websocket.TextMessage, raw); err != nil {
+						_ = conn.Close()
+						return
+					}
+				default:
+					writeNormalClose(conn)
+					return
+				}
+			}
 		}
 	}
+}
+
+func writeNormalClose(conn *websocket.Conn) {
+	_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+	_ = conn.WriteMessage(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	_ = conn.Close()
 }
 
 func mustFrame(env Envelope) []byte {
