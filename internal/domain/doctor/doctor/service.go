@@ -595,6 +595,24 @@ func (s *Service) UploadDocument(ctx context.Context, doctorID uuid.UUID, docTyp
 	return *doc, nil
 }
 
+// SignatureAndSealKeys resolves a doctor's current signature and seal
+// credential object keys, for embedding on an issued prescription PDF.
+// Empty strings mean "never uploaded" -- a valid state for the caller to
+// act on (e.g. by refusing to issue), not an error condition here.
+//
+// This is the method the record domain reaches in-process (via
+// modular.KeyDoctorCredentialImages) rather than a cross-service database
+// read: doctor_documents stays this domain's own table (ADR-004), and only
+// the two resolved keys ever cross the boundary.
+func (s *Service) SignatureAndSealKeys(ctx context.Context, doctorID uuid.UUID) (signatureKey, sealKey string, err error) {
+	docs, err := s.repo.ListDocuments(ctx, doctorID)
+	if err != nil {
+		return "", "", fmt.Errorf("doctor: list documents: %w", err)
+	}
+	signatureKey, sealKey = SignatureAndSealKeys(docs)
+	return signatureKey, sealKey, nil
+}
+
 // ---------------------------------------------------------------------------
 // Reviews
 // ---------------------------------------------------------------------------

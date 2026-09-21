@@ -286,4 +286,13 @@ const (
 	// KeyDoctorApplicationVerifier is an implementation of credentialing.ApplicationVerifier
 	// and credentialing.PendingApplicationSource backed by doctor.Service.
 	KeyDoctorApplicationVerifier = "doctor.application_verifier"
+
+	// KeyDoctorCredentialImages is a prescriptions.DoctorCredentialImages
+	// implementation backed by the doctor domain's doctor_documents table.
+	// The record domain looks this up to resolve a doctor's uploaded
+	// signature and seal object keys when rendering a prescription PDF --
+	// only the two keys cross the boundary in-process, never a row scanned
+	// by record-service's own SQL (ADR-004), and never a network hop while
+	// both domains run in this one process.
+	KeyDoctorCredentialImages = "doctor.credential_images"
 )

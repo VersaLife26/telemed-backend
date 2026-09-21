@@ -81,6 +81,27 @@ func CredentialDocumentKeys(docs []Document) events.DoctorCredentialDocuments {
 	return out
 }
 
+// SignatureAndSealKeys collapses a document list into the doctor's current
+// signature and seal object keys, or "" for either one never uploaded.
+// Documents are append-only and listDocuments returns them newest first, so
+// the first match for each type is the current one -- the same rule
+// CredentialDocumentKeys applies to the four admin-review slots.
+func SignatureAndSealKeys(docs []Document) (signatureKey, sealKey string) {
+	for _, d := range docs {
+		switch d.DocumentType {
+		case DocumentSignature:
+			if signatureKey == "" {
+				signatureKey = d.ObjectKey
+			}
+		case DocumentSeal:
+			if sealKey == "" {
+				sealKey = d.ObjectKey
+			}
+		}
+	}
+	return signatureKey, sealKey
+}
+
 func (r *Repository) listDocuments(ctx context.Context, q docQueryer, doctorID uuid.UUID) ([]Document, error) {
 	const sql = `
 		SELECT id, doctor_id, document_type, object_key, uploaded_at, reviewed_at, reviewed_by, COALESCE(review_notes, '')

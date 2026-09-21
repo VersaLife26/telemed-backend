@@ -2,12 +2,22 @@ package prescriptions
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-pdf/fpdf"
 	"github.com/skip2/go-qrcode"
 )
+
+// versalifeLogoPNG is the VersaLife mark, rasterized once at build time from
+// the same source as the web app's public/assets/logo.svg (a bundler can
+// render an SVG; fpdf's image registry cannot, so this is a PNG instead of
+// the vector original).
+//
+//go:embed assets/versalife-logo.png
+var versalifeLogoPNG []byte
 
 // PatientDisplay carries the request-scoped patient details needed to render
 // a human-readable PDF. This service does not own patient demographics
@@ -27,30 +37,75 @@ type ClinicDisplay struct {
 	ClinicName string
 }
 
-// GeneratePDF renders a complete, print-ready prescription: header (doctor
-// name, SLMC number, qualifications), patient name and age, issue date, an
-// Rx table of items, a signature block, a footer, and a QR code encoding the
-// verification URL. It returns the raw PDF bytes.
-func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, verifyURL string) ([]byte, error) {
+// CredentialImage is a decoded doctor signature or seal image, ready to
+// embed on the PDF. A nil *CredentialImage anywhere GeneratePDF takes one
+// means "not available" -- the layout renders around it (a blank signature
+// line, no stamp) rather than failing, because a scan being briefly
+// unreadable must never be the reason a patient does not get their
+// prescription. Callers are expected to have already validated Bytes
+// actually decodes as Kind (see prescriptions.Service.loadCredentialImage);
+// this package trusts that and does not re-validate it.
+type CredentialImage struct {
+	Bytes []byte
+	Kind  string // fpdf ImageType: "PNG" or "JPG"
+}
+
+// GeneratePDF renders a complete, print-ready prescription: a VersaLife
+// header, the doctor's name/university/SLMC number/qualifications, patient
+// name and age, issue date, an Rx table of items, a signature block (the
+// doctor's actual signature and seal images when available), a footer, and
+// a QR code encoding the verification URL. It returns the raw PDF bytes.
+func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, verifyURL string,
+	signature, seal *CredentialImage,
+) ([]byte, error) {
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetMargins(18, 16, 18)
 	pdf.AddPage()
 
-	// --- header --------------------------------------------------------
-	pdf.SetFont("Arial", "B", 16)
-	pdf.CellFormat(0, 8, "E-Prescription", "", 1, "L", false, 0, "")
-	if clinic.ClinicName != "" {
-		pdf.SetFont("Arial", "", 11)
-		pdf.CellFormat(0, 6, clinic.ClinicName, "", 1, "L", false, 0, "")
+	// --- header: logo + wordmark -----------------------------------------
+	const headerTop, logoW = 14.0, 14.0
+	logoH := logoW
+	if info := pdf.RegisterImageOptionsReader("versalife-logo", fpdf.ImageOptions{ImageType: "PNG"}, bytes.NewReader(versalifeLogoPNG)); info != nil && info.Width() > 0 {
+		logoH = logoW * info.Height() / info.Width()
 	}
-	pdf.Ln(2)
+	pdf.ImageOptions("versalife-logo", 18, headerTop, logoW, logoH, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
 
+	textX := 18 + logoW + 4
+	pdf.SetXY(textX, headerTop)
+	pdf.SetFont("Arial", "B", 15)
+	pdf.CellFormat(0, 6, "VersaLife Telemedicine", "", 1, "L", false, 0, "")
+	pdf.SetX(textX)
+	pdf.SetFont("Arial", "", 10)
+	pdf.SetTextColor(90, 90, 90)
+	pdf.CellFormat(0, 5, "E-Prescription", "", 1, "L", false, 0, "")
+	pdf.SetTextColor(0, 0, 0)
+	// clinic.ClinicName is almost always "VersaLife Telemedicine" already
+	// (see issuePayload in the frontend); repeating it under a header that
+	// already says so is noise, not information.
+	if clinic.ClinicName != "" && !strings.EqualFold(strings.TrimSpace(clinic.ClinicName), "VersaLife Telemedicine") {
+		pdf.SetX(textX)
+		pdf.SetFont("Arial", "", 9)
+		pdf.CellFormat(0, 5, clinic.ClinicName, "", 1, "L", false, 0, "")
+	}
+	pdf.SetY(max(pdf.GetY(), headerTop+logoH) + 3)
+
+	// --- doctor block ------------------------------------------------------
 	pdf.SetFont("Arial", "B", 12)
 	pdf.CellFormat(0, 6, "Dr. "+p.DoctorName, "", 1, "L", false, 0, "")
 	pdf.SetFont("Arial", "", 10)
 	pdf.CellFormat(0, 5, "SLMC Registration No: "+p.DoctorSLMC, "", 1, "L", false, 0, "")
 	if p.DoctorQualifications != "" {
-		pdf.CellFormat(0, 5, p.DoctorQualifications, "", 1, "L", false, 0, "")
+		// Sent as one or more newline-separated lines -- e.g. a degree line
+		// and a "University: ..." line -- rather than one run-on sentence,
+		// so the credentials block reads the way a printed prescription pad
+		// does instead of a comma-separated database dump.
+		for _, line := range strings.Split(p.DoctorQualifications, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			pdf.CellFormat(0, 5, line, "", 1, "L", false, 0, "")
+		}
 	}
 
 	pdf.Ln(3)
@@ -110,11 +165,25 @@ func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, v
 	pdf.Ln(10)
 
 	// --- signature block ---------------------------------------------------
+	// The doctor's actual signature image, if one was fetched, sits above
+	// the line it would otherwise leave blank; the seal/stamp sits beside
+	// it, slightly overlapping its right edge -- the same arrangement a
+	// physical prescription pad has when a doctor signs and then presses a
+	// rubber stamp next to the signature, not on top of the line itself.
+	const sigBoxW, sigBoxH = 60.0, 18.0
 	sigY := pdf.GetY()
-	pdf.Line(18, sigY+14, 78, sigY+14)
-	pdf.SetXY(18, sigY+15)
+	if signature != nil {
+		drawFittedImage(pdf, "doctor-signature", signature, 18, sigY, sigBoxW, sigBoxH)
+	}
+	pdf.Line(18, sigY+sigBoxH, 18+sigBoxW, sigY+sigBoxH)
+	pdf.SetXY(18, sigY+sigBoxH+1)
 	pdf.SetFont("Arial", "", 9)
-	pdf.CellFormat(60, 5, "Doctor's Signature", "", 1, "L", false, 0, "")
+	pdf.CellFormat(sigBoxW, 5, "Doctor's Signature", "", 1, "L", false, 0, "")
+
+	if seal != nil {
+		const sealBoxW, sealBoxH = 26.0, 26.0
+		drawFittedImage(pdf, "doctor-seal", seal, 18+sigBoxW+4, sigY-2, sealBoxW, sealBoxH)
+	}
 
 	// --- QR code -------------------------------------------------------
 	qrPNG, err := qrcode.Encode(verifyURL, qrcode.Medium, 256)
@@ -141,4 +210,23 @@ func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, v
 		return nil, fmt.Errorf("prescriptions: render pdf: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// drawFittedImage places img inside a maxW x maxH box anchored at (x, y),
+// preserving its aspect ratio and centering it in the box rather than
+// stretching a doctor's signature or seal scan into a shape it was never
+// photographed in.
+func drawFittedImage(pdf *fpdf.Fpdf, name string, img *CredentialImage, x, y, maxW, maxH float64) {
+	info := pdf.RegisterImageOptionsReader(name, fpdf.ImageOptions{ImageType: img.Kind}, bytes.NewReader(img.Bytes))
+	w, h := maxW, maxH
+	if info != nil && info.Width() > 0 && info.Height() > 0 {
+		ratio := info.Width() / info.Height()
+		if maxW/ratio <= maxH {
+			w, h = maxW, maxW/ratio
+		} else {
+			w, h = maxH*ratio, maxH
+		}
+	}
+	ox, oy := x+(maxW-w)/2, y+(maxH-h)/2
+	pdf.ImageOptions(name, ox, oy, w, h, false, fpdf.ImageOptions{ImageType: img.Kind}, 0, "")
 }

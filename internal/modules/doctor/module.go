@@ -128,6 +128,7 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	deps.Registry.Provide(modular.KeyDoctorApplications, inProcApps)
 	deps.Registry.Provide(modular.KeyDoctorApplicationVerifier, inProcVerifier)
 	deps.Registry.Provide(modular.KeyDoctorDirectory, doctor.NewNameDirectory(doctorRepo, log))
+	deps.Registry.Provide(modular.KeyDoctorCredentialImages, NewInProcessCredentialImages(doctorSvc))
 
 	if v, ok := deps.Registry.Lookup(modular.KeyDoctorAccountActivator); ok {
 		if act, ok := v.(doctor.AccountActivator); ok {

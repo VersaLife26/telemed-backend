@@ -105,6 +105,22 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	prescriptionsRepo := prescriptions.NewRepository()
 	prescriptionsSvc := prescriptions.NewService(prescriptionsRepo, pool, objStore, fhirClient, outbox, accessSvc,
 		prescriptions.Config{HMACSecret: []byte(cfg.PrescriptionHMACSecret), VerifyBaseURL: cfg.VerifyBaseURL}, log)
+	// The doctor domain's signature/seal lookup, in-process (see
+	// modular.KeyDoctorCredentialImages). Absent when this deployment runs
+	// the record domain without the doctor domain in the same process --
+	// Issue() fails closed and logs loudly in that case rather than silently
+	// skipping the check, matching the posture of every other optional
+	// cross-domain seam this composer wires (e.g. the doctor module's own
+	// holiday registrar).
+	if v, ok := deps.Registry.Lookup(modular.KeyDoctorCredentialImages); ok {
+		if ci, ok := v.(prescriptions.DoctorCredentialImages); ok {
+			prescriptionsSvc.WithCredentialImages(ci)
+		} else {
+			log.Error().Msg("doctor.credential_images is registered but does not implement prescriptions.DoctorCredentialImages")
+		}
+	} else {
+		log.Warn().Msg("doctor.credential_images unavailable: prescriptions cannot be issued until the doctor domain runs in this process")
+	}
 	prescriptionsHandler := prescriptions.NewHandler(prescriptionsSvc)
 
 	clinicalNotesRepo := clinicalnotes.NewRepository()

@@ -18,6 +18,19 @@ import (
 	"telemed/internal/platform/storage"
 )
 
+// fakeCredentialImages always reports a signature and a seal as uploaded,
+// under keys that do not actually exist in the test store. That is
+// deliberate: Issue()'s hard block is "the doctor never uploaded one", not
+// "the fetch succeeded", and loadCredentialImage's fetch-failure path (a
+// warning log, not an error) is exercised by every integration test that
+// issues a prescription, exactly as it would be against a real doctor whose
+// upload is in a different bucket than this suite bothers to seed.
+type fakeCredentialImages struct{}
+
+func (fakeCredentialImages) SignatureAndSealKeys(context.Context, uuid.UUID) (string, string, error) {
+	return "signature.png", "seal.png", nil
+}
+
 func newIntegrationService(t *testing.T) (*Service, *access.Repository, *access.Service) {
 	t.Helper()
 	pool := dbtest.NewPostgres(t)
@@ -31,7 +44,8 @@ func newIntegrationService(t *testing.T) (*Service, *access.Repository, *access.
 	accessRepo := access.NewRepository()
 	accessSvc := access.NewService(accessRepo, pool, log)
 	svc := NewService(NewRepository(), pool, store, fhir.NewNoOp(log), events.NewOutbox("test"), accessSvc,
-		Config{HMACSecret: []byte("integration-test-secret-32-bytes!!"), VerifyBaseURL: "https://verify.yourapp.lk"}, log)
+		Config{HMACSecret: []byte("integration-test-secret-32-bytes!!"), VerifyBaseURL: "https://verify.yourapp.lk"}, log).
+		WithCredentialImages(fakeCredentialImages{})
 	return svc, accessRepo, accessSvc
 }
 

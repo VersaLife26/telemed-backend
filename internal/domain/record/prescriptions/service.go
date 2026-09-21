@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -23,6 +27,20 @@ import (
 	"telemed/internal/platform/storage"
 )
 
+// DoctorCredentialImages resolves a doctor's currently uploaded signature
+// and seal object keys, so an issued prescription PDF can carry the actual
+// images instead of a blank line. Implemented in-process by the doctor
+// domain (see modular.KeyDoctorCredentialImages in cmd/telemed) -- this
+// package never reads doctor-service's database directly (ADR-004); only
+// the two keys cross the boundary, and this service still fetches the
+// bytes themselves from the shared doctor-credentials bucket with its own
+// storage client, the same way admin-service's credentialing review does.
+type DoctorCredentialImages interface {
+	// SignatureAndSealKeys returns "" for either key never uploaded. That is
+	// a valid, expected state for a newly-approved doctor, not an error.
+	SignatureAndSealKeys(ctx context.Context, doctorID uuid.UUID) (signatureKey, sealKey string, err error)
+}
+
 // Service implements prescription issuance, retrieval, PDF delivery, and
 // public verification.
 type Service struct {
@@ -34,6 +52,7 @@ type Service struct {
 	access        *access.Service
 	hmacSecret    []byte
 	verifyBaseURL string
+	credentials   DoctorCredentialImages
 	log           zerolog.Logger
 }
 
@@ -58,6 +77,15 @@ func NewService(repo *Repository, pool database.Pool, store storage.Storage, fhi
 		hmacSecret: cfg.HMACSecret, verifyBaseURL: strings.TrimRight(cfg.VerifyBaseURL, "/"),
 		log: log.With().Str("component", "prescriptions").Logger(),
 	}
+}
+
+// WithCredentialImages wires the doctor domain's signature/seal lookup.
+// Mirrors doctor.Service.WithHolidayRegistrar: an optional, in-process
+// cross-domain dependency set once at composition time, not a constructor
+// parameter every test and every future caller has to thread through.
+func (s *Service) WithCredentialImages(c DoctorCredentialImages) *Service {
+	s.credentials = c
+	return s
 }
 
 // ItemInput is one requested drug line.
@@ -136,6 +164,35 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (Prescription, error
 			"the consultation for this appointment is too old to prescribe against; see the patient again")
 	}
 
+	// A prescription without the treating doctor's actual signature and
+	// seal is not a document a pharmacist should be asked to trust just
+	// because this service was willing to print a blank line for it. The
+	// lookup is in-process (never a database this service does not own,
+	// ADR-004); "not wired" is a deployment misconfiguration and fails
+	// closed the same way an unwired holiday registrar does elsewhere in
+	// this codebase, and "not uploaded yet" is reported back to the doctor
+	// as the thing they need to fix, not swallowed into a generic 500.
+	if s.credentials == nil {
+		s.log.Error().Msg("prescriptions: doctor.credential_images is not wired; refusing to issue without a signature/seal check")
+		return Prescription{}, httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable,
+			"prescription issuance is temporarily unavailable")
+	}
+	signatureKey, sealKey, err := s.credentials.SignatureAndSealKeys(ctx, rel.DoctorID)
+	if err != nil {
+		return Prescription{}, httpx.ErrInternal.WithCause(fmt.Errorf("prescriptions: resolve doctor credential images: %w", err))
+	}
+	if signatureKey == "" || sealKey == "" {
+		return Prescription{}, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"upload your signature and seal/stamp in your profile before issuing a prescription")
+	}
+	// Each fetch is best-effort past this point: the keys existing is the
+	// gate above, but a transient storage read failure or an image format
+	// this pass cannot decode (see credentialImageKind) must degrade to "no
+	// image on this PDF", not block a prescription the doctor is otherwise
+	// fully entitled to issue.
+	signatureImg := s.loadCredentialImage(ctx, signatureKey)
+	sealImg := s.loadCredentialImage(ctx, sealKey)
+
 	p := Prescription{
 		ID: uuid.New(), AppointmentID: in.AppointmentID, DoctorID: rel.DoctorID, PatientID: rel.PatientID,
 		DoctorName: in.DoctorName, DoctorSLMC: in.DoctorSLMC, DoctorQualifications: in.DoctorQualifications,
@@ -158,7 +215,7 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (Prescription, error
 	p.VerificationHMAC = Sign(s.hmacSecret, p)
 
 	verifyURL := fmt.Sprintf("%s/p/%s?h=%s", s.verifyBaseURL, p.ID, p.VerificationHMAC)
-	pdfBytes, err := GeneratePDF(p, in.Patient, ClinicDisplay{ClinicName: in.ClinicName}, verifyURL)
+	pdfBytes, err := GeneratePDF(p, in.Patient, ClinicDisplay{ClinicName: in.ClinicName}, verifyURL, signatureImg, sealImg)
 	if err != nil {
 		return Prescription{}, httpx.ErrInternal.WithCause(err)
 	}
@@ -198,6 +255,57 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (Prescription, error
 
 	s.attachFHIR(ctx, created)
 	return created, nil
+}
+
+// loadCredentialImage fetches one doctor credential image and decides
+// whether fpdf can embed it as-is. A nil result means "render the PDF
+// without this image" -- logged, but never propagated as an Issue() error,
+// because the key existing already proved the doctor did upload something;
+// a transient storage blip or an exotic format (HEIC, TIFF) this pass does
+// not decode is this service's limitation, not the doctor's.
+func (s *Service) loadCredentialImage(ctx context.Context, key string) *CredentialImage {
+	kind := credentialImageKind(key)
+	if kind == "" {
+		s.log.Warn().Str("key", key).Msg("prescriptions: doctor credential image has an unsupported extension for pdf embedding; rendering without it")
+		return nil
+	}
+	rc, err := s.store.Get(ctx, storage.BucketDoctorCredentials, key)
+	if err != nil {
+		s.log.Warn().Err(err).Str("bucket", storage.BucketDoctorCredentials).Msg("prescriptions: could not fetch a doctor credential image; rendering without it")
+		return nil
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("prescriptions: could not read a doctor credential image; rendering without it")
+		return nil
+	}
+	// Belt-and-suspenders past the extension check: fpdf's image registry
+	// has no recovery path for bytes that merely look like the format they
+	// claim -- one corrupt upload would otherwise fail Output() for the
+	// entire PDF, not just drop the one image.
+	if _, _, err := image.DecodeConfig(bytes.NewReader(data)); err != nil {
+		s.log.Warn().Err(err).Str("key", key).Msg("prescriptions: doctor credential image failed to decode; rendering without it")
+		return nil
+	}
+	return &CredentialImage{Bytes: data, Kind: kind}
+}
+
+// credentialImageKind maps a credential object key's extension to the fpdf
+// image type it decodes as. Only the two formats fpdf's registry accepts
+// without a re-encode step are supported here; doctor-service's own upload
+// allowlist (objectkey.go) is wider (also .webp, .heic, .tif) because that
+// list is about what a reviewer can open in a browser, not what a Go PDF
+// library can inline -- the two lists are allowed to disagree.
+func credentialImageKind(key string) string {
+	switch strings.ToLower(path.Ext(key)) {
+	case ".png":
+		return "PNG"
+	case ".jpg", ".jpeg":
+		return "JPG"
+	default:
+		return ""
+	}
 }
 
 // attachFHIR best-effort creates one FHIR MedicationRequest per drug line

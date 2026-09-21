@@ -67,6 +67,25 @@ func (a *InProcessDoctorApplications) DoctorIDByUserID(ctx context.Context, user
 	return a.svc.ResolveDoctorID(ctx, userID)
 }
 
+// InProcessCredentialImages bridges the doctor domain's signature/seal
+// lookup to the record domain in-process. It implements
+// prescriptions.DoctorCredentialImages structurally -- this package does not
+// import prescriptions, since a method-set match is all Go's interface
+// satisfaction ever needs, and the record domain is the one that should own
+// naming its own dependency.
+type InProcessCredentialImages struct {
+	svc *doctor.Service
+}
+
+// NewInProcessCredentialImages constructs the in-process adapter.
+func NewInProcessCredentialImages(svc *doctor.Service) *InProcessCredentialImages {
+	return &InProcessCredentialImages{svc: svc}
+}
+
+func (c *InProcessCredentialImages) SignatureAndSealKeys(ctx context.Context, doctorID uuid.UUID) (string, string, error) {
+	return c.svc.SignatureAndSealKeys(ctx, doctorID)
+}
+
 func toUserDoctorApplication(app doctor.Application) user.DoctorApplication {
 	return user.DoctorApplication{
 		ID:           app.ID,
