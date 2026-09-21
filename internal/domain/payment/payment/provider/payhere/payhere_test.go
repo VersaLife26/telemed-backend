@@ -285,7 +285,13 @@ func TestPayHereCreateIntentSignsTheCheckout(t *testing.T) {
 func TestPayHereCreateIntentAuthorizeOnly(t *testing.T) {
 	t.Parallel()
 
-	p := newTestProvider(t)
+	p, err := New(Config{
+		MerchantID:     testMerchant,
+		MerchantSecret: testSecret,
+		BaseURL:        "https://www.payhere.lk",
+		NotifyURL:      "https://api.example.lk/webhooks/payhere",
+	})
+	require.NoError(t, err)
 	res, err := p.CreateIntent(context.Background(), payment.IntentRequest{
 		AmountCents:   500000,
 		Currency:      "LKR",
@@ -297,6 +303,23 @@ func TestPayHereCreateIntentAuthorizeOnly(t *testing.T) {
 	assert.Equal(t, payment.IntentRequiresAction, res.Status)
 	assert.Contains(t, res.RedirectURL, "payhere.lk/pay/authorize")
 	assert.Contains(t, res.Reference, `"amount":"5000.00"`)
+	assertPayHereCustomerFields(t, res.Reference, "", "")
+}
+
+func TestPayHereCreateIntentAuthorizeOnlySandboxUsesCheckout(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider(t)
+	res, err := p.CreateIntent(context.Background(), payment.IntentRequest{
+		AmountCents:   500000,
+		Currency:      "LKR",
+		Description:   "Telemedicine consultation",
+		AuthorizeOnly: true,
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, res.RedirectURL, "/pay/checkout")
+	assert.NotContains(t, res.RedirectURL, "/pay/authorize")
 	assertPayHereCustomerFields(t, res.Reference, "", "")
 }
 

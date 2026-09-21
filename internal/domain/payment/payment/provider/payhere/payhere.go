@@ -321,13 +321,19 @@ func (p *Provider) CreateIntent(_ context.Context, req payment.IntentRequest) (p
 		City:       cust.city,
 		Country:    cust.country,
 	}
+	payload.ReturnURL = firstNonEmpty(payload.ReturnURL, p.cfg.CancelURL)
+	payload.CancelURL = firstNonEmpty(payload.CancelURL, payload.ReturnURL)
+
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return payment.IntentResult{}, fmt.Errorf("payhere: encode checkout payload: %w", err)
 	}
 
 	redirectPath := "/pay/checkout"
-	if req.AuthorizeOnly {
+	// Hold on Card (/pay/authorize) is a PayHere premium feature. Sandbox
+	// merchants that do not have it enabled get a generic "Something went
+	// wrong" page (error codes like 500821092611). Charge immediately instead.
+	if req.AuthorizeOnly && !isSandbox(p.cfg.BaseURL) {
 		redirectPath = "/pay/authorize"
 	}
 
@@ -724,6 +730,10 @@ func payhereLocalPhone(raw string) string {
 		return "0" + raw[2:]
 	}
 	return raw
+}
+
+func isSandbox(baseURL string) bool {
+	return strings.Contains(strings.ToLower(baseURL), "sandbox")
 }
 
 func firstNonEmpty(vals ...string) string {
