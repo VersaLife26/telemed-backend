@@ -1,6 +1,7 @@
 package prescriptions
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 	"telemed/internal/platform/httpx"
 	"telemed/internal/platform/middleware"
+	"telemed/internal/platform/storage"
 )
 
 // Handler wires HTTP to Service.
@@ -147,15 +149,19 @@ func (h *Handler) pdf(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
-	url, err := h.svc.GetPDFURL(r.Context(), p, id, middleware.ClientIP(r), r.UserAgent())
+	body, filename, err := h.svc.PDF(r.Context(), p, id, middleware.ClientIP(r), r.UserAgent())
 	if err != nil {
 		httpx.Error(w, r, err)
 		return
 	}
-	httpx.OK(w, r, map[string]any{
-		"pdf_url":            url,
-		"expires_in_seconds": int((24 * time.Hour).Seconds()),
-	})
+	defer func() { _ = body.Close() }()
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", storage.AttachmentDisposition(filename))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, body)
 }
 
 func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {

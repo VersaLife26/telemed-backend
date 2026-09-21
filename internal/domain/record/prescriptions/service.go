@@ -3,7 +3,9 @@ package prescriptions
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -277,31 +279,38 @@ func (s *Service) GetByAppointment(ctx context.Context, caller middleware.Princi
 	return p, nil
 }
 
-// GetPDFURL authorizes and returns a 24-hour presigned URL to the generated
-// PDF, per AGENT-BRIEF's longer TTL for prescriptions vs. 15 minutes for
-// general records (a patient may not open the link the moment it is sent).
-func (s *Service) GetPDFURL(ctx context.Context, caller middleware.Principal, id uuid.UUID, ip, ua string) (string, error) {
+// PDF authorizes and opens the stored prescription file.
+//
+// Bytes go through this service rather than a presigned /files URL. The
+// public API gateway has no /files route, so handing the browser a
+// filesystem presign made Download PDF land on NOT_FOUND. The gateway
+// already documents this endpoint as application/pdf.
+func (s *Service) PDF(ctx context.Context, caller middleware.Principal, id uuid.UUID, ip, ua string) (io.ReadCloser, string, error) {
 	p, ok, err := s.repo.GetByID(ctx, s.pool, id)
 	if err != nil {
-		return "", httpx.ErrInternal.WithCause(err)
+		return nil, "", httpx.ErrInternal.WithCause(err)
 	}
 	if !ok {
-		return "", httpx.ErrNotFound
+		return nil, "", httpx.ErrNotFound
 	}
 	if err := s.access.Check(ctx, access.CheckOptions{
 		Principal: caller, OwnerUserID: p.PatientID, Resource: access.ResourcePrescription,
 		ResourceID: p.ID, Action: access.ActionDownload, IPAddress: ip, UserAgent: ua,
 	}); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if p.PDFObjectKey == "" {
-		return "", httpx.ErrInternal.WithCause(fmt.Errorf("prescriptions: %s has no stored pdf", p.ID))
+		return nil, "", httpx.ErrInternal.WithCause(fmt.Errorf("prescriptions: %s has no stored pdf", p.ID))
 	}
-	url, err := s.store.PresignedGet(ctx, storage.BucketPrescriptions, p.PDFObjectKey, storage.PrescriptionPresignTTL)
+	body, err := s.store.Get(ctx, storage.BucketPrescriptions, p.PDFObjectKey)
 	if err != nil {
-		return "", httpx.ErrInternal.WithCause(err)
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, "", httpx.ErrNotFound.WithCause(err)
+		}
+		return nil, "", httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable,
+			"prescription storage is unavailable").WithCause(err)
 	}
-	return url, nil
+	return body, "prescription-" + p.ID.String() + ".pdf", nil
 }
 
 // VerifyResult is the deliberately minimal shape returned by the public
