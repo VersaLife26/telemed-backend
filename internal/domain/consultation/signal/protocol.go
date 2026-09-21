@@ -63,6 +63,9 @@ const (
 	TypePing = "ping"
 	// TypeChat carries an in-meeting chat message between doctor and patient.
 	TypeChat = "chat"
+	// TypePointer is a Zoom-style laser pointer: normalised coordinates on
+	// the video (or an open file) so each side can point at a detail.
+	TypePointer = "pointer"
 )
 
 // Frame types only the hub sends.
@@ -89,6 +92,7 @@ var relayable = map[string]bool{
 	TypeRecordingState: true,
 	TypeQuality:        true,
 	TypeChat:           true,
+	TypePointer:        true,
 }
 
 // Welcome is the first frame the hub sends a peer that has joined.
