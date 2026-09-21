@@ -102,9 +102,11 @@ type IntentRequest struct {
 	IdempotencyKey string
 
 	Description string
-	// PatientPhone is E.164 and is only populated for carrier billing, which
-	// cannot work without it. It is never logged unmasked.
+	// PatientPhone is E.164. Required for carrier billing; also sent to PayHere
+	// hosted checkout. It is never logged unmasked.
 	PatientPhone string
+	// PatientEmail is sent to PayHere hosted checkout when present.
+	PatientEmail string
 	ReturnURL    string
 	// AuthorizeOnly asks the provider to pre-authorize / hold funds rather than
 	// immediately charging. Supported by PayHere Hold on Card.

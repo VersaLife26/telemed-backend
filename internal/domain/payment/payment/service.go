@@ -115,8 +115,9 @@ type CreateIntentInput struct {
 	CallerIsOps bool
 
 	Provider ProviderName
-	// PatientPhone is required for carrier billing and ignored otherwise.
+	// PatientPhone is required for carrier billing; also used for PayHere checkout.
 	PatientPhone string
+	PatientEmail string
 	ReturnURL    string
 }
 
@@ -211,6 +212,7 @@ func (s *Service) CreateIntent(ctx context.Context, in CreateIntentInput) (Inten
 		IdempotencyKey:   existing.IdempotencyKey,
 		Description:      "Telemedicine consultation " + existing.AppointmentID.String(),
 		PatientPhone:     in.PatientPhone,
+		PatientEmail:     in.PatientEmail,
 		ReturnURL:        in.ReturnURL,
 		ScheduledStartAt: existing.ScheduledStartAt,
 	}

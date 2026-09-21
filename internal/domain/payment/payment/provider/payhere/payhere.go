@@ -267,6 +267,13 @@ type CheckoutPayload struct {
 	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Hash       string `json:"hash"`
+	FirstName  string `json:"first_name"`
+	LastName   string `json:"last_name"`
+	Email      string `json:"email"`
+	Phone      string `json:"phone"`
+	Address    string `json:"address"`
+	City       string `json:"city"`
+	Country    string `json:"country"`
 }
 
 // CreateIntent prepares a signed hosted-checkout payload.
@@ -295,6 +302,7 @@ func (p *Provider) CreateIntent(_ context.Context, req payment.IntentRequest) (p
 		return payment.IntentResult{}, fmt.Errorf("%w: %w", payment.ErrProviderRejected, err)
 	}
 
+	cust := checkoutCustomer(req)
 	payload := CheckoutPayload{
 		MerchantID: p.cfg.MerchantID,
 		ReturnURL:  firstNonEmpty(req.ReturnURL, p.cfg.ReturnURL),
@@ -305,6 +313,13 @@ func (p *Provider) CreateIntent(_ context.Context, req payment.IntentRequest) (p
 		Currency:   currency,
 		Amount:     amount,
 		Hash:       CheckoutHash(p.cfg.MerchantID, orderID, amount, currency, p.secretHash),
+		FirstName:  cust.firstName,
+		LastName:   cust.lastName,
+		Email:      cust.email,
+		Phone:      cust.phone,
+		Address:    cust.address,
+		City:       cust.city,
+		Country:    cust.country,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -669,6 +684,46 @@ func (p *Provider) SupportsPartialRefund() bool { return false }
 // method that returns nil and quietly marks doctors paid.
 func (p *Provider) Payout(_ context.Context, _ payment.PayoutRequest) (payment.PayoutResult, error) {
 	return payment.PayoutResult{}, fmt.Errorf("%w: PayHere has no third-party payout API; settle doctors over Stripe Connect or by bank transfer", payment.ErrUnsupported)
+}
+
+type checkoutCustomerFields struct {
+	firstName, lastName, email, phone, address, city, country string
+}
+
+func checkoutCustomer(req payment.IntentRequest) checkoutCustomerFields {
+	email := strings.TrimSpace(req.PatientEmail)
+	if email == "" || !strings.Contains(email, "@") {
+		pid := req.PaymentID.String()
+		if req.PaymentID == uuid.Nil {
+			pid = req.AppointmentID.String()
+		}
+		email = "patient-" + pid + "@versalifehealth.com"
+	}
+	phone := payhereLocalPhone(req.PatientPhone)
+	return checkoutCustomerFields{
+		firstName: "Patient",
+		lastName:  "User",
+		email:     email,
+		phone:     phone,
+		address:   "Colombo",
+		city:      "Colombo",
+		country:   "Sri Lanka",
+	}
+}
+
+// payhereLocalPhone renders E.164 Sri Lankan numbers as 07XXXXXXXX for PayHere forms.
+func payhereLocalPhone(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "0770000000"
+	}
+	if strings.HasPrefix(raw, "+94") && len(raw) >= 12 {
+		return "0" + raw[3:]
+	}
+	if strings.HasPrefix(raw, "94") && len(raw) >= 11 && raw[2] == '7' {
+		return "0" + raw[2:]
+	}
+	return raw
 }
 
 func firstNonEmpty(vals ...string) string {

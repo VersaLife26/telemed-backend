@@ -279,6 +279,7 @@ func TestPayHereCreateIntentSignsTheCheckout(t *testing.T) {
 	assert.Contains(t, res.Reference, `"amount":"5000.00"`)
 	assert.Contains(t, res.Reference, `"merchant_id":"`+testMerchant+`"`)
 	assert.Contains(t, res.Reference, `"notify_url":"https://api.example.lk/webhooks/payhere"`)
+	assertPayHereCustomerFields(t, res.Reference, "", "")
 }
 
 func TestPayHereCreateIntentAuthorizeOnly(t *testing.T) {
@@ -296,6 +297,45 @@ func TestPayHereCreateIntentAuthorizeOnly(t *testing.T) {
 	assert.Equal(t, payment.IntentRequiresAction, res.Status)
 	assert.Contains(t, res.RedirectURL, "payhere.lk/pay/authorize")
 	assert.Contains(t, res.Reference, `"amount":"5000.00"`)
+	assertPayHereCustomerFields(t, res.Reference, "", "")
+}
+
+func TestPayHereCreateIntentUsesPatientContact(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider(t)
+	paymentID := uuid.MustParse("3f1a6b7c-0000-4000-8000-000000000042")
+	res, err := p.CreateIntent(context.Background(), payment.IntentRequest{
+		PaymentID:    paymentID,
+		AmountCents:  500000,
+		Currency:     "LKR",
+		Description:  "Telemedicine consultation",
+		PatientEmail: "saman@example.com",
+		PatientPhone: "+94771234567",
+	})
+	require.NoError(t, err)
+	assertPayHereCustomerFields(t, res.Reference, "saman@example.com", "0771234567")
+}
+
+func assertPayHereCustomerFields(t *testing.T, reference, wantEmail, wantPhone string) {
+	t.Helper()
+	for _, key := range []string{"first_name", "last_name", "email", "phone", "address", "city", "country"} {
+		assert.Contains(t, reference, `"`+key+`":`, "missing %s in checkout payload", key)
+	}
+	assert.Contains(t, reference, `"first_name":"Patient"`)
+	assert.Contains(t, reference, `"last_name":"User"`)
+	assert.Contains(t, reference, `"country":"Sri Lanka"`)
+	if wantEmail != "" {
+		assert.Contains(t, reference, `"email":"`+wantEmail+`"`)
+	} else {
+		assert.Contains(t, reference, `"email":"patient-`)
+		assert.Contains(t, reference, `@versalifehealth.com"`)
+	}
+	if wantPhone != "" {
+		assert.Contains(t, reference, `"phone":"`+wantPhone+`"`)
+	} else {
+		assert.Contains(t, reference, `"phone":"0770000000"`)
+	}
 }
 
 func TestPayHereVerifyWebhookAuthorized(t *testing.T) {

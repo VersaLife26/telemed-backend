@@ -122,12 +122,16 @@ func (h *Handler) createIntent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if phone == "" {
+		phone = p.Phone
+	}
 	view, err := h.svc.CreateIntent(r.Context(), CreateIntentInput{
 		AppointmentID: appointmentID,
 		CallerID:      p.UserID,
 		CallerIsOps:   p.HasAdminRole(middleware.RoleSuperAdmin, middleware.RoleFinance, middleware.RoleOps),
 		Provider:      ProviderName(body.Provider),
 		PatientPhone:  phone,
+		PatientEmail:  p.Email,
 		ReturnURL:     body.ReturnURL,
 	})
 	if err != nil {
