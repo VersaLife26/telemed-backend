@@ -831,7 +831,7 @@ func (s *Service) translate(err error, appointmentID uuid.UUID, currentVersion i
 			"only a finalised note can be amended; this one is still a draft").WithCause(err)
 	case errors.Is(err, errNoChange):
 		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
-			"the amendment does not change anything").WithCause(err)
+			"change at least one SOAP section or diagnosis; a reason alone does not create a revision").WithCause(err)
 	case errors.Is(err, errEmpty):
 		return httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
 			"a clinical note must have content in at least one section before it can be finalised").WithCause(err)
