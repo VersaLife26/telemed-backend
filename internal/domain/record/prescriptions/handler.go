@@ -62,13 +62,13 @@ type issueItemRequest struct {
 }
 
 type issueRequest struct {
-	AppointmentID        uuid.UUID          `json:"appointment_id" validate:"required"`
-	DoctorName           string             `json:"doctor_name" validate:"required"`
-	DoctorSLMC           string             `json:"doctor_slmc" validate:"required,slmc"`
+	AppointmentID uuid.UUID `json:"appointment_id" validate:"required"`
+	DoctorName    string    `json:"doctor_name" validate:"required"`
+	DoctorSLMC    string    `json:"doctor_slmc" validate:"required,slmc"`
 	// max=500, not 200: this now carries the doctor's degree AND a
 	// "University: ..." line, newline-separated (see pdf.go), where 200
 	// used to be enough for a single freeform sentence.
-	DoctorQualifications string `json:"doctor_qualifications" validate:"max=500"`
+	DoctorQualifications string             `json:"doctor_qualifications" validate:"max=500"`
 	ClinicName           string             `json:"clinic_name" validate:"max=200"`
 	PatientName          string             `json:"patient_name" validate:"required"`
 	PatientAge           int                `json:"patient_age" validate:"min=0,max=130"`

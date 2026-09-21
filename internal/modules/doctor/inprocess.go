@@ -82,7 +82,7 @@ func NewInProcessCredentialImages(svc *doctor.Service) *InProcessCredentialImage
 	return &InProcessCredentialImages{svc: svc}
 }
 
-func (c *InProcessCredentialImages) SignatureAndSealKeys(ctx context.Context, doctorID uuid.UUID) (string, string, error) {
+func (c *InProcessCredentialImages) SignatureAndSealKeys(ctx context.Context, doctorID uuid.UUID) (signatureKey, sealKey string, err error) {
 	return c.svc.SignatureAndSealKeys(ctx, doctorID)
 }
 

@@ -113,7 +113,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "generate pdf: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(out, pdf, 0o644); err != nil {
+	if err := os.WriteFile(out, pdf, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "write %s: %v\n", out, err)
 		os.Exit(1)
 	}
