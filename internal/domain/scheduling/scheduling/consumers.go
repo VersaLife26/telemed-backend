@@ -57,6 +57,7 @@ func (c *Consumers) Subjects() []events.Subject {
 		events.SubjectAdminAppointmentForceCancel,
 		events.SubjectAdminDoubleBookingResolveRequested,
 		events.SubjectConsultationPatientNoShow,
+		events.SubjectConsultationEnded,
 	}
 }
 
@@ -84,6 +85,8 @@ func (c *Consumers) Handle(ctx context.Context, env events.Envelope) error {
 		err = c.handleAdminResolveDoubleBooking(ctx, env)
 	case events.SubjectConsultationPatientNoShow:
 		err = c.handleConsultationPatientNoShow(ctx, env)
+	case events.SubjectConsultationEnded:
+		err = c.handleConsultationEnded(ctx, env)
 	default:
 		// Subscribing to a subject we do not handle is a wiring bug, but
 		// nak-ing forever would wedge the consumer. Ack and complain.
@@ -696,6 +699,37 @@ func (c *Consumers) handleConsultationPatientNoShow(ctx context.Context, env eve
 		c.log.Error().Str("appointment_id", maskID(p.AppointmentID)).
 			Str("event_id", env.ID.String()).
 			Msg("unused slot closed for an unknown appointment")
+		return nil
+	default:
+		return err
+	}
+}
+
+func (c *Consumers) handleConsultationEnded(ctx context.Context, env events.Envelope) error {
+	var p events.ConsultationEnded
+	if err := env.Decode(&p); err != nil {
+		c.log.Error().Err(err).Str("event_id", env.ID.String()).
+			Msg("dropping unparseable consultation.ended")
+		return nil
+	}
+	if p.AppointmentID == uuid.Nil {
+		c.log.Error().Str("event_id", env.ID.String()).
+			Msg("consultation.ended without an appointment_id")
+		return nil
+	}
+	_, err := c.svc.MarkTerminal(ctx, p.AppointmentID, uuid.Nil, "system", AppointmentCompleted)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrAppointmentNotCancellable):
+		c.log.Info().Str("appointment_id", maskID(p.AppointmentID)).
+			Str("event_id", env.ID.String()).
+			Msg("consultation ended: appointment was already closed")
+		return nil
+	case errors.Is(err, ErrAppointmentNotFound):
+		c.log.Error().Str("appointment_id", maskID(p.AppointmentID)).
+			Str("event_id", env.ID.String()).
+			Msg("consultation ended for an unknown appointment")
 		return nil
 	default:
 		return err
