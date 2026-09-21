@@ -460,7 +460,13 @@ func (s *Service) Admit(ctx context.Context, principal middleware.Principal, con
 // must not surface as a client-visible failure.
 func (s *Service) End(ctx context.Context, principal middleware.Principal, consultationID uuid.UUID, reason string) (*Consultation, error) {
 	c, err := s.store.GetConsultation(ctx, s.pool, consultationID)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
+		var apptErr error
+		c, apptErr = s.store.GetConsultationByAppointment(ctx, s.pool, consultationID)
+		if apptErr != nil {
+			return nil, err
+		}
+	} else if err != nil {
 		return nil, err
 	}
 	if _, ok := authorizeParty(principal, c); !ok && !principal.IsAdmin() {
