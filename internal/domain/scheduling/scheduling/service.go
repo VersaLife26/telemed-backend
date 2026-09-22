@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -150,6 +151,12 @@ type BookSlotInput struct {
 	// patient booking a cardiologist they never chose.
 	DoctorID *uuid.UUID
 	Intake   json.RawMessage
+
+	// VisitPatientName and VisitPatientDOB snapshot who this consultation is
+	// for at booking time (the account holder or someone else). Scheduling does
+	// not trust family_member_id without an ownership read from user-service.
+	VisitPatientName string
+	VisitPatientDOB  time.Time
 
 	// There is deliberately NO FamilyMemberID here.
 	//
@@ -309,6 +316,11 @@ func (s *Service) bookSlot(ctx context.Context, in BookSlotInput) (Appointment, 
 				ErrDoctorNotPriced, maskID(slot.DoctorID), pricing.FeeCents)
 		}
 
+		var visitDOB *time.Time
+		if !in.VisitPatientDOB.IsZero() {
+			d := in.VisitPatientDOB.UTC()
+			visitDOB = &d
+		}
 		appt = Appointment{
 			ID:                 appointmentID,
 			PatientID:          in.PatientID,
@@ -318,6 +330,8 @@ func (s *Service) bookSlot(ctx context.Context, in BookSlotInput) (Appointment, 
 			SlotEndAt:          slot.EndAt,
 			Status:             AppointmentPendingPayment,
 			Intake:             in.Intake,
+			VisitPatientName:   strings.TrimSpace(in.VisitPatientName),
+			VisitPatientDOB:    visitDOB,
 			PrepaymentRequired: prepaymentRequired,
 			AmountCents:        pricing.FeeCents,
 			Currency:           pricing.Currency,

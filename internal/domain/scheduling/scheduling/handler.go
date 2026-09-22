@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -72,8 +73,14 @@ func (h *Handler) withCounterpartNames(ctx context.Context, role string, dtos []
 		}
 		names := h.names.Names(ctx, ids)
 		for i := range dtos {
-			dtos[i].PatientName = names[dtos[i].PatientID]
-			dtos[i].CounterpartName = dtos[i].PatientName
+			accountName := names[dtos[i].PatientID]
+			if dtos[i].VisitPatientName != "" {
+				dtos[i].PatientName = dtos[i].VisitPatientName
+				dtos[i].CounterpartName = dtos[i].VisitPatientName
+			} else {
+				dtos[i].PatientName = accountName
+				dtos[i].CounterpartName = accountName
+			}
 		}
 	case ActorPatient:
 		if h.doctors == nil {
@@ -455,6 +462,9 @@ func (h *Handler) listSlots(w http.ResponseWriter, r *http.Request) {
 type bookAppointmentRequest struct {
 	SlotID   uuid.UUID  `json:"slot_id" validate:"required"`
 	DoctorID *uuid.UUID `json:"doctor_id,omitempty"`
+	// Snapshot of who the visit is for (required on every booking).
+	VisitPatientName string `json:"visit_patient_name" validate:"required,max=200"`
+	VisitPatientDOB  string `json:"visit_patient_dob" validate:"required"`
 	// FamilyMemberID is still DECODED so the request can be refused with a
 	// reason. Dropping the field from the struct instead would make
 	// httpx.DecodeJSON's DisallowUnknownFields answer "unknown field
@@ -515,12 +525,31 @@ func (h *Handler) bookAppointment(w http.ResponseWriter, r *http.Request) {
 				"and an unverified one would attribute this appointment to someone else"))
 		return
 	}
+	visitDOB, err := ParseVisitDOB(req.VisitPatientDOB)
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"visit_patient_dob must be YYYY-MM-DD"))
+		return
+	}
+	if visitDOB.After(time.Now().UTC()) {
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"visit_patient_dob cannot be in the future"))
+		return
+	}
+	name := strings.TrimSpace(req.VisitPatientName)
+	if name == "" {
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"visit_patient_name is required"))
+		return
+	}
 
 	appt, err := h.svc.BookSlot(r.Context(), BookSlotInput{
-		SlotID:    req.SlotID,
-		PatientID: actorID,
-		DoctorID:  req.DoctorID,
-		Intake:    req.Intake,
+		SlotID:           req.SlotID,
+		PatientID:        actorID,
+		DoctorID:         req.DoctorID,
+		Intake:           req.Intake,
+		VisitPatientName: name,
+		VisitPatientDOB:  visitDOB,
 	})
 	if err != nil {
 		httpx.Error(w, r, APIError(err))

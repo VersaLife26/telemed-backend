@@ -413,10 +413,19 @@ func (r *Repository) CountInconsistentSlots(ctx context.Context, q Querier) (int
 // ---------------------------------------------------------------------------
 
 const appointmentColumns = `id, patient_id, doctor_id, slot_id, slot_start_at, slot_end_at,
-	status, intake, family_member_id, prepayment_required, amount_cents, currency, specialty,
+	status, intake, family_member_id, visit_patient_name, visit_patient_dob, prepayment_required,
+	amount_cents, currency, specialty,
 	payment_id, confirmed_at, completed_at, no_show_at,
 	cancelled_at, cancelled_by, cancelled_by_role, cancellation_reason, refund_policy,
 	version, created_at, updated_at`
+
+func nullIfEmpty(s string) *string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	return &s
+}
 
 func scanAppointment(row pgx.Row) (Appointment, error) {
 	var a Appointment
@@ -427,8 +436,10 @@ func scanAppointment(row pgx.Row) (Appointment, error) {
 	var amountCents *int64
 	var currency, specialty *string
 	var intake []byte
+	var visitName *string
+	var visitDOB *time.Time
 	err := row.Scan(&a.ID, &a.PatientID, &a.DoctorID, &a.SlotID, &a.SlotStartAt, &a.SlotEndAt,
-		&a.Status, &intake, &a.FamilyMemberID, &a.PrepaymentRequired, &amountCents, &currency, &specialty,
+		&a.Status, &intake, &a.FamilyMemberID, &visitName, &visitDOB, &a.PrepaymentRequired, &amountCents, &currency, &specialty,
 		&a.PaymentID, &a.ConfirmedAt, &a.CompletedAt,
 		&a.NoShowAt, &a.CancelledAt, &a.CancelledBy, &role, &reason, &policy,
 		&a.Version, &a.CreatedAt, &a.UpdatedAt)
@@ -447,6 +458,10 @@ func scanAppointment(row pgx.Row) (Appointment, error) {
 	if specialty != nil {
 		a.Specialty = *specialty
 	}
+	if visitName != nil {
+		a.VisitPatientName = *visitName
+	}
+	a.VisitPatientDOB = visitDOB
 	if role != nil {
 		a.CancelledByRole = *role
 	}
@@ -551,16 +566,16 @@ func (r *Repository) InsertAppointment(ctx context.Context, tx pgx.Tx, a *Appoin
 	const q = `
 		INSERT INTO appointments
 			(id, patient_id, doctor_id, slot_id, slot_start_at, slot_end_at,
-			 status, intake, family_member_id, prepayment_required,
+			 status, intake, family_member_id, visit_patient_name, visit_patient_dob, prepayment_required,
 			 amount_cents, currency, specialty, version, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, NOW(), NOW())
 		RETURNING created_at, updated_at`
 	intake := a.Intake
 	if len(intake) == 0 {
 		intake = []byte(`{}`)
 	}
 	err := tx.QueryRow(ctx, q, a.ID, a.PatientID, a.DoctorID, a.SlotID, a.SlotStartAt, a.SlotEndAt,
-		string(a.Status), intake, a.FamilyMemberID, a.PrepaymentRequired,
+		string(a.Status), intake, a.FamilyMemberID, nullIfEmpty(a.VisitPatientName), a.VisitPatientDOB, a.PrepaymentRequired,
 		a.AmountCents, a.Currency, a.Specialty).Scan(&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("scheduling: insert appointment: %w", err)

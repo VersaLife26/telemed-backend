@@ -167,6 +167,8 @@ type Appointment struct {
 	Status             AppointmentStatus
 	Intake             json.RawMessage
 	FamilyMemberID     *uuid.UUID
+	VisitPatientName   string
+	VisitPatientDOB    *time.Time
 	PrepaymentRequired bool
 
 	// AmountCents is the QUOTE, in cents, fixed at booking from

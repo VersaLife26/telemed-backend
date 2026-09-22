@@ -76,6 +76,12 @@ type AppointmentDTO struct {
 	// queue and the call screen say who the visit is with.
 	PatientName string `json:"patient_name,omitempty"`
 
+	// VisitPatientName is the person this consultation is for, captured at
+	// booking (may differ from the account holder's profile name).
+	VisitPatientName string `json:"visit_patient_name,omitempty"`
+	VisitPatientDOB  string `json:"visit_patient_dob,omitempty"`
+	VisitPatientAge  int    `json:"visit_patient_age,omitempty"`
+
 	// CounterpartName is the other party's display name: the patient's name
 	// for a doctor, the doctor's name for a patient.
 	CounterpartName string `json:"counterpart_name,omitempty"`
@@ -133,6 +139,13 @@ func NewAppointmentDTO(a Appointment, loc *time.Location, withIntake bool) Appoi
 	}
 	if withIntake {
 		d.Intake = a.Intake
+	}
+	if a.VisitPatientName != "" {
+		d.VisitPatientName = a.VisitPatientName
+	}
+	if a.VisitPatientDOB != nil && !a.VisitPatientDOB.IsZero() {
+		d.VisitPatientDOB = a.VisitPatientDOB.UTC().Format("2006-01-02")
+		d.VisitPatientAge = AgeAtVisit(*a.VisitPatientDOB, a.SlotStartAt, loc)
 	}
 	if a.RefundPolicy != nil {
 		d.RefundPolicy = string(*a.RefundPolicy)
