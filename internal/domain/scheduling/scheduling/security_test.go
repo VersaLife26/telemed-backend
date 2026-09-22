@@ -625,10 +625,10 @@ func TestBookingRefusesACallerSuppliedFamilyMemberID(t *testing.T) {
 	victimsDependant := uuid.New()
 
 	body, _ := json.Marshal(map[string]any{
-		"slot_id":             slotID,
-		"family_member_id":    victimsDependant,
-		"visit_patient_name":  "Someone Else",
-		"visit_patient_dob":   "2010-05-01",
+		"slot_id":            slotID,
+		"family_member_id":   victimsDependant,
+		"visit_patient_name": "Someone Else",
+		"visit_patient_dob":  "2010-05-01",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/appointments", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
@@ -679,9 +679,9 @@ func TestBookingWithoutAFamilyMemberIDStillWorks(t *testing.T) {
 	slotID := seedPricedSlot(t, pool, doctorID, time.Now().Add(6*time.Hour), 15*time.Minute)
 
 	body, _ := json.Marshal(map[string]any{
-		"slot_id":             slotID,
-		"visit_patient_name":  "Attacker Self",
-		"visit_patient_dob":   "1990-01-15",
+		"slot_id":            slotID,
+		"visit_patient_name": "Attacker Self",
+		"visit_patient_dob":  "1990-01-15",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/appointments", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
