@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/go-pdf/fpdf"
 	"github.com/skip2/go-qrcode"
@@ -50,166 +49,266 @@ type CredentialImage struct {
 	Kind  string // fpdf ImageType: "PNG" or "JPG"
 }
 
-// GeneratePDF renders a complete, print-ready prescription: a VersaLife
-// header, the doctor's name/university/SLMC number/qualifications, patient
-// name and age, issue date, an Rx table of items, a signature block (the
-// doctor's actual signature and seal images when available), a footer, and
-// a QR code encoding the verification URL. It returns the raw PDF bytes.
+// Brand colours from the VersaLife mark (public/assets/logo.svg).
+const (
+	brandNavyR, brandNavyG, brandNavyB = 1, 85, 145   // #015591
+	brandMintR, brandMintG, brandMintB = 80, 200, 152 // #50C898
+	pdfLeft                            = 16.0
+	pdfRight                           = 194.0
+)
+
+// GeneratePDF renders a print-ready VersaLife prescription: logo and
+// wordmark, the doctor's name, university, and SLMC number, the patient's
+// name and age, the medicines, then the doctor's signature and stamp with
+// a verification QR. It returns the raw PDF bytes.
 func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, verifyURL string,
 	signature, seal *CredentialImage,
 ) ([]byte, error) {
 	pdf := fpdf.New("P", "mm", "A4", "")
-	pdf.SetMargins(18, 16, 18)
+	pdf.SetMargins(pdfLeft, 14, 16)
+	pdf.SetAutoPageBreak(false, 0)
 	pdf.AddPage()
 
-	// --- header: logo + wordmark -----------------------------------------
-	const headerTop, logoW = 14.0, 14.0
+	contentW := pdfRight - pdfLeft
+
+	// --- header: logo, wordmark, document title --------------------------
+	const headerTop, logoW = 12.0, 16.0
 	logoH := logoW
 	if info := pdf.RegisterImageOptionsReader("versalife-logo", fpdf.ImageOptions{ImageType: "PNG"}, bytes.NewReader(versalifeLogoPNG)); info != nil && info.Width() > 0 {
 		logoH = logoW * info.Height() / info.Width()
 	}
-	pdf.ImageOptions("versalife-logo", 18, headerTop, logoW, logoH, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
+	pdf.ImageOptions("versalife-logo", pdfLeft, headerTop, logoW, logoH, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
 
-	textX := 18 + logoW + 4
-	pdf.SetXY(textX, headerTop)
-	pdf.SetFont("Arial", "B", 15)
-	pdf.CellFormat(0, 6, "VersaLife Telemedicine", "", 1, "L", false, 0, "")
+	textX := pdfLeft + logoW + 4
+	pdf.SetXY(textX, headerTop+1)
+	pdf.SetFont("Arial", "B", 16)
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.CellFormat(90, 7, "VersaLife", "", 1, "L", false, 0, "")
 	pdf.SetX(textX)
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont("Arial", "", 9)
+	pdf.SetTextColor(70, 70, 70)
+	pdf.CellFormat(90, 4, "Telemedicine", "", 1, "L", false, 0, "")
+
+	pdf.SetXY(120, headerTop+2)
+	pdf.SetFont("Arial", "B", 11)
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.CellFormat(pdfRight-120, 6, "E-PRESCRIPTION", "", 1, "R", false, 0, "")
+	pdf.SetX(120)
+	pdf.SetFont("Arial", "", 8)
 	pdf.SetTextColor(90, 90, 90)
-	pdf.CellFormat(0, 5, "E-Prescription", "", 1, "L", false, 0, "")
-	pdf.SetTextColor(0, 0, 0)
-	// clinic.ClinicName is almost always "VersaLife Telemedicine" already
-	// (see issuePayload in the frontend); repeating it under a header that
-	// already says so is noise, not information.
+	subtitle := "Sri Lanka"
 	if clinic.ClinicName != "" && !strings.EqualFold(strings.TrimSpace(clinic.ClinicName), "VersaLife Telemedicine") {
-		pdf.SetX(textX)
-		pdf.SetFont("Arial", "", 9)
-		pdf.CellFormat(0, 5, clinic.ClinicName, "", 1, "L", false, 0, "")
+		subtitle = pdfSafe(clinic.ClinicName)
 	}
-	pdf.SetY(max(pdf.GetY(), headerTop+logoH) + 3)
+	pdf.CellFormat(pdfRight-120, 4, subtitle, "", 1, "R", false, 0, "")
 
-	// --- doctor block ------------------------------------------------------
-	pdf.SetFont("Arial", "B", 12)
-	pdf.CellFormat(0, 6, "Dr. "+p.DoctorName, "", 1, "L", false, 0, "")
-	pdf.SetFont("Arial", "", 10)
-	pdf.CellFormat(0, 5, "SLMC Registration No: "+p.DoctorSLMC, "", 1, "L", false, 0, "")
-	if p.DoctorQualifications != "" {
-		// Sent as one or more newline-separated lines -- e.g. a degree line
-		// and a "University: ..." line -- rather than one run-on sentence,
-		// so the credentials block reads the way a printed prescription pad
-		// does instead of a comma-separated database dump.
-		for _, line := range strings.Split(p.DoctorQualifications, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			pdf.CellFormat(0, 5, line, "", 1, "L", false, 0, "")
-		}
-	}
+	barY := max(headerTop+logoH, pdf.GetY()) + 3
+	pdf.SetFillColor(brandMintR, brandMintG, brandMintB)
+	pdf.Rect(pdfLeft, barY, contentW, 1.6, "F")
+	pdf.SetY(barY + 6)
 
-	pdf.Ln(3)
-	pdf.SetDrawColor(180, 180, 180)
-	y := pdf.GetY()
-	pdf.Line(18, y, 192, y)
-	pdf.Ln(4)
-
-	// --- patient + date --------------------------------------------------
-	pdf.SetFont("Arial", "B", 10)
-	pdf.CellFormat(95, 6, "Patient: "+patient.Name, "", 0, "L", false, 0, "")
-	if patient.Age > 0 {
-		pdf.CellFormat(0, 6, fmt.Sprintf("Age: %d", patient.Age), "", 1, "L", false, 0, "")
-	} else {
-		pdf.Ln(6)
-	}
-	pdf.SetFont("Arial", "", 10)
-	pdf.CellFormat(95, 6, "Date: "+p.IssuedAt.UTC().Format("2006-01-02 15:04 MST"), "", 0, "L", false, 0, "")
-	pdf.CellFormat(0, 6, "Prescription ID: "+p.ID.String(), "", 1, "L", false, 0, "")
-	pdf.Ln(4)
-
-	// --- Rx table --------------------------------------------------------
+	// --- doctor: name, degree, university, SLMC --------------------------
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
 	pdf.SetFont("Arial", "B", 13)
-	pdf.CellFormat(0, 7, "Rx", "", 1, "L", false, 0, "")
+	pdf.CellFormat(contentW, 7, "Dr. "+pdfDoctorName(p.DoctorName), "", 1, "L", false, 0, "")
+	pdf.SetTextColor(40, 40, 40)
+	pdf.SetFont("Arial", "", 10)
+	for _, line := range strings.Split(p.DoctorQualifications, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pdf.MultiCell(contentW, 5, pdfSafe(line), "", "L", false)
+	}
+	pdf.SetFont("Arial", "B", 10)
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.CellFormat(contentW, 6, "SLMC Registration No. "+pdfSafe(p.DoctorSLMC), "", 1, "L", false, 0, "")
 
-	pdf.SetFont("Arial", "B", 9)
-	pdf.SetFillColor(235, 235, 235)
-	widths := []float64{50, 22, 20, 32, 24, 16, 10}
-	headers := []string{"Drug", "Strength", "Form", "Dosage / Frequency", "Duration", "Qty", "Gen."}
+	// --- patient card ------------------------------------------------------
+	pdf.Ln(3)
+	cardY := pdf.GetY()
+	const cardH = 16.0
+	pdf.SetFillColor(232, 242, 250)
+	pdf.Rect(pdfLeft, cardY, contentW, cardH, "F")
+	pdf.SetXY(pdfLeft+4, cardY+2)
+	pdf.SetFont("Arial", "", 7)
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.CellFormat(100, 4, "PATIENT", "", 0, "L", false, 0, "")
+	pdf.CellFormat(30, 4, "AGE", "", 0, "L", false, 0, "")
+	pdf.CellFormat(0, 4, "DATE", "", 1, "L", false, 0, "")
+	pdf.SetX(pdfLeft + 4)
+	pdf.SetFont("Arial", "B", 11)
+	pdf.SetTextColor(20, 20, 20)
+	age := "-"
+	if patient.Age > 0 {
+		age = fmt.Sprintf("%d years", patient.Age)
+	}
+	pdf.CellFormat(100, 6, pdfSafe(patient.Name), "", 0, "L", false, 0, "")
+	pdf.SetFont("Arial", "", 11)
+	pdf.CellFormat(30, 6, age, "", 0, "L", false, 0, "")
+	pdf.CellFormat(0, 6, p.IssuedAt.UTC().Format("02 Jan 2006"), "", 1, "L", false, 0, "")
+	pdf.SetY(cardY + cardH + 6)
+
+	// --- medicines ---------------------------------------------------------
+	pdf.SetFont("Arial", "B", 14)
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.CellFormat(contentW, 8, "Rx", "", 1, "L", false, 0, "")
+
+	widths := []float64{48, 22, 20, 36, 22, 16, 14}
+	headers := []string{"Medicine", "Strength", "Form", "Dosage / Frequency", "Duration", "Qty", "Generic"}
+	pdf.SetFillColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.SetTextColor(255, 255, 255)
+	pdf.SetFont("Arial", "B", 7)
 	for i, h := range headers {
-		pdf.CellFormat(widths[i], 7, h, "1", 0, "C", true, 0, "")
+		pdf.CellFormat(widths[i], 7, h, "", 0, "C", true, 0, "")
 	}
 	pdf.Ln(-1)
 
+	pdf.SetTextColor(30, 30, 30)
 	pdf.SetFont("Arial", "", 9)
+	pdf.SetDrawColor(210, 220, 230)
 	for i := range p.Items {
 		it := &p.Items[i]
+		if i%2 == 0 {
+			pdf.SetFillColor(245, 248, 252)
+		} else {
+			pdf.SetFillColor(255, 255, 255)
+		}
 		generic := ""
 		if it.IsGeneric {
 			generic = "Yes"
 		}
-		rowHeight := 7.0
-		pdf.CellFormat(widths[0], rowHeight, it.DrugName, "1", 0, "L", false, 0, "")
-		pdf.CellFormat(widths[1], rowHeight, it.Strength, "1", 0, "C", false, 0, "")
-		pdf.CellFormat(widths[2], rowHeight, it.Form, "1", 0, "C", false, 0, "")
-		pdf.CellFormat(widths[3], rowHeight, it.Dosage+" / "+it.Frequency, "1", 0, "L", false, 0, "")
-		pdf.CellFormat(widths[4], rowHeight, fmt.Sprintf("%d days", it.DurationDays), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(widths[5], rowHeight, fmt.Sprintf("%d", it.Quantity), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(widths[6], rowHeight, generic, "1", 1, "C", false, 0, "")
+		dose := strings.Trim(pdfSafe(it.Dosage)+" / "+pdfSafe(it.Frequency), " /")
+		const rowH = 7.0
+		pdf.CellFormat(widths[0], rowH, pdfSafe(it.DrugName), "B", 0, "L", true, 0, "")
+		pdf.CellFormat(widths[1], rowH, pdfSafe(it.Strength), "B", 0, "C", true, 0, "")
+		pdf.CellFormat(widths[2], rowH, pdfSafe(it.Form), "B", 0, "C", true, 0, "")
+		pdf.CellFormat(widths[3], rowH, dose, "B", 0, "L", true, 0, "")
+		pdf.CellFormat(widths[4], rowH, fmt.Sprintf("%d days", it.DurationDays), "B", 0, "C", true, 0, "")
+		pdf.CellFormat(widths[5], rowH, fmt.Sprintf("%d", it.Quantity), "B", 0, "C", true, 0, "")
+		pdf.CellFormat(widths[6], rowH, generic, "B", 1, "C", true, 0, "")
 		if it.Instructions != "" {
 			pdf.SetFont("Arial", "I", 8)
-			pdf.CellFormat(0, 5, "  Note: "+it.Instructions, "", 1, "L", false, 0, "")
+			pdf.SetTextColor(80, 80, 80)
+			pdf.CellFormat(contentW, 5, "    "+pdfSafe(it.Instructions), "", 1, "L", false, 0, "")
 			pdf.SetFont("Arial", "", 9)
+			pdf.SetTextColor(30, 30, 30)
 		}
 	}
 
-	pdf.Ln(10)
-
-	// --- signature block ---------------------------------------------------
-	// The doctor's actual signature image, if one was fetched, sits above
-	// the line it would otherwise leave blank; the seal/stamp sits beside
-	// it, slightly overlapping its right edge -- the same arrangement a
-	// physical prescription pad has when a doctor signs and then presses a
-	// rubber stamp next to the signature, not on top of the line itself.
-	const sigBoxW, sigBoxH = 60.0, 18.0
-	sigY := pdf.GetY()
-	if signature != nil {
-		drawFittedImage(pdf, "doctor-signature", signature, 18, sigY, sigBoxW, sigBoxH)
+	// --- signature, stamp, QR, pinned toward the foot of the page --------
+	const sigBoxW, sigBoxH = 62.0, 20.0
+	sigY := pdf.GetY() + 12
+	if sigY < 205 {
+		sigY = 205
 	}
-	pdf.Line(18, sigY+sigBoxH, 18+sigBoxW, sigY+sigBoxH)
-	pdf.SetXY(18, sigY+sigBoxH+1)
-	pdf.SetFont("Arial", "", 9)
-	pdf.CellFormat(sigBoxW, 5, "Doctor's Signature", "", 1, "L", false, 0, "")
+	if sigY > 230 {
+		pdf.AddPage()
+		sigY = 40
+	}
+	if signature != nil {
+		drawFittedImage(pdf, "doctor-signature", signature, pdfLeft, sigY, sigBoxW, sigBoxH)
+	}
+	pdf.SetDrawColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.SetLineWidth(0.3)
+	pdf.Line(pdfLeft, sigY+sigBoxH, pdfLeft+sigBoxW, sigY+sigBoxH)
+	pdf.SetXY(pdfLeft, sigY+sigBoxH+1.5)
+	pdf.SetFont("Arial", "", 8)
+	pdf.SetTextColor(60, 60, 60)
+	pdf.CellFormat(sigBoxW, 4, "Doctor's signature", "", 1, "L", false, 0, "")
+	pdf.SetX(pdfLeft)
+	pdf.SetFont("Arial", "B", 8)
+	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+	pdf.CellFormat(sigBoxW, 4, "Dr. "+pdfDoctorName(p.DoctorName), "", 1, "L", false, 0, "")
 
 	if seal != nil {
-		const sealBoxW, sealBoxH = 26.0, 26.0
-		drawFittedImage(pdf, "doctor-seal", seal, 18+sigBoxW+4, sigY-2, sealBoxW, sealBoxH)
+		drawFittedImage(pdf, "doctor-seal", seal, pdfLeft+sigBoxW+8, sigY-2, 28, 28)
+		pdf.SetXY(pdfLeft+sigBoxW+8, sigY+26)
+		pdf.SetFont("Arial", "", 7)
+		pdf.SetTextColor(90, 90, 90)
+		pdf.CellFormat(28, 4, "Stamp", "", 0, "C", false, 0, "")
 	}
 
-	// --- QR code -------------------------------------------------------
 	qrPNG, err := qrcode.Encode(verifyURL, qrcode.Medium, 256)
 	if err != nil {
 		return nil, fmt.Errorf("prescriptions: generate qr code: %w", err)
 	}
-	const qrSize = 32.0
-	qrX, qrY := 150.0, sigY
+	const qrSize = 28.0
+	qrX := pdfRight - qrSize
 	pdf.RegisterImageOptionsReader("qr-verify", fpdf.ImageOptions{ImageType: "PNG"}, bytes.NewReader(qrPNG))
-	pdf.ImageOptions("qr-verify", qrX, qrY, qrSize, qrSize, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
-	pdf.SetXY(qrX, qrY+qrSize+1)
+	pdf.ImageOptions("qr-verify", qrX, sigY, qrSize, qrSize, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
+	pdf.SetXY(qrX-4, sigY+qrSize+1)
 	pdf.SetFont("Arial", "", 7)
-	pdf.CellFormat(qrSize, 4, "Scan to verify", "", 1, "C", false, 0, "")
+	pdf.SetTextColor(90, 90, 90)
+	pdf.CellFormat(qrSize+8, 4, "Scan to verify", "", 1, "C", false, 0, "")
 
-	// --- footer -------------------------------------------------------
-	pdf.SetY(-20)
-	pdf.SetFont("Arial", "I", 7)
-	pdf.SetTextColor(120, 120, 120)
-	pdf.CellFormat(0, 4, "This is a system-generated prescription. Verify authenticity at "+verifyURL, "", 1, "C", false, 0, "")
-	pdf.CellFormat(0, 4, fmt.Sprintf("Generated %s | telemed-record-service", time.Now().UTC().Format(time.RFC3339)), "", 1, "C", false, 0, "")
+	// --- footer ------------------------------------------------------------
+	pdf.SetY(-16)
+	pdf.SetDrawColor(brandMintR, brandMintG, brandMintB)
+	pdf.SetLineWidth(0.6)
+	pdf.Line(pdfLeft, pdf.GetY(), pdfRight, pdf.GetY())
+	pdf.Ln(1.5)
+	pdf.SetFont("Arial", "", 7)
+	pdf.SetTextColor(110, 110, 110)
+	pdf.CellFormat(contentW, 3.5, "Issued by VersaLife Telemedicine. A pharmacist can confirm this prescription by scanning the code.", "", 1, "C", false, 0, "")
+	pdf.CellFormat(contentW, 3.5, "Prescription "+p.ID.String(), "", 1, "C", false, 0, "")
 
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {
 		return nil, fmt.Errorf("prescriptions: render pdf: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// pdfDoctorName title-cases a name that was stored in all lowercase
+// ("amara perera") so the pad reads "Amara Perera". A name that already
+// has capitals is left alone.
+func pdfDoctorName(name string) string {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	for _, prefix := range []string{"dr. ", "dr "} {
+		if strings.HasPrefix(lower, prefix) {
+			name = strings.TrimSpace(name[len(prefix):])
+			lower = strings.ToLower(name)
+			break
+		}
+	}
+	if name != lower {
+		return pdfSafe(name)
+	}
+	parts := strings.Fields(name)
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return pdfSafe(strings.Join(parts, " "))
+}
+
+// pdfSafe maps the string onto the cp1252 repertoire fpdf's core fonts
+// actually draw. A UTF-8 en dash otherwise prints as "â€“".
+func pdfSafe(s string) string {
+	s = strings.NewReplacer(
+		"\u2013", "-",
+		"\u2014", "-",
+		"\u2018", "'",
+		"\u2019", "'",
+		"\u201c", `"`,
+		"\u201d", `"`,
+		"\u00a0", " ",
+	).Replace(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteByte(' ')
+		case r >= 32 && r <= 255:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // drawFittedImage places img inside a maxW x maxH box anchored at (x, y),
