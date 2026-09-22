@@ -2072,7 +2072,7 @@ paths:
       summary: Look up a prescription by appointment
       description: >
         One prescription per appointment. Query `appointment_id` is required.
-        The post-call patient summary polls this until the doctor issues the e-Rx.
+        The post-call patient summary polls this until the doctor issues the prescription.
       parameters:
         - name: appointment_id
           in: query

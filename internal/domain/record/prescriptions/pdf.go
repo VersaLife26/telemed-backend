@@ -92,7 +92,7 @@ func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, v
 	pdf.SetXY(120, headerTop+2)
 	pdf.SetFont("Arial", "B", 11)
 	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
-	pdf.CellFormat(pdfRight-120, 6, "E-PRESCRIPTION", "", 1, "R", false, 0, "")
+	pdf.CellFormat(pdfRight-120, 6, "PRESCRIPTION", "", 1, "R", false, 0, "")
 	pdf.SetX(120)
 	pdf.SetFont("Arial", "", 8)
 	pdf.SetTextColor(90, 90, 90)
@@ -152,7 +152,7 @@ func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, v
 	// --- medicines ---------------------------------------------------------
 	pdf.SetFont("Arial", "B", 14)
 	pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
-	pdf.CellFormat(contentW, 8, "Rx", "", 1, "L", false, 0, "")
+	pdf.CellFormat(contentW, 8, "Prescription", "", 1, "L", false, 0, "")
 
 	widths := []float64{48, 22, 20, 36, 22, 16, 14}
 	headers := []string{"Medicine", "Strength", "Form", "Dosage / Frequency", "Duration", "Qty", "Generic"}
