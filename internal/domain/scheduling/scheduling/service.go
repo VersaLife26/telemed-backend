@@ -157,6 +157,10 @@ type BookSlotInput struct {
 	// not trust family_member_id without an ownership read from user-service.
 	VisitPatientName string
 	VisitPatientDOB  time.Time
+	// Optional; validated by the handler.
+	VisitPatientSex       string
+	VisitPatientWeightKg  *float64
+	VisitPatientAllergies string
 
 	// There is deliberately NO FamilyMemberID here.
 	//
@@ -322,20 +326,23 @@ func (s *Service) bookSlot(ctx context.Context, in BookSlotInput) (Appointment, 
 			visitDOB = &d
 		}
 		appt = Appointment{
-			ID:                 appointmentID,
-			PatientID:          in.PatientID,
-			DoctorID:           slot.DoctorID,
-			SlotID:             slot.ID,
-			SlotStartAt:        slot.StartAt,
-			SlotEndAt:          slot.EndAt,
-			Status:             AppointmentPendingPayment,
-			Intake:             in.Intake,
-			VisitPatientName:   strings.TrimSpace(in.VisitPatientName),
-			VisitPatientDOB:    visitDOB,
-			PrepaymentRequired: prepaymentRequired,
-			AmountCents:        pricing.FeeCents,
-			Currency:           pricing.Currency,
-			Specialty:          pricing.Specialty,
+			ID:                    appointmentID,
+			PatientID:             in.PatientID,
+			DoctorID:              slot.DoctorID,
+			SlotID:                slot.ID,
+			SlotStartAt:           slot.StartAt,
+			SlotEndAt:             slot.EndAt,
+			Status:                AppointmentPendingPayment,
+			Intake:                in.Intake,
+			VisitPatientName:      strings.TrimSpace(in.VisitPatientName),
+			VisitPatientDOB:       visitDOB,
+			VisitPatientSex:       strings.TrimSpace(in.VisitPatientSex),
+			VisitPatientWeightKg:  in.VisitPatientWeightKg,
+			VisitPatientAllergies: strings.TrimSpace(in.VisitPatientAllergies),
+			PrepaymentRequired:    prepaymentRequired,
+			AmountCents:           pricing.FeeCents,
+			Currency:              pricing.Currency,
+			Specialty:             pricing.Specialty,
 		}
 		if err := s.repo.InsertAppointment(ctx, tx, &appt); err != nil {
 			// Layer 4 firing. Another transaction committed a live appointment
@@ -642,6 +649,12 @@ func authorizeAppointment(a Appointment, actorID uuid.UUID, role string) error {
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
+
+// LastSelfVisitWeightKg is the patient's most recent self-reported weight; see
+// Repository.LastSelfVisitWeightKg for which bookings count.
+func (s *Service) LastSelfVisitWeightKg(ctx context.Context, patientID uuid.UUID) (*float64, error) {
+	return s.repo.LastSelfVisitWeightKg(ctx, s.pool, patientID)
+}
 
 // GetAppointment reads one appointment, enforcing ownership.
 func (s *Service) GetAppointment(ctx context.Context, id, actorID uuid.UUID, role string) (Appointment, error) {

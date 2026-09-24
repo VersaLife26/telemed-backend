@@ -2,6 +2,7 @@ package prescriptions
 
 import (
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -68,12 +69,16 @@ type issueRequest struct {
 	// max=500, not 200: this now carries the doctor's degree AND a
 	// "University: ..." line, newline-separated (see pdf.go), where 200
 	// used to be enough for a single freeform sentence.
-	DoctorQualifications string             `json:"doctor_qualifications" validate:"max=500"`
-	ClinicName           string             `json:"clinic_name" validate:"max=200"`
-	PatientName          string             `json:"patient_name" validate:"required"`
-	PatientAge           int                `json:"patient_age" validate:"min=0,max=130"`
-	PatientNIC           string             `json:"patient_nic" validate:"max=20"`
-	Items                []issueItemRequest `json:"items" validate:"required,min=1,max=20,dive"`
+	DoctorQualifications string `json:"doctor_qualifications" validate:"max=500"`
+	ClinicName           string `json:"clinic_name" validate:"max=200"`
+	PatientName          string `json:"patient_name" validate:"required"`
+	PatientAge           int    `json:"patient_age" validate:"min=0,max=130"`
+	PatientNIC           string `json:"patient_nic" validate:"max=20"`
+	// Display-only, like the other patient_* fields: printed, never stored.
+	PatientSex       string             `json:"patient_sex" validate:"omitempty,oneof=female male other"`
+	PatientWeightKg  float64            `json:"patient_weight_kg" validate:"omitempty,min=0.5,max=400"`
+	PatientAllergies string             `json:"patient_allergies" validate:"max=1000"`
+	Items            []issueItemRequest `json:"items" validate:"required,min=1,max=20,dive"`
 }
 
 func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
@@ -101,8 +106,11 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 		Principal: p, AppointmentID: req.AppointmentID,
 		DoctorName: req.DoctorName, DoctorSLMC: req.DoctorSLMC, DoctorQualifications: req.DoctorQualifications,
 		ClinicName: req.ClinicName,
-		Patient:    PatientDisplay{Name: req.PatientName, Age: req.PatientAge, NIC: req.PatientNIC},
-		Items:      items,
+		Patient: PatientDisplay{
+			Name: req.PatientName, Age: req.PatientAge, NIC: req.PatientNIC,
+			Sex: req.PatientSex, WeightKg: math.Round(req.PatientWeightKg*10) / 10, Allergies: req.PatientAllergies,
+		},
+		Items: items,
 	})
 	if err != nil {
 		httpx.Error(w, r, err)

@@ -120,10 +120,10 @@ type IssueInput struct {
 	Items                []ItemInput
 }
 
-// Issue creates a prescription. The caller must be the doctor who actually
-// treated the patient in the given, now-concluded appointment -- verified
-// against the treating_relationships read-model (internal/access), never
-// trusted from the request. See hmac.go for the tamper-evidence scheme
+// Issue creates a prescription. The caller must be the doctor treating the
+// patient in the given appointment, whose consultation has started (it may
+// still be in progress) -- verified against the treating_relationships
+// read-model (internal/access), never trusted from the request. See hmac.go for the tamper-evidence scheme
 // applied to the result.
 func (s *Service) Issue(ctx context.Context, in IssueInput) (Prescription, error) {
 	if !in.Principal.HasRole(middleware.RoleDoctor) || in.Principal.DoctorID == uuid.Nil {
@@ -148,8 +148,10 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (Prescription, error
 	if !ok || rel.DoctorID != in.Principal.DoctorID {
 		return Prescription{}, httpx.ErrForbidden.WithCause(fmt.Errorf("prescriptions: caller does not own appointment %s", in.AppointmentID))
 	}
-	if rel.EndedAt == nil {
-		return Prescription{}, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "the consultation for this appointment has not concluded yet")
+	// A consultation in progress may be prescribed against (the doctor writes
+	// it during the call); one that never started may not.
+	if rel.StartedAt == nil && rel.EndedAt == nil {
+		return Prescription{}, httpx.NewError(http.StatusConflict, httpx.CodeConflict, "the consultation for this appointment has not started yet")
 	}
 	// The treating relationship expires, and so does the authority to
 	// prescribe from it. Without this, the doctor who saw a patient once in

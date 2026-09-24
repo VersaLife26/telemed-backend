@@ -246,7 +246,7 @@ paths:
 
   /prescriptions:
     post:
-      summary: Issue a prescription (doctor only, must own the concluded appointment)
+      summary: Issue a prescription (doctor only, must own the appointment; its consultation must have started and may still be in progress)
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -607,6 +607,9 @@ components:
         patient_name: { type: string }
         patient_age: { type: integer }
         patient_nic: { type: string }
+        patient_sex: { type: string, enum: [female, male, other], description: Printed on the PDF only; not stored. }
+        patient_weight_kg: { type: number, minimum: 0.5, maximum: 400, description: Printed on the PDF only; not stored. }
+        patient_allergies: { type: string, maxLength: 1000, description: Printed on the PDF only; not stored. }
         items:
           type: array
           minItems: 1

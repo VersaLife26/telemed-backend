@@ -167,6 +167,88 @@ paths:
                 properties:
                   data: { $ref: '#/components/schemas/Doctor' }
 
+  /doctors/me/signature:
+    put:
+      tags: [doctors]
+      summary: Upload or replace my signature image
+      description: |
+        PNG or JPEG only, verified by decoding the image; max 1 MB. Stored in
+        the doctor-credentials bucket under a server-derived key. Earlier
+        uploads are kept; the newest is the one embedded on prescriptions.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Document' }
+        '400': { description: Not a PNG or JPEG image, or no `file` field }
+        '413': { description: Larger than 1 MB }
+        '503': { description: Object storage is not configured }
+    get:
+      tags: [doctors]
+      summary: Download my current signature image
+      description: "Served with `Cache-Control: no-store`."
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/png: {}
+            image/jpeg: {}
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /doctors/me/seal:
+    put:
+      tags: [doctors]
+      summary: Upload or replace my seal/stamp image
+      description: |
+        PNG or JPEG only, verified by decoding the image; max 1 MB. Stored in
+        the doctor-credentials bucket under a server-derived key. Earlier
+        uploads are kept; the newest is the one embedded on prescriptions.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Document' }
+        '400': { description: Not a PNG or JPEG image, or no `file` field }
+        '413': { description: Larger than 1 MB }
+        '503': { description: Object storage is not configured }
+    get:
+      tags: [doctors]
+      summary: Download my current seal/stamp image
+      description: "Served with `Cache-Control: no-store`."
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/png: {}
+            image/jpeg: {}
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /doctors/{id}/photo:
     get:
       tags: [doctors]
@@ -289,37 +371,27 @@ paths:
   /doctors/me/documents:
     post:
       tags: [doctors]
-      summary: Record a credential document (the server derives the storage key)
+      summary: Upload a credential document (the server derives the storage key)
       description: >-
-        The storage key is DERIVED from the authenticated caller's own doctor
-        id and returned in the response; a client cannot name it. Supplying
-        object_key used to let one doctor submit another doctor's SLMC
-        certificate as their own and be approved to practise medicine on it, so
-        a non-empty object_key is now a 400.
+        multipart/form-data with document_type and file (PDF, JPEG, PNG or
+        WebP, 5 MB max; the type is sniffed from the bytes). The file is stored
+        under a key DERIVED from the authenticated caller's own doctor id; a
+        client cannot name it. A JSON body, including one carrying the old
+        object_key field, is a 400.
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
               type: object
-              required: [document_type]
+              required: [document_type, file]
               properties:
                 document_type:
                   type: string
                   enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other]
-                filename:
+                file:
                   type: string
-                  maxLength: 255
-                  description: >-
-                    Advisory. Only an allowlisted extension
-                    (.pdf .jpg .jpeg .png .webp .heic .tif .tiff) is taken from
-                    it, never a path component.
-                object_key:
-                  type: string
-                  deprecated: true
-                  description: >-
-                    Rejected with 400 when non-empty. The server derives the
-                    key.
+                  format: binary
       responses:
         '201':
           description: Created
@@ -571,7 +643,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         doctor_id: { type: string, format: uuid }
-        document_type: { type: string }
+        document_type:
+          type: string
+          enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other, signature, seal]
         object_key: { type: string }
         uploaded_at: { type: string, format: date-time }
         reviewed_at: { type: string, format: date-time }

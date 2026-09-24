@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,30 @@ func TestGeneratePDF_MultipleItemsRendered(t *testing.T) {
 	}
 	if len(out) == 0 {
 		t.Fatal("expected non-empty PDF output")
+	}
+}
+
+func TestGeneratePDF_OptionalPatientDetails(t *testing.T) {
+	p := samplePrescription()
+	p.DoctorName = "Nimal Perera"
+	p.DoctorSLMC = "SLMC12345"
+
+	cases := map[string]PatientDisplay{
+		"all set": {Name: "Test Patient", Age: 30, Sex: "female", WeightKg: 62.5,
+			Allergies: strings.Repeat("Penicillin, sulfa drugs, peanuts. ", 30)},
+		"weight only": {Name: "Test Patient", WeightKg: 70},
+		"none":        {Name: "Test Patient"},
+	}
+	for name, patient := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := GeneratePDF(p, patient, ClinicDisplay{}, "https://verify.yourapp.lk/p/x?h=y", nil, nil)
+			if err != nil {
+				t.Fatalf("GeneratePDF returned an error: %v", err)
+			}
+			if !bytes.HasPrefix(out, []byte("%PDF-1.")) {
+				t.Fatal("expected a valid PDF header")
+			}
+		})
 	}
 }
 

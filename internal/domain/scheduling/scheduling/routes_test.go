@@ -45,6 +45,7 @@ func TestRouteRegistration(t *testing.T) {
 		"GET /api/v1/admin/appointments",
 		"GET /api/v1/admin/reschedule-requests",
 		"GET /api/v1/appointments/",
+		"GET /api/v1/appointments/last-visit-details",
 		"GET /api/v1/appointments/{appointmentID}",
 		"GET /api/v1/appointments/{appointmentID}/reschedule-requests",
 		"GET /api/v1/doctors/me/holidays/",

@@ -49,11 +49,11 @@ func newIntegrationService(t *testing.T) (*Service, *access.Repository, *access.
 	return svc, accessRepo, accessSvc
 }
 
-// TestIssue_RequiresOwnedConcludedAppointment proves a doctor can only issue
+// TestIssue_RequiresOwnedStartedAppointment proves a doctor can only issue
 // a prescription for an appointment where a treating_relationship row shows
-// *they* were the treating doctor and the consultation has ended -- not an
-// appointment they merely name in the request.
-func TestIssue_RequiresOwnedConcludedAppointment(t *testing.T) {
+// *they* are the treating doctor and the consultation has at least started --
+// not an appointment they merely name in the request.
+func TestIssue_RequiresOwnedStartedAppointment(t *testing.T) {
 	svc, accessRepo, accessSvc := newIntegrationService(t)
 	ctx := context.Background()
 
@@ -74,19 +74,19 @@ func TestIssue_RequiresOwnedConcludedAppointment(t *testing.T) {
 		t.Fatal("expected issuance to fail with no treating relationship on record")
 	}
 
-	// Relationship exists but the consultation has not ended yet.
+	// Relationship exists but the consultation has neither started nor ended.
+	if err := accessRepo.UpsertTreatingRelationship(ctx, accessSvc.Pool(), appointmentID, doctorID, patientID, nil, nil); err != nil {
+		t.Fatalf("seed unstarted relationship: %v", err)
+	}
+	if _, err := svc.Issue(ctx, baseInput); err == nil {
+		t.Fatal("expected issuance to fail before the consultation has started")
+	}
+
+	// In progress: started, not yet ended. A different doctor still cannot
+	// issue against this appointment.
 	started := time.Now().Add(-10 * time.Minute)
 	if err := accessRepo.UpsertTreatingRelationship(ctx, accessSvc.Pool(), appointmentID, doctorID, patientID, &started, nil); err != nil {
 		t.Fatalf("seed in-progress relationship: %v", err)
-	}
-	if _, err := svc.Issue(ctx, baseInput); err == nil {
-		t.Fatal("expected issuance to fail while the consultation has not concluded")
-	}
-
-	// A different doctor cannot issue against this appointment either.
-	ended := time.Now()
-	if err := accessRepo.UpsertTreatingRelationship(ctx, accessSvc.Pool(), appointmentID, doctorID, patientID, nil, &ended); err != nil {
-		t.Fatalf("seed concluded relationship: %v", err)
 	}
 	impostor := baseInput
 	impostor.Principal = middleware.Principal{UserID: uuid.New(), DoctorID: uuid.New(), Roles: []middleware.Role{middleware.RoleDoctor}}
@@ -94,8 +94,8 @@ func TestIssue_RequiresOwnedConcludedAppointment(t *testing.T) {
 		t.Fatal("expected issuance to fail for a doctor who does not own the appointment")
 	}
 
-	// The actual treating doctor, now that the consultation has concluded,
-	// succeeds -- and the resulting prescription is bound to the patient_id
+	// The actual treating doctor succeeds while the consultation is still in
+	// progress -- and the resulting prescription is bound to the patient_id
 	// from the relationship record, never a client-supplied one.
 	created, err := svc.Issue(ctx, baseInput)
 	if err != nil {

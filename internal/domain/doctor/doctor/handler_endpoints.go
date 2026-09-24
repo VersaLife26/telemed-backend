@@ -215,6 +215,60 @@ func (h *Handler) putPhoto(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, r, toOwnDoctorResponse(d))
 }
 
+const maxCredentialImageRequestBytes = MaxCredentialImageBytes + (1 << 20)
+
+// putCredentialImage handles PUT /doctors/me/signature and /doctors/me/seal.
+func (h *Handler) putCredentialImage(docType DocumentType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := middleware.MustPrincipal(r.Context())
+		r.Body = http.MaxBytesReader(w, r.Body, maxCredentialImageRequestBytes)
+		if err := r.ParseMultipartForm(maxCredentialImageRequestBytes); err != nil { //nolint:gosec // bounded by MaxBytesReader above
+			httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "image exceeds the size limit").WithCause(err))
+			return
+		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "multipart field \"file\" is required"))
+			return
+		}
+		defer func() { _ = file.Close() }()
+		data, err := io.ReadAll(io.LimitReader(file, MaxCredentialImageBytes+1))
+		if err != nil {
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "could not read uploaded image").WithCause(err))
+			return
+		}
+		doc, err := h.svc.SetCredentialImage(r.Context(), p.UserID, docType, data)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		httpx.OK(w, r, toDocumentResponse(doc))
+	}
+}
+
+// getCredentialImage handles GET /doctors/me/signature and /doctors/me/seal.
+func (h *Handler) getCredentialImage(docType DocumentType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := middleware.MustPrincipal(r.Context())
+		img, err := h.svc.GetCredentialImage(r.Context(), p.UserID, docType)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		w.Header().Set("Content-Type", img.ContentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(img.Data)))
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(img.Data)
+	}
+}
+
 func (h *Handler) getMinePhoto(w http.ResponseWriter, r *http.Request) {
 	p := middleware.MustPrincipal(r.Context())
 	d, err := h.svc.GetMine(r.Context(), p.UserID)
@@ -363,28 +417,68 @@ func (h *Handler) getScheduleSettings(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, r, toScheduleSettingsResponse(set))
 }
 
-// uploadDocument handles POST /doctors/me/documents.
+const maxCredentialDocumentRequestBytes = MaxApplyDocumentBytes + (1 << 20)
+
+// uploadDocument handles POST /doctors/me/documents: multipart/form-data with
+// fields document_type and file.
+//
+// It used to take JSON metadata only and insert a row for an object nobody
+// ever wrote, so the reviewer's presigned link opened nothing. JSON is still
+// decoded, but only to explain the change (and to keep refusing object_key
+// by name, SECURITY-REVIEW F8).
 func (h *Handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	p := middleware.MustPrincipal(r.Context())
 
-	var req documentRequest
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.Error(w, r, err)
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		var req documentRequest
+		if err := httpx.DecodeJSON(w, r, &req); err != nil {
+			httpx.Error(w, r, err)
+			return
+		}
+		if req.ObjectKey != "" {
+			// SECURITY-REVIEW F8. This field used to be stored verbatim, so a
+			// doctor could name any key in the shared doctor-credentials bucket --
+			// including another doctor's genuine SLMC certificate -- and have the
+			// credentialing reviewer approve them on it.
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest,
+				"object_key is no longer accepted: the server derives the storage key from your own doctor id. "+
+					"Send the file itself as multipart/form-data with fields document_type and file."))
+			return
+		}
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest,
+			"send the file as multipart/form-data with fields document_type and file"))
 		return
 	}
-	docType := DocumentType(req.DocumentType)
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxCredentialDocumentRequestBytes)
+	if err := r.ParseMultipartForm(maxCredentialDocumentRequestBytes); err != nil { //nolint:gosec // bounded by MaxBytesReader above
+		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "each document must be 5 MB or smaller").WithCause(err))
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	docType := DocumentType(r.FormValue("document_type"))
 	if !docType.Valid() {
 		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "unknown document_type"))
 		return
 	}
-	if req.ObjectKey != "" {
-		// SECURITY-REVIEW F8. This field used to be stored verbatim, so a
-		// doctor could name any key in the shared doctor-credentials bucket --
-		// including another doctor's genuine SLMC certificate -- and have the
-		// credentialing reviewer approve them on it.
+	if docType == DocumentSignature || docType == DocumentSeal {
 		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest,
-			"object_key is no longer accepted: the server derives the storage key from your own doctor id. "+
-				"Send document_type and (optionally) filename."))
+			"upload a signature or seal with PUT /doctors/me/"+string(docType)))
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "multipart field \"file\" is required"))
+		return
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, MaxApplyDocumentBytes+1))
+	if err != nil {
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "could not read uploaded document").WithCause(err))
 		return
 	}
 
@@ -398,7 +492,7 @@ func (h *Handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := h.svc.UploadDocument(r.Context(), d.ID, docType, req.Filename)
+	doc, err := h.svc.UploadDocument(r.Context(), d.ID, docType, data)
 	if err != nil {
 		writeError(w, r, err)
 		return

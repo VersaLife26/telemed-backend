@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/go-pdf/fpdf"
@@ -28,6 +29,11 @@ type PatientDisplay struct {
 	Name string
 	Age  int
 	NIC  string // optional, printed only if non-empty
+	// Sex, WeightKg and Allergies are optional; each is printed only when set
+	// (WeightKg > 0).
+	Sex       string
+	WeightKg  float64
+	Allergies string
 }
 
 // ClinicDisplay carries cosmetic header fields for the PDF that are not
@@ -127,7 +133,22 @@ func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, v
 	// --- patient card ------------------------------------------------------
 	pdf.Ln(3)
 	cardY := pdf.GetY()
-	const cardH = 16.0
+	sex := strings.TrimSpace(patient.Sex)
+	allergies := pdfSafe(strings.TrimSpace(patient.Allergies))
+	hasDetailsRow := sex != "" || patient.WeightKg > 0
+	cardTextW := contentW - 8
+	// The card is filled before any text is drawn, so its height -- including
+	// however many lines the allergies wrap to -- is measured up front.
+	cardH := 16.0
+	if hasDetailsRow {
+		cardH += 11
+	}
+	var allergyLines int
+	if allergies != "" {
+		pdf.SetFont("Arial", "", 10)
+		allergyLines = len(pdf.SplitText(allergies, cardTextW))
+		cardH += 5 + 5*float64(allergyLines)
+	}
 	pdf.SetFillColor(232, 242, 250)
 	pdf.Rect(pdfLeft, cardY, contentW, cardH, "F")
 	pdf.SetXY(pdfLeft+4, cardY+2)
@@ -147,6 +168,36 @@ func GeneratePDF(p Prescription, patient PatientDisplay, clinic ClinicDisplay, v
 	pdf.SetFont("Arial", "", 11)
 	pdf.CellFormat(30, 6, age, "", 0, "L", false, 0, "")
 	pdf.CellFormat(0, 6, p.IssuedAt.UTC().Format("02 Jan 2006"), "", 1, "L", false, 0, "")
+	if hasDetailsRow {
+		pdf.SetXY(pdfLeft+4, cardY+13)
+		pdf.SetFont("Arial", "", 7)
+		pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+		pdf.CellFormat(100, 4, "SEX", "", 0, "L", false, 0, "")
+		pdf.CellFormat(30, 4, "WEIGHT", "", 1, "L", false, 0, "")
+		pdf.SetX(pdfLeft + 4)
+		pdf.SetFont("Arial", "", 11)
+		pdf.SetTextColor(20, 20, 20)
+		sexText, weightText := "-", "-"
+		if sex != "" {
+			sexText = pdfSafe(strings.ToUpper(sex[:1]) + sex[1:])
+		}
+		if patient.WeightKg > 0 {
+			weightText = strconv.FormatFloat(patient.WeightKg, 'f', -1, 64) + " kg"
+		}
+		pdf.CellFormat(100, 6, sexText, "", 0, "L", false, 0, "")
+		pdf.CellFormat(30, 6, weightText, "", 1, "L", false, 0, "")
+	}
+	if allergies != "" {
+		pdf.Ln(1)
+		pdf.SetX(pdfLeft + 4)
+		pdf.SetFont("Arial", "", 7)
+		pdf.SetTextColor(brandNavyR, brandNavyG, brandNavyB)
+		pdf.CellFormat(cardTextW, 4, "ALLERGIES", "", 1, "L", false, 0, "")
+		pdf.SetX(pdfLeft + 4)
+		pdf.SetFont("Arial", "", 10)
+		pdf.SetTextColor(20, 20, 20)
+		pdf.MultiCell(cardTextW, 5, allergies, "", "L", false)
+	}
 	pdf.SetY(cardY + cardH + 6)
 
 	// --- medicines ---------------------------------------------------------

@@ -82,6 +82,10 @@ type AppointmentDTO struct {
 	VisitPatientDOB  string `json:"visit_patient_dob,omitempty"`
 	VisitPatientAge  int    `json:"visit_patient_age,omitempty"`
 
+	VisitPatientSex       string   `json:"visit_patient_sex,omitempty"`
+	VisitPatientWeightKg  *float64 `json:"visit_patient_weight_kg,omitempty"`
+	VisitPatientAllergies string   `json:"visit_patient_allergies,omitempty"`
+
 	// CounterpartName is the other party's display name: the patient's name
 	// for a doctor, the doctor's name for a patient.
 	CounterpartName string `json:"counterpart_name,omitempty"`
@@ -111,31 +115,34 @@ type AppointmentDTO struct {
 // listing and for any caller who is not the patient or the treating doctor.
 func NewAppointmentDTO(a Appointment, loc *time.Location, withIntake bool) AppointmentDTO {
 	d := AppointmentDTO{
-		ID:                 a.ID,
-		PatientID:          a.PatientID,
-		DoctorID:           a.DoctorID,
-		SlotID:             a.SlotID,
-		FamilyMemberID:     a.FamilyMemberID,
-		StartAt:            a.SlotStartAt.UTC(),
-		EndAt:              a.SlotEndAt.UTC(),
-		StartAtLocal:       a.SlotStartAt.In(loc).Format(time.RFC3339),
-		EndAtLocal:         a.SlotEndAt.In(loc).Format(time.RFC3339),
-		Status:             string(a.Status),
-		PrepaymentRequired: a.PrepaymentRequired,
-		AmountCents:        a.AmountCents,
-		Currency:           a.Currency,
-		Specialty:          a.Specialty,
-		PaymentID:          a.PaymentID,
-		ConfirmedAt:        a.ConfirmedAt,
-		CompletedAt:        a.CompletedAt,
-		NoShowAt:           a.NoShowAt,
-		CancelledAt:        a.CancelledAt,
-		CancelledByRole:    a.CancelledByRole,
-		CancellationReason: a.CancellationReason,
-		CancellableUntil:   a.SlotStartAt.Add(-CancellationNoticeWindow).UTC(),
-		Version:            a.Version,
-		CreatedAt:          a.CreatedAt.UTC(),
-		UpdatedAt:          a.UpdatedAt.UTC(),
+		ID:                    a.ID,
+		PatientID:             a.PatientID,
+		DoctorID:              a.DoctorID,
+		SlotID:                a.SlotID,
+		FamilyMemberID:        a.FamilyMemberID,
+		StartAt:               a.SlotStartAt.UTC(),
+		EndAt:                 a.SlotEndAt.UTC(),
+		StartAtLocal:          a.SlotStartAt.In(loc).Format(time.RFC3339),
+		EndAtLocal:            a.SlotEndAt.In(loc).Format(time.RFC3339),
+		Status:                string(a.Status),
+		PrepaymentRequired:    a.PrepaymentRequired,
+		AmountCents:           a.AmountCents,
+		Currency:              a.Currency,
+		Specialty:             a.Specialty,
+		PaymentID:             a.PaymentID,
+		ConfirmedAt:           a.ConfirmedAt,
+		CompletedAt:           a.CompletedAt,
+		NoShowAt:              a.NoShowAt,
+		CancelledAt:           a.CancelledAt,
+		CancelledByRole:       a.CancelledByRole,
+		CancellationReason:    a.CancellationReason,
+		CancellableUntil:      a.SlotStartAt.Add(-CancellationNoticeWindow).UTC(),
+		VisitPatientSex:       a.VisitPatientSex,
+		VisitPatientWeightKg:  a.VisitPatientWeightKg,
+		VisitPatientAllergies: a.VisitPatientAllergies,
+		Version:               a.Version,
+		CreatedAt:             a.CreatedAt.UTC(),
+		UpdatedAt:             a.UpdatedAt.UTC(),
 	}
 	if withIntake {
 		d.Intake = a.Intake

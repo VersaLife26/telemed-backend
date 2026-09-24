@@ -951,8 +951,11 @@ type UpdateProfileInput struct {
 	Address     *string
 	DateOfBirth *time.Time
 	ClearDOB    bool
-	Language    Language
-	Version     int
+	// Sex and Allergies: nil leaves the field unchanged, "" clears it.
+	Sex       *string
+	Allergies *string
+	Language  Language
+	Version   int
 }
 
 // ApplyProfilePatch overlays the requested edits onto an existing user. Fields
@@ -981,6 +984,20 @@ func ApplyProfilePatch(u *User, in UpdateProfileInput) {
 	} else if in.DateOfBirth != nil {
 		u.DateOfBirth = in.DateOfBirth
 	}
+	if in.Sex != nil {
+		u.Sex = nilIfBlank(*in.Sex)
+	}
+	if in.Allergies != nil {
+		u.Allergies = nilIfBlank(*in.Allergies)
+	}
+}
+
+func nilIfBlank(s string) *string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func hasLoginIdentity(u *User) bool {

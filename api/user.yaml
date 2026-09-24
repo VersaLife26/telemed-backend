@@ -144,6 +144,14 @@ paths:
               properties:
                 name: { type: string }
                 email: { type: string, nullable: true }
+                sex:
+                  type: string
+                  enum: ["", female, male, other]
+                  description: Optional. Omit to leave unchanged; "" clears it.
+                allergies:
+                  type: string
+                  maxLength: 1000
+                  description: Optional. Omit to leave unchanged; "" clears it.
                 language: { type: string, enum: [en, si, ta] }
                 version: { type: integer }
       responses:
@@ -329,6 +337,11 @@ components:
         name: { type: string }
         address: { type: string }
         date_of_birth: { type: string, format: date, nullable: true }
+        sex:
+          type: string
+          enum: [female, male, other]
+          description: Omitted when not set.
+        allergies: { type: string, description: Empty when not set. }
         photo_url:
           type: string
           nullable: true

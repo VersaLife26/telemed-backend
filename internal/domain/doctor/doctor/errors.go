@@ -22,6 +22,11 @@ var (
 	ErrInvalidDocumentType  = errors.New("doctor: unsupported document type")
 	ErrInvalidProfilePhoto  = errors.New("doctor: profile photo must be a jpeg, png, or webp image")
 	ErrProfilePhotoTooLarge = errors.New("doctor: profile photo exceeds the size limit")
+
+	ErrInvalidCredentialImage     = errors.New("doctor: signature/seal must be a png or jpeg image")
+	ErrCredentialImageTooLarge    = errors.New("doctor: signature/seal exceeds the size limit")
+	ErrCredentialStoreUnavailable = errors.New("doctor: credential image storage is not configured")
+	ErrInvalidCredentialDocument  = errors.New("doctor: credential document must be a pdf, jpeg, png, or webp file")
 )
 
 // ErrHolidaysNotOwnedHere is GONE, and its absence is the change rather than an

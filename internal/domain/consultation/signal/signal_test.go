@@ -184,6 +184,26 @@ func TestHub_RelaysOfferToTheFarPeer(t *testing.T) {
 	}
 }
 
+func TestHub_RelaysFileShared(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	first := dial(t, srv, "room-file", "peer-a")
+	readWelcome(t, first)
+	second := dial(t, srv, "room-file", "peer-b")
+	readWelcome(t, second)
+	if env := readEnvelope(t, first); env.Type != TypePeerJoined {
+		t.Fatalf("first peer saw %q, want %q", env.Type, TypePeerJoined)
+	}
+
+	if err := second.WriteJSON(Envelope{Type: TypeFileShared, Data: json.RawMessage(`{"name":"report.pdf"}`)}); err != nil {
+		t.Fatalf("write file_shared: %v", err)
+	}
+	got := readEnvelope(t, first)
+	if got.Type != TypeFileShared || string(got.Data) != `{"name":"report.pdf"}` {
+		t.Fatalf("relayed %q %s, want file_shared with the payload unchanged", got.Type, got.Data)
+	}
+}
+
 // TestHub_DoesNotRelayUnknownTypes is the allowlist doing its job: a client
 // cannot invent a frame type and have the server deliver it verbatim into the
 // other browser's message handler.

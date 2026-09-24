@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -157,6 +158,8 @@ func (h *Handler) PatientRoutes(r chi.Router) {
 	r.Route("/appointments", func(r chi.Router) {
 		r.Post("/", h.bookAppointment)
 		r.Get("/", h.listAppointments)
+		// Registered before /{appointmentID}; chi also prefers the static segment.
+		r.Get("/last-visit-details", h.lastVisitDetails)
 		r.Get("/{appointmentID}", h.getAppointment)
 		r.Put("/{appointmentID}/cancel", h.cancelAppointment)
 		r.Post("/{appointmentID}/complete", h.completeAppointment)
@@ -465,6 +468,10 @@ type bookAppointmentRequest struct {
 	// Snapshot of who the visit is for (required on every booking).
 	VisitPatientName string `json:"visit_patient_name" validate:"required,max=200"`
 	VisitPatientDOB  string `json:"visit_patient_dob" validate:"required"`
+	// Optional clinical snapshot; checked in bookAppointment.
+	VisitPatientSex       string   `json:"visit_patient_sex,omitempty"`
+	VisitPatientWeightKg  *float64 `json:"visit_patient_weight_kg,omitempty"`
+	VisitPatientAllergies string   `json:"visit_patient_allergies,omitempty" validate:"max=1000"`
 	// FamilyMemberID is still DECODED so the request can be refused with a
 	// reason. Dropping the field from the struct instead would make
 	// httpx.DecodeJSON's DisallowUnknownFields answer "unknown field
@@ -542,20 +549,65 @@ func (h *Handler) bookAppointment(w http.ResponseWriter, r *http.Request) {
 			"visit_patient_name is required"))
 		return
 	}
+	sex := strings.TrimSpace(req.VisitPatientSex)
+	switch sex {
+	case "", "female", "male", "other":
+	default:
+		httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+			"visit_patient_sex must be female, male or other"))
+		return
+	}
+	var weightKg *float64
+	if req.VisitPatientWeightKg != nil {
+		kg := *req.VisitPatientWeightKg
+		if kg < 0.5 || kg > 400 {
+			httpx.Error(w, r, httpx.NewError(http.StatusUnprocessableEntity, httpx.CodeValidation,
+				"visit_patient_weight_kg must be between 0.5 and 400"))
+			return
+		}
+		// Rounded to the column's NUMERIC(5,1) so the response matches what is stored.
+		kg = math.Round(kg*10) / 10
+		weightKg = &kg
+	}
 
 	appt, err := h.svc.BookSlot(r.Context(), BookSlotInput{
-		SlotID:           req.SlotID,
-		PatientID:        actorID,
-		DoctorID:         req.DoctorID,
-		Intake:           req.Intake,
-		VisitPatientName: name,
-		VisitPatientDOB:  visitDOB,
+		SlotID:                req.SlotID,
+		PatientID:             actorID,
+		DoctorID:              req.DoctorID,
+		Intake:                req.Intake,
+		VisitPatientName:      name,
+		VisitPatientDOB:       visitDOB,
+		VisitPatientSex:       sex,
+		VisitPatientWeightKg:  weightKg,
+		VisitPatientAllergies: req.VisitPatientAllergies,
 	})
 	if err != nil {
 		httpx.Error(w, r, APIError(err))
 		return
 	}
 	httpx.Created(w, r, NewAppointmentDTO(appt, h.svc.Location(), true))
+}
+
+// lastVisitDetails handles GET /appointments/last-visit-details: the weight
+// the calling patient last recorded for themselves at booking, for prefill.
+func (h *Handler) lastVisitDetails(w http.ResponseWriter, r *http.Request) {
+	p := middleware.MustPrincipal(r.Context())
+	actorID, role, err := h.actor(p)
+	if err != nil {
+		httpx.Error(w, r, err)
+		return
+	}
+	if role != "patient" {
+		httpx.Error(w, r, httpx.NewError(http.StatusForbidden, httpx.CodeForbidden,
+			"only a patient has visit details"))
+		return
+	}
+	weightKg, err := h.svc.LastSelfVisitWeightKg(r.Context(), actorID)
+	if err != nil {
+		httpx.Error(w, r, APIError(err))
+		return
+	}
+	httpx.OK(w, r, map[string]any{"weight_kg": weightKg})
 }
 
 func (h *Handler) getAppointment(w http.ResponseWriter, r *http.Request) {

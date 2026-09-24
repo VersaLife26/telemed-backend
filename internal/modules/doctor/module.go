@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -29,6 +30,7 @@ import (
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/modular"
 	"telemed/internal/platform/server"
+	"telemed/internal/platform/storage"
 )
 
 // Domain is the name this module registers under.
@@ -51,6 +53,16 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	_ = v.BindEnv("search_cache_ttl")
 	_ = v.BindEnv("scheduling_base_url")
 	_ = v.BindEnv("scheduling_timeout")
+	v.SetDefault("storage_backend", "minio")
+	v.SetDefault("filesystem_storage_dir", "./data/objects")
+	v.SetDefault("minio_secure", false)
+	v.SetDefault("minio_region", "us-east-1")
+	for _, k := range []string{
+		"storage_backend", "filesystem_storage_dir", "filesystem_presign_secret", "public_api_base_url",
+		"minio_endpoint", "minio_access_key", "minio_secret_key", "minio_secure", "minio_region",
+	} {
+		_ = v.BindEnv(k)
+	}
 
 	var cfg serviceConfig
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -108,6 +120,22 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 		return nil, fmt.Errorf("init bank encryptor: %w", err)
 	}
 
+	// EnsureBuckets is not passed: the record domain owns bucket creation.
+	objectStore, _, err := storage.Build(ctx, storage.BuildOptions{
+		Backend:           cfg.StorageBackend,
+		FilesystemDir:     cfg.FilesystemStorageDir,
+		FilesystemBaseURL: strings.TrimSuffix(cfg.PublicAPIBaseURL, "/") + "/api/v1/files",
+		FilesystemSecret:  []byte(cfg.FilesystemPresignSecret),
+		MinIOEndpoint:     cfg.MinIOEndpoint,
+		MinIOAccessKey:    cfg.MinIOAccessKey,
+		MinIOSecretKey:    cfg.MinIOSecretKey,
+		MinIOSecure:       cfg.MinIOSecure,
+		MinIORegion:       cfg.MinIORegion,
+	})
+	if err != nil {
+		return nil, fail(fmt.Errorf("doctor: init object storage: %w", err))
+	}
+
 	outbox := events.NewOutbox(serviceName)
 	doctorRepo := doctor.NewRepository(pool)
 	// The holidays seam. scheduling-service owns the table; this service
@@ -121,7 +149,8 @@ func New(ctx context.Context, deps modular.Deps) (*modular.Module, error) {
 	}
 
 	doctorSvc := doctor.NewService(doctorRepo, pool, outbox, deps.Redis, enc, cfg.SearchCacheTTL, log).
-		WithHolidayRegistrar(holidayClient)
+		WithHolidayRegistrar(holidayClient).
+		WithCredentialStore(objectStore)
 	inProcApps := NewInProcessDoctorApplications(doctorSvc)
 	inProcVerifier := NewInProcessApplicationVerifier(doctorSvc)
 

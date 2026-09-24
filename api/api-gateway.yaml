@@ -172,6 +172,11 @@ components:
         name: { type: string }
         address: { type: string }
         date_of_birth: { type: string, format: date }
+        sex:
+          type: string
+          enum: [female, male, other]
+          description: Omitted when unset. Send "" on PUT to clear.
+        allergies: { type: string, maxLength: 1000 }
         photo_url: { type: string, nullable: true }
         language: { type: string, enum: [en, si, ta] }
         role: { type: string, enum: [patient, doctor, admin] }
@@ -314,6 +319,9 @@ components:
         doctor_id: { type: string, format: uuid }
         slot_id: { type: string, format: uuid }
         family_member_id: { type: string, format: uuid, nullable: true }
+        visit_patient_sex: { type: string, enum: [female, male, other] }
+        visit_patient_weight_kg: { type: number, minimum: 0.5, maximum: 400 }
+        visit_patient_allergies: { type: string, maxLength: 1000 }
         intake:
           type: object
           properties:
@@ -328,6 +336,9 @@ components:
         doctor_id: { type: string, format: uuid }
         slot_id: { type: string, format: uuid }
         status: { type: string, enum: [pending_payment, confirmed, cancelled, completed, no_show] }
+        visit_patient_sex: { type: string, enum: [female, male, other] }
+        visit_patient_weight_kg: { type: number, description: Omitted when not given at booking }
+        visit_patient_allergies: { type: string }
         created_at: { type: string, format: date-time }
     WaitlistJoinRequest:
       type: object
@@ -470,7 +481,7 @@ components:
         id: { type: string, format: uuid }
         document_type:
           type: string
-          enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other]
+          enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other, signature, seal]
         object_key: { type: string, maxLength: 1024 }
         uploaded_at: { type: string, format: date-time }
 
@@ -680,6 +691,9 @@ components:
               frequency: { type: string }
               duration: { type: string }
               notes: { type: string }
+        patient_sex: { type: string, enum: [female, male, other], description: Printed on the PDF only; not stored }
+        patient_weight_kg: { type: number, minimum: 0.5, maximum: 400, description: Printed on the PDF only; not stored }
+        patient_allergies: { type: string, maxLength: 1000, description: Printed on the PDF only; not stored }
     Prescription:
       type: object
       properties:
@@ -1329,6 +1343,30 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/APIError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/appointments/last-visit-details:
+    get:
+      tags: [scheduling]
+      summary: The caller's most recent self-reported visit details
+      description: >
+        Requires role `patient`. weight_kg is the most recently booked non-null
+        visit_patient_weight_kg among the caller's own appointments booked for
+        themselves (no family_member_id and no intake.visit_relation), or null.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          weight_kg: { type: number, nullable: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/appointments/{appointmentID}/cancel:
@@ -2014,7 +2052,10 @@ paths:
     post:
       tags: [records]
       summary: Issue a prescription
-      description: Requires role `doctor`. Generates a PDF + QR; slow path (upload timeout class, 60s).
+      description: >
+        Requires role `doctor`. Allowed once the consultation has started,
+        including while it is in progress. Generates a PDF + QR; slow path
+        (upload timeout class, 60s).
       requestBody:
         required: true
         content:
@@ -2695,6 +2736,90 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/Doctor' } }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/doctors/me/signature:
+    put:
+      tags: [doctors]
+      summary: Upload or replace the calling doctor's signature image
+      description: >
+        PNG or JPEG only (verified by decoding), max 1 MB. The newest upload is
+        the one embedded on issued prescriptions. 400 for a non-PNG/JPEG file,
+        413 over the size limit.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/DoctorDocument' } }
+        '400': { description: Not a PNG or JPEG image }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { description: Larger than 1 MB }
+    get:
+      tags: [doctors]
+      summary: Download the calling doctor's current signature image
+      description: Served with Cache-Control no-store.
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/doctors/me/seal:
+    put:
+      tags: [doctors]
+      summary: Upload or replace the calling doctor's seal/stamp image
+      description: >
+        PNG or JPEG only (verified by decoding), max 1 MB. The newest upload is
+        the one embedded on issued prescriptions. 400 for a non-PNG/JPEG file,
+        413 over the size limit.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/DoctorDocument' } }
+        '400': { description: Not a PNG or JPEG image }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { description: Larger than 1 MB }
+    get:
+      tags: [doctors]
+      summary: Download the calling doctor's current seal/stamp image
+      description: Served with Cache-Control no-store.
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/v1/doctors/{doctorID}/photo:
     get:
       tags: [doctors]
@@ -2768,15 +2893,25 @@ paths:
       tags: [doctors]
       summary: Attach a credential document
       description: >
-        Requires role `doctor`. The body carries only the object key -- the file
-        itself is uploaded directly to object storage -- so no bytes transit
-        this API. These keys are what the admin verification queue presigns for
-        a reviewer, so an application with none cannot be reviewed.
+        Requires role `doctor`. multipart/form-data with `document_type` and
+        `file` (PDF, JPEG, PNG or WebP, 5 MB max, sniffed from the bytes). The
+        server stores the file under a key derived from the caller's own doctor
+        id; that key is what the admin verification queue presigns for a
+        reviewer. A JSON body is refused with 400.
       requestBody:
         required: true
         content:
-          application/json:
-            schema: { $ref: '#/components/schemas/DoctorDocument' }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [document_type, file]
+              properties:
+                document_type:
+                  type: string
+                  enum: [slmc_certificate, nic, degree_certificate, specialty_board_certificate, photo, other]
+                file:
+                  type: string
+                  format: binary
       responses:
         '201':
           description: Recorded

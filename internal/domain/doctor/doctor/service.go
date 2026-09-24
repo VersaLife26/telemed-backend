@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,6 +19,7 @@ import (
 	"telemed/internal/platform/cache"
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/events"
+	"telemed/internal/platform/storage"
 )
 
 // Service holds every business rule for doctor profiles, credentialing,
@@ -41,6 +43,9 @@ type Service struct {
 	// accounts creates the login user when an admin accepts a public
 	// application. Nil leaves that to the user-service event consumer.
 	accounts AccountActivator
+
+	// store holds signature and seal images in the doctor-credentials bucket.
+	store storage.Storage
 }
 
 // AccountActivator provisions the doctor login account after credentialing
@@ -558,7 +563,22 @@ func validateNoOverlap(hours []WorkingHour) error {
 // Insert and enqueue share one transaction (ADR-005), so a document that
 // exists here but never reached the reviewer is not a state this code can
 // produce.
-func (s *Service) UploadDocument(ctx context.Context, doctorID uuid.UUID, docType DocumentType, filename string) (Document, error) {
+func (s *Service) UploadDocument(ctx context.Context, doctorID uuid.UUID, docType DocumentType, data []byte) (Document, error) {
+	// Signature and seal have their own endpoints, which enforce the formats
+	// the prescription PDF can actually embed.
+	if docType == DocumentSignature || docType == DocumentSeal {
+		return Document{}, ErrInvalidDocumentType
+	}
+	if s.store == nil {
+		return Document{}, ErrCredentialStoreUnavailable
+	}
+	if len(data) > MaxApplyDocumentBytes {
+		return Document{}, ErrDocumentTooLarge
+	}
+	ext, contentType := credentialDocumentKind(data)
+	if ext == "" {
+		return Document{}, ErrInvalidCredentialDocument
+	}
 	d, err := s.repo.GetByID(ctx, doctorID)
 	if err != nil {
 		return Document{}, err
@@ -574,8 +594,13 @@ func (s *Service) UploadDocument(ctx context.Context, doctorID uuid.UUID, docTyp
 		ID:           uuid.New(),
 		DoctorID:     doctorID,
 		DocumentType: docType,
-		ObjectKey:    DeriveCredentialKey(doctorID, docType, filename),
+		ObjectKey:    DeriveCredentialKey(doctorID, docType, "upload"+ext),
 		UploadedAt:   now,
+	}
+	// Written before the row: a row whose object is missing is exactly the
+	// "reviewer opens nothing" state this upload used to leave behind.
+	if err := s.store.Put(ctx, storage.BucketDoctorCredentials, doc.ObjectKey, bytes.NewReader(data), int64(len(data)), contentType); err != nil {
+		return Document{}, fmt.Errorf("doctor: store %s document: %w", docType, err)
 	}
 
 	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {

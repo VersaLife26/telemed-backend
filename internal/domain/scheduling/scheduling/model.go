@@ -158,18 +158,23 @@ func (s Slot) Bookable(patientID uuid.UUID, now time.Time) bool {
 // allergies, which are PHI, so it is never logged and never included in an
 // event payload.
 type Appointment struct {
-	ID                 uuid.UUID
-	PatientID          uuid.UUID
-	DoctorID           uuid.UUID
-	SlotID             uuid.UUID
-	SlotStartAt        time.Time
-	SlotEndAt          time.Time
-	Status             AppointmentStatus
-	Intake             json.RawMessage
-	FamilyMemberID     *uuid.UUID
-	VisitPatientName   string
-	VisitPatientDOB    *time.Time
-	PrepaymentRequired bool
+	ID               uuid.UUID
+	PatientID        uuid.UUID
+	DoctorID         uuid.UUID
+	SlotID           uuid.UUID
+	SlotStartAt      time.Time
+	SlotEndAt        time.Time
+	Status           AppointmentStatus
+	Intake           json.RawMessage
+	FamilyMemberID   *uuid.UUID
+	VisitPatientName string
+	VisitPatientDOB  *time.Time
+	// VisitPatientSex, VisitPatientWeightKg and VisitPatientAllergies are
+	// optional booking-time snapshots, like the name and DOB above.
+	VisitPatientSex       string
+	VisitPatientWeightKg  *float64
+	VisitPatientAllergies string
+	PrepaymentRequired    bool
 
 	// AmountCents is the QUOTE, in cents, fixed at booking from
 	// doctor_pricing. It is not a lookup key and it is never recomputed: a

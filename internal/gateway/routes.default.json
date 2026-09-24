@@ -472,6 +472,66 @@
       "description": "Remove the calling doctor's directory portrait."
     },
     {
+      "name": "doctor-me-signature-put",
+      "pattern": "/api/v1/doctors/me/signature",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Upload or replace the calling doctor's signature image (PNG/JPEG, max 1 MB). Embedded on issued prescriptions."
+    },
+    {
+      "name": "doctor-me-signature-get",
+      "pattern": "/api/v1/doctors/me/signature",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Download the calling doctor's current signature image."
+    },
+    {
+      "name": "doctor-me-seal-put",
+      "pattern": "/api/v1/doctors/me/seal",
+      "methods": [
+        "PUT"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "upload",
+      "rate_limit": "moderate",
+      "description": "Upload or replace the calling doctor's seal/stamp image (PNG/JPEG, max 1 MB). Embedded on issued prescriptions."
+    },
+    {
+      "name": "doctor-me-seal-get",
+      "pattern": "/api/v1/doctors/me/seal",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "doctor-service",
+      "auth": "authenticated",
+      "roles": [
+        "doctor"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "Download the calling doctor's current seal/stamp image."
+    },
+    {
       "name": "doctor-photo",
       "pattern": "/api/v1/doctors/{doctorID}/photo",
       "methods": ["GET"],
@@ -559,6 +619,21 @@
       "timeout_class": "fast",
       "rate_limit": "generous",
       "description": "The caller's appointments. One endpoint serves both sides: scheduling-service scopes the query by the principal's role, so a doctor gets their schedule and a patient gets their bookings. This is what the doctor app's dashboard calls -- there is no /doctors/me/appointments in doctor-service, and the entry that used to claim there was routed every call to a 404."
+    },
+    {
+      "name": "appointments-last-visit-details",
+      "pattern": "/api/v1/appointments/last-visit-details",
+      "methods": [
+        "GET"
+      ],
+      "upstream": "scheduling-service",
+      "auth": "authenticated",
+      "roles": [
+        "patient"
+      ],
+      "timeout_class": "fast",
+      "rate_limit": "generous",
+      "description": "The weight the calling patient last gave for themselves at booking, for prefill. Patient role only."
     },
     {
       "name": "appointment-detail",

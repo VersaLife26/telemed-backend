@@ -413,7 +413,8 @@ func (r *Repository) CountInconsistentSlots(ctx context.Context, q Querier) (int
 // ---------------------------------------------------------------------------
 
 const appointmentColumns = `id, patient_id, doctor_id, slot_id, slot_start_at, slot_end_at,
-	status, intake, family_member_id, visit_patient_name, visit_patient_dob, prepayment_required,
+	status, intake, family_member_id, visit_patient_name, visit_patient_dob,
+	visit_patient_sex, visit_patient_weight_kg, visit_patient_allergies, prepayment_required,
 	amount_cents, currency, specialty,
 	payment_id, confirmed_at, completed_at, no_show_at,
 	cancelled_at, cancelled_by, cancelled_by_role, cancellation_reason, refund_policy,
@@ -438,8 +439,11 @@ func scanAppointment(row pgx.Row) (Appointment, error) {
 	var intake []byte
 	var visitName *string
 	var visitDOB *time.Time
+	var visitSex, visitAllergies *string
 	err := row.Scan(&a.ID, &a.PatientID, &a.DoctorID, &a.SlotID, &a.SlotStartAt, &a.SlotEndAt,
-		&a.Status, &intake, &a.FamilyMemberID, &visitName, &visitDOB, &a.PrepaymentRequired, &amountCents, &currency, &specialty,
+		&a.Status, &intake, &a.FamilyMemberID, &visitName, &visitDOB,
+		&visitSex, &a.VisitPatientWeightKg, &visitAllergies,
+		&a.PrepaymentRequired, &amountCents, &currency, &specialty,
 		&a.PaymentID, &a.ConfirmedAt, &a.CompletedAt,
 		&a.NoShowAt, &a.CancelledAt, &a.CancelledBy, &role, &reason, &policy,
 		&a.Version, &a.CreatedAt, &a.UpdatedAt)
@@ -462,6 +466,12 @@ func scanAppointment(row pgx.Row) (Appointment, error) {
 		a.VisitPatientName = *visitName
 	}
 	a.VisitPatientDOB = visitDOB
+	if visitSex != nil {
+		a.VisitPatientSex = *visitSex
+	}
+	if visitAllergies != nil {
+		a.VisitPatientAllergies = *visitAllergies
+	}
 	if role != nil {
 		a.CancelledByRole = *role
 	}
@@ -566,22 +576,50 @@ func (r *Repository) InsertAppointment(ctx context.Context, tx pgx.Tx, a *Appoin
 	const q = `
 		INSERT INTO appointments
 			(id, patient_id, doctor_id, slot_id, slot_start_at, slot_end_at,
-			 status, intake, family_member_id, visit_patient_name, visit_patient_dob, prepayment_required,
+			 status, intake, family_member_id, visit_patient_name, visit_patient_dob,
+			 visit_patient_sex, visit_patient_weight_kg, visit_patient_allergies, prepayment_required,
 			 amount_cents, currency, specialty, version, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 0, NOW(), NOW())
 		RETURNING created_at, updated_at`
 	intake := a.Intake
 	if len(intake) == 0 {
 		intake = []byte(`{}`)
 	}
 	err := tx.QueryRow(ctx, q, a.ID, a.PatientID, a.DoctorID, a.SlotID, a.SlotStartAt, a.SlotEndAt,
-		string(a.Status), intake, a.FamilyMemberID, nullIfEmpty(a.VisitPatientName), a.VisitPatientDOB, a.PrepaymentRequired,
+		string(a.Status), intake, a.FamilyMemberID, nullIfEmpty(a.VisitPatientName), a.VisitPatientDOB,
+		nullIfEmpty(a.VisitPatientSex), a.VisitPatientWeightKg, nullIfEmpty(a.VisitPatientAllergies), a.PrepaymentRequired,
 		a.AmountCents, a.Currency, a.Specialty).Scan(&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("scheduling: insert appointment: %w", err)
 	}
 	a.CreatedAt, a.UpdatedAt = utc(a.CreatedAt), utc(a.UpdatedAt)
 	return nil
+}
+
+// LastSelfVisitWeightKg returns the most recently booked non-null
+// visit_patient_weight_kg among the patient's own appointments where the visit
+// was for the account holder: no family_member_id and no intake
+// visit_relation (the booking client sets one only when booking for someone
+// else). Nil when there is none. Every status counts -- a weight given for a
+// cancelled booking was still true when given.
+func (r *Repository) LastSelfVisitWeightKg(ctx context.Context, q Querier, patientID uuid.UUID) (*float64, error) {
+	const query = `
+		SELECT visit_patient_weight_kg FROM appointments
+		WHERE patient_id = $1 AND deleted_at IS NULL
+		  AND visit_patient_weight_kg IS NOT NULL
+		  AND family_member_id IS NULL
+		  AND COALESCE(TRIM(intake->>'visit_relation'), '') = ''
+		ORDER BY created_at DESC
+		LIMIT 1`
+	var kg float64
+	err := q.QueryRow(ctx, query, patientID).Scan(&kg)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scheduling: last self visit weight: %w", err)
+	}
+	return &kg, nil
 }
 
 // GetAppointment reads one appointment, ignoring soft-deleted rows.

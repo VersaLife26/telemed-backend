@@ -66,6 +66,11 @@ const (
 	// TypePointer is a Zoom-style laser pointer: normalised coordinates on
 	// the video (or an open file) so each side can point at a detail.
 	TypePointer = "pointer"
+	// TypeFileShared tells the far side a file was shared into the
+	// consultation, as {"name": string} (at most 255 characters). Like every
+	// relayed payload it is forwarded unparsed; the file itself travels through
+	// the consultation domain's own upload path, never through this socket.
+	TypeFileShared = "file_shared"
 )
 
 // Frame types only the hub sends.
@@ -93,6 +98,7 @@ var relayable = map[string]bool{
 	TypeQuality:        true,
 	TypeChat:           true,
 	TypePointer:        true,
+	TypeFileShared:     true,
 }
 
 // Welcome is the first frame the hub sends a peer that has joined.

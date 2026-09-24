@@ -65,6 +65,19 @@ type serviceConfig struct {
 	// SchedulingTimeout bounds the holiday forward. It sits on a doctor's Save
 	// button, so it is short by design.
 	SchedulingTimeout time.Duration `mapstructure:"scheduling_timeout"`
+
+	// Object storage for signature and seal images, read from the same keys
+	// the record domain uses: record-service embeds these images in issued
+	// prescriptions, so both must resolve the same doctor-credentials bucket.
+	StorageBackend          string `mapstructure:"storage_backend"`
+	FilesystemStorageDir    string `mapstructure:"filesystem_storage_dir"`
+	FilesystemPresignSecret string `mapstructure:"filesystem_presign_secret"`
+	PublicAPIBaseURL        string `mapstructure:"public_api_base_url"`
+	MinIOEndpoint           string `mapstructure:"minio_endpoint"`
+	MinIOAccessKey          string `mapstructure:"minio_access_key"`
+	MinIOSecretKey          string `mapstructure:"minio_secret_key"`
+	MinIOSecure             bool   `mapstructure:"minio_secure"`
+	MinIORegion             string `mapstructure:"minio_region"`
 }
 
 // ProxyCIDRs splits the trusted-proxy list, dropping empty entries so that a

@@ -58,6 +58,10 @@ func (h *Handler) Routes() chi.Router {
 		r.Put("/photo", h.putPhoto)
 		r.Get("/photo", h.getMinePhoto)
 		r.Delete("/photo", h.deletePhoto)
+		r.Put("/signature", h.putCredentialImage(DocumentSignature))
+		r.Get("/signature", h.getCredentialImage(DocumentSignature))
+		r.Put("/seal", h.putCredentialImage(DocumentSeal))
+		r.Get("/seal", h.getCredentialImage(DocumentSeal))
 		r.Get("/availability", h.getAvailability)
 		r.Put("/availability", h.setAvailability)
 		r.Get("/schedule-settings", h.getScheduleSettings)
@@ -549,6 +553,14 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ErrProfilePhotoTooLarge):
 		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest,
 			"profile photo must be 2 MB or smaller"))
+	case errors.Is(err, ErrInvalidCredentialImage):
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "signature and seal must be PNG or JPEG images"))
+	case errors.Is(err, ErrCredentialImageTooLarge):
+		httpx.Error(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, httpx.CodeBadRequest, "signature and seal must be 1 MB or smaller"))
+	case errors.Is(err, ErrInvalidCredentialDocument):
+		httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeBadRequest, "credential documents must be PDF, JPEG, PNG or WebP files"))
+	case errors.Is(err, ErrCredentialStoreUnavailable):
+		httpx.Error(w, r, httpx.NewError(http.StatusServiceUnavailable, httpx.CodeUnavailable, "signature and seal storage is temporarily unavailable"))
 	case errors.Is(err, ErrNotFound):
 		httpx.Error(w, r, httpx.ErrNotFound)
 	case errors.Is(err, ErrSLMCTaken):

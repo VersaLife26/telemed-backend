@@ -398,7 +398,9 @@ type AttachInput struct {
 	Email         string
 }
 
-// Attach creates the doctors row from an approved application and publishes doctor.approved.
+// Attach creates the doctors row from an approved application and publishes
+// doctor.approved. The application's signature and seal are copied onto the
+// new profile; see applicationCredentialImages for how a failure is handled.
 func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 	app, err := s.repo.GetApplication(ctx, in.ApplicationID)
 	if err != nil {
@@ -469,9 +471,19 @@ func (s *Service) Attach(ctx context.Context, in AttachInput) (Doctor, error) {
 		AcceptsNewPatients: true,
 	}
 
+	credentialDocs, err := s.applicationCredentialImages(ctx, app)
+	if err != nil {
+		return Doctor{}, err
+	}
+
 	err = database.InTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if err := s.repo.Create(ctx, tx, d); err != nil {
 			return err
+		}
+		for _, doc := range credentialDocs {
+			if err := s.repo.InsertDocument(ctx, tx, doc); err != nil {
+				return err
+			}
 		}
 		if err := s.repo.MarkApplicationActivated(ctx, tx, app.ID, in.UserID, now); err != nil {
 			return err

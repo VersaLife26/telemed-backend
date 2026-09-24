@@ -54,6 +54,9 @@ type User struct {
 	// DateOfBirth is the account holder's date of birth. Nil when they have
 	// not set one. Family members have their own DOB on family_members.
 	DateOfBirth *time.Time
+	// Sex is "female", "male" or "other"; nil when not set.
+	Sex       *string
+	Allergies *string
 	// PhotoUpdatedAt is set when the account has a profile photograph. The
 	// image bytes themselves are not loaded on ordinary profile reads -- see
 	// Repository.GetProfilePhoto / SetProfilePhoto.

@@ -204,6 +204,8 @@ type userResponse struct {
 	Name        string  `json:"name"`
 	Address     string  `json:"address"`
 	DateOfBirth *string `json:"date_of_birth,omitempty"`
+	Sex         string  `json:"sex,omitempty"`
+	Allergies   string  `json:"allergies"`
 	PhotoURL    *string `json:"photo_url,omitempty"`
 	Language    string  `json:"language"`
 	Role        string  `json:"role"`
@@ -227,6 +229,12 @@ func toUserResponse(u User) userResponse {
 		dob := u.DateOfBirth.Format("2006-01-02")
 		out.DateOfBirth = &dob
 	}
+	if u.Sex != nil {
+		out.Sex = *u.Sex
+	}
+	if u.Allergies != nil {
+		out.Allergies = *u.Allergies
+	}
 	if u.PhotoUpdatedAt != nil {
 		url := ProfilePhotoURLPath + "?v=" + strconv.FormatInt(u.PhotoUpdatedAt.Unix(), 10)
 		out.PhotoURL = &url
@@ -240,8 +248,12 @@ type updateProfileRequest struct {
 	Phone       *string `json:"phone" validate:"omitempty,max=20"`
 	Address     *string `json:"address" validate:"omitempty,max=500"`
 	DateOfBirth *string `json:"date_of_birth" validate:"omitempty"`
-	Language    string  `json:"language" validate:"required,oneof=en si ta"`
-	Version     int     `json:"version" validate:"gte=0"`
+	// Sex is checked in the handler: "" must pass (it clears the value) and
+	// the validator's oneof rejects it even under omitempty.
+	Sex       *string `json:"sex"`
+	Allergies *string `json:"allergies" validate:"omitempty,max=1000"`
+	Language  string  `json:"language" validate:"required,oneof=en si ta"`
+	Version   int     `json:"version" validate:"gte=0"`
 }
 
 type setPasswordRequest struct {
@@ -463,7 +475,8 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := UpdateProfileInput{
-		Name: req.Name, Email: req.Email, Language: Language(req.Language), Version: req.Version,
+		Name: req.Name, Email: req.Email, Sex: req.Sex, Allergies: req.Allergies,
+		Language: Language(req.Language), Version: req.Version,
 	}
 	if req.Phone != nil {
 		raw := strings.TrimSpace(*req.Phone)
@@ -499,6 +512,14 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			in.DateOfBirth = &dob
+		}
+	}
+	if req.Sex != nil {
+		switch strings.TrimSpace(*req.Sex) {
+		case "", "female", "male", "other":
+		default:
+			httpx.Error(w, r, httpx.NewError(http.StatusBadRequest, httpx.CodeValidation, "sex must be female, male or other"))
+			return
 		}
 	}
 	u, err := h.svc.UpdateProfile(r.Context(), p.UserID, in)

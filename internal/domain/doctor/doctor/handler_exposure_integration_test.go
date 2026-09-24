@@ -3,8 +3,10 @@
 package doctor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"telemed/internal/platform/database"
 	"telemed/internal/platform/middleware"
+	"telemed/internal/platform/storage"
 )
 
 // The unit tests in dto_exposure_test.go and objectkey_test.go pin the shapes
@@ -38,6 +41,11 @@ func newExposureEnv(t *testing.T) *exposureEnv {
 
 	pool := setupPostgres(t)
 	svc, repo := newTestService(t, pool)
+	store, err := storage.NewFilesystem(t.TempDir(), "http://storage.test", nil)
+	if err != nil {
+		t.Fatalf("filesystem storage: %v", err)
+	}
+	svc.WithCredentialStore(store)
 	signer := newMeshSigner(t)
 
 	h := NewHandler(svc, signer.authenticator(t))
@@ -46,6 +54,34 @@ func newExposureEnv(t *testing.T) *exposureEnv {
 
 	return &exposureEnv{router: r, svc: svc, repo: repo, pool: pool, signer: signer}
 }
+
+// uploadCredential posts a real file the way the profile page does.
+func (e *exposureEnv) uploadCredential(t *testing.T, token, docType string, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	if err := mw.WriteField("document_type", docType); err != nil {
+		t.Fatalf("write field: %v", err)
+	}
+	fw, err := mw.CreateFormFile("file", "upload")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/doctors/me/documents", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	return rec
+}
+
+var testPDF = []byte("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
 
 func (e *exposureEnv) do(t *testing.T, method, path, token, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -98,8 +134,7 @@ func TestIntegration_CredentialUploadRefusesAnAttackerChosenKey(t *testing.T) {
 	drB, tokenB := env.registerDoctor(t, "SLMC7002", "Dr. B")
 
 	// Dr A uploads their genuine SLMC certificate.
-	rec := env.do(t, http.MethodPost, "/api/v1/doctors/me/documents", tokenA,
-		`{"document_type":"slmc_certificate","filename":"slmc.pdf"}`)
+	rec := env.uploadCredential(t, tokenA, "slmc_certificate", testPDF)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("Dr A's own upload: status %d, body %s", rec.Code, rec.Body.String())
 	}
@@ -145,8 +180,7 @@ func TestIntegration_CredentialUploadRefusesAnAttackerChosenKey(t *testing.T) {
 
 	// Positive control: Dr B's own legitimate upload still works, and lands
 	// under their own prefix.
-	rec = env.do(t, http.MethodPost, "/api/v1/doctors/me/documents", tokenB,
-		`{"document_type":"slmc_certificate","filename":"mine.pdf"}`)
+	rec = env.uploadCredential(t, tokenB, "slmc_certificate", testPDF)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("Dr B's own upload: status %d, body %s", rec.Code, rec.Body.String())
 	}
@@ -157,7 +191,19 @@ func TestIntegration_CredentialUploadRefusesAnAttackerChosenKey(t *testing.T) {
 		t.Fatalf("Dr B's key %q is not bound to Dr B's doctor id %s", created.Data.ObjectKey, drB)
 	}
 	if !strings.HasSuffix(created.Data.ObjectKey, ".pdf") {
-		t.Fatalf("the allowlisted extension was dropped: %q", created.Data.ObjectKey)
+		t.Fatalf("the sniffed extension was dropped: %q", created.Data.ObjectKey)
+	}
+
+	// The object behind the row exists: a reviewer's link opens the file.
+	if _, err := env.svc.store.Stat(ctx, storage.BucketDoctorCredentials, created.Data.ObjectKey); err != nil {
+		t.Fatalf("stored document row has no object behind it: %v", err)
+	}
+
+	// Metadata alone is refused; it used to create a row pointing at nothing.
+	rec = env.do(t, http.MethodPost, "/api/v1/doctors/me/documents", tokenB,
+		`{"document_type":"slmc_certificate","filename":"ghost.pdf"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("metadata-only upload: status %d, want 400", rec.Code)
 	}
 }
 
