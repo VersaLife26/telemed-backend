@@ -189,7 +189,8 @@ func (s *Service) applicationCredentialImages(ctx context.Context, app Applicati
 		return nil, err
 	}
 	var out []*Document
-	for _, ad := range appDocs {
+	for i := range appDocs {
+		ad := &appDocs[i]
 		if ad.DocumentType != DocumentSignature && ad.DocumentType != DocumentSeal {
 			continue
 		}
